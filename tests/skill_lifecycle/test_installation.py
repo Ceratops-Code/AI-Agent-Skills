@@ -8,6 +8,7 @@ import runpy
 import shutil
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -32,6 +33,9 @@ from tests.support.processes import COMPATIBILITY_ENGINE, run_compatibility_engi
 from tests.support.repositories import (
     ROOT,
     create_compatible_repo,
+    prepare_script_environment,
+    prepare_skill_python_project,
+    run_git,
 )
 
 
@@ -92,6 +96,7 @@ def test_external_installer_needs_no_ceratops_bundle(tmp_path: pathlib.Path) -> 
     codex_home = tmp_path / "codex-home"
     install_root = tmp_path / "installed"
     create_compatible_repo(repo, "example/external", ["alpha-tool"])
+    prepare_script_environment(repo)
     env = {**os.environ, "CODEX_HOME": str(codex_home)}
 
     result = subprocess.run(
@@ -121,6 +126,7 @@ def test_external_installer_rejects_unresolved_or_malformed_input_without_fallba
     install_root = tmp_path / "installed"
     installed_bundle = codex_home / "skills" / "ceratops-skill-lifecycle"
     create_compatible_repo(repo, "example/external", ["alpha-tool"])
+    prepare_script_environment(repo)
     shutil.copytree(LIFECYCLE_SOURCE, installed_bundle)
     (installed_bundle / "scripts" / "runtime" / "install-managed-skills.py").write_text(
         "raise SystemExit('installed runtime was selected')\n",
@@ -266,6 +272,7 @@ def test_bootstrap_retains_retired_skills_without_content_validation(
     repo = tmp_path / "compatible"
     install_root = tmp_path / "installed"
     create_compatible_repo(repo, "example/external", ["alpha-tool"])
+    prepare_script_environment(repo)
     manifest = json.loads((repo / "skills" / "skill-sections.json").read_text())
     section = repo / next(iter(manifest["sections"].values()))
     marker = "<!-- CERATOPS_SHARED_SECTIONS_START -->"
@@ -302,6 +309,7 @@ def test_bootstrap_does_not_follow_existing_destination_links(
 ) -> None:
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "example/external", ["alpha-tool"])
+    prepare_script_environment(repo)
     outside = tmp_path / "outside"
     outside.mkdir()
     sentinel = outside / "SKILL.md"
@@ -333,6 +341,7 @@ def test_bootstrap_cleans_owned_state_after_copy_failure(
 ) -> None:
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "example/external", ["alpha-tool"])
+    prepare_script_environment(repo)
     install_root = tmp_path / "installed"
     target = install_root / "alpha-tool"
     target.mkdir(parents=True)
@@ -398,7 +407,7 @@ def test_bootstrap_rejects_undeclared_selection_without_runtime_fallback(
     assert "installed runtime failed" not in result.stderr
 
 
-def test_bootstrap_full_install_materializes_self_contained_lifecycle_bundle(
+def test_bootstrap_full_install_materializes_lifecycle_bundle_with_source_runtime(
     tmp_path: pathlib.Path,
 ) -> None:
     codex_home = tmp_path / "empty-codex-home"
@@ -430,6 +439,7 @@ def test_bootstrap_full_install_materializes_self_contained_lifecycle_bundle(
         / "skill-sections.json.tmpl"
     ).is_file()
     assert (installed_lifecycle / "skills" / "sections" / "core.md").is_file()
+    assert not (installed_lifecycle / "skills" / "sections" / "python").exists()
     assert (
         installed_lifecycle / "skills" / "sections" / "multi-action-skill.md"
     ).is_file()
@@ -444,11 +454,16 @@ def test_bootstrap_full_install_materializes_self_contained_lifecycle_bundle(
     ).is_file()
     target_repo = tmp_path / "installed-bundle-target"
     create_compatible_repo(target_repo, "stale/source", ["alpha-tool"])
+    prepare_script_environment(target_repo)
     (target_repo / ".git").write_text(
         "gitdir: test\n", encoding="utf-8", newline="\n"
     )
     shutil.rmtree(target_repo / "skills" / "sections")
+    prepare_skill_python_project(target_repo)
     (target_repo / "skills" / "skill-sections.json").unlink()
+    alpha_scripts = target_repo / "skills" / "alpha-tool" / "scripts"
+    alpha_scripts.mkdir()
+    (alpha_scripts / "helper.py").write_text("print('ready')\n")
     applied = run_compatibility_engine(
         installed_lifecycle / "scripts",
         "apply",
@@ -459,6 +474,8 @@ def test_bootstrap_full_install_materializes_self_contained_lifecycle_bundle(
     )
     assert applied.returncode == 0, applied.stdout
     assert json.loads(applied.stdout)["runtime_source_id"] == "installed/target"
+    assert "target-skill-runtime" in (target_repo / "skills/sections/python/pyproject.toml").read_text()
+    assert (target_repo / "skills/sections/python/uv.lock").is_file()
 
     other_checkout = tmp_path / "other-checkout"
     other_checkout.mkdir()
@@ -505,11 +522,35 @@ def test_lifecycle_only_installed_bundle_materializes_compatible_repo(
     )
     assert installed.returncode == 0, installed.stderr
     create_compatible_repo(target_repo, "stale/source", ["alpha-tool"])
+    prepare_script_environment(target_repo)
     (target_repo / ".git").write_text(
         "gitdir: test\n", encoding="utf-8", newline="\n"
     )
     shutil.rmtree(target_repo / "skills" / "sections")
     (target_repo / "skills" / "skill-sections.json").unlink()
+    alpha_scripts = target_repo / "skills" / "alpha-tool" / "scripts"
+    alpha_scripts.mkdir()
+    (alpha_scripts / "helper.py").write_text("print('ready')\n")
+    ownership_path = install_root / "ceratops-repo-lifecycle" / ".runtime-manifest.json"
+    ownership = json.loads(ownership_path.read_text(encoding="utf-8"))
+    ownership["source_repository_root"] = str(tmp_path / "unavailable-source")
+    ownership_path.write_text(json.dumps(ownership), encoding="utf-8")
+
+    missing = run_compatibility_engine(
+        install_root / "ceratops-repo-lifecycle" / "scripts",
+        "apply",
+        "--target-repo-root",
+        str(target_repo),
+        "--runtime-source-id",
+        "installed/only",
+    )
+    assert missing.returncode != 0
+    blocked = json.loads(missing.stdout)
+    assert blocked["phase"] == "compatibility_planning"
+    assert "skills/sections/python/pyproject.toml" in blocked["reason"]
+    assert blocked["rollback"] == "not_started"
+    assert not (target_repo / "skills/sections/python").exists()
+    prepare_skill_python_project(target_repo)
 
     result = run_compatibility_engine(
         install_root / "ceratops-repo-lifecycle" / "scripts",
@@ -522,6 +563,8 @@ def test_lifecycle_only_installed_bundle_materializes_compatible_repo(
 
     assert result.returncode == 0, result.stdout
     assert json.loads(result.stdout)["runtime_source_id"] == "installed/only"
+    assert "target-skill-runtime" in (target_repo / "skills/sections/python/pyproject.toml").read_text()
+    assert (target_repo / "skills/sections/python/uv.lock").is_file()
 
 
 def test_bootstrap_ignores_stale_broken_installed_bundle(
@@ -546,6 +589,7 @@ def test_bootstrap_ignores_stale_broken_installed_bundle(
 
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "example/external", ["alpha-tool"])
+    prepare_script_environment(repo)
     result = subprocess.run(
         [
             sys.executable,
@@ -565,6 +609,32 @@ def test_bootstrap_ignores_stale_broken_installed_bundle(
     assert runtime_owner(install_root, "alpha-tool") == "example/external"
 
 
+def test_python_runtime_selection_changes_only_affected_skill(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "example/compatible", ["alpha-tool", "beta-tool"])
+    assert run_git(repo, "init", "-b", "task").returncode == 0
+    assert run_git(repo, "config", "user.email", "test@example.invalid").returncode == 0
+    assert run_git(repo, "config", "user.name", "Test Agent").returncode == 0
+    manifest_path = repo / "skills/skill-sections.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["python_runtime_skills"] = []
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert run_git(repo, "add", "-A").returncode == 0
+    assert run_git(repo, "commit", "-m", "baseline").returncode == 0
+    base = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    manifest["python_runtime_skills"] = ["alpha-tool"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert run_git(repo, "add", "-A").returncode == 0
+    assert run_git(repo, "commit", "-m", "select Python skill").returncode == 0
+
+    affected = runpy.run_path(str(RUNTIME_INSTALLER))["affected_from_base"](repo, base)
+    assert affected.deploy == ("alpha-tool",)
+    assert affected.remove == ()
+
+
 def test_runtime_manifest_uses_schema_without_installer_version(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -575,6 +645,7 @@ def test_runtime_manifest_uses_schema_without_installer_version(
         "example/compatible",
         ["alpha-tool", "beta-tool"],
     )
+    prepare_script_environment(repo)
     shared = repo / "skills" / "sections" / "scripts" / "shared.py"
     shared.parent.mkdir()
     shared.write_text("VALUE = 1\n", encoding="utf-8", newline="\n")
@@ -648,6 +719,7 @@ def test_full_install_does_not_run_source_validation(tmp_path: pathlib.Path) -> 
     installed_bundle = codex_home / "skills" / "ceratops-skill-lifecycle"
     repository_bundle = codex_home / "skills" / "ceratops-repo-lifecycle"
     create_compatible_repo(repo, "example/external", ["alpha-tool"])
+    prepare_script_environment(repo)
     shutil.copytree(LIFECYCLE_SOURCE, installed_bundle)
     shutil.copytree(
         REPOSITORY_LIFECYCLE_SOURCE,
@@ -690,6 +762,7 @@ def test_targeted_install_checks_only_selected_rendering_inputs(
     install_root = tmp_path / "installed"
     installed_bundle = codex_home / "skills" / "ceratops-skill-lifecycle"
     create_compatible_repo(repo, "example/external", ["alpha-tool", "broken-tool"])
+    prepare_script_environment(repo)
     shutil.copytree(LIFECYCLE_SOURCE, installed_bundle)
     shutil.copytree(
         REPOSITORY_LIFECYCLE_SOURCE,
@@ -838,6 +911,7 @@ def test_runtime_inventory_lists_direct_manifests_and_malformed_blockers(
     repo = tmp_path / "compatible"
     install_root = tmp_path / "installed"
     create_compatible_repo(repo, "example/compatible", ["alpha-tool", "beta-tool"])
+    prepare_script_environment(repo)
     assert run_builder(repo, install_root, "--all-managed").returncode == 0
     malformed = install_root / "broken-tool"
     malformed.mkdir()
@@ -885,6 +959,7 @@ def test_action_sections_match_across_installation_paths(
 ) -> None:
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "example/actions", ["alpha-tool", "beta-tool"])
+    prepare_script_environment(repo)
     add_action_sections(repo)
     action = repo / "skills/alpha-tool/references/review.md"
     action.write_text(action.read_text(encoding="utf-8"), encoding="utf-8", newline=newline)
@@ -925,6 +1000,7 @@ def test_action_sections_match_across_installation_paths(
 def test_action_sections_reject_invalid_assignments(tmp_path: pathlib.Path, renderer: pathlib.Path, case: str) -> None:
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "example/actions", ["alpha-tool"])
+    prepare_script_environment(repo)
     manifest = add_action_sections(repo)
     actions = manifest["actions"]["alpha-tool"]
     if case == "map-type":
@@ -989,6 +1065,12 @@ def test_contract_review_adoption_and_all_managed_output(tmp_path: pathlib.Path)
         result = subprocess.run(command, capture_output=True, text=True, check=False)
         assert result.returncode == 0, result.stderr
         snapshots.append(rendered_snapshot(destination))
+        for skill in manifest["skills"]:
+            runtime = json.loads((destination / skill / ".runtime-manifest.json").read_text())
+            if skill in manifest["python_runtime_skills"]:
+                assert pathlib.Path(runtime["python_runtime"]).is_file()
+            else:
+                assert "python_runtime" not in runtime
         for skill, refs in expected.items():
             source = ROOT / "skills" / skill
             for relative in refs:
@@ -1003,20 +1085,200 @@ def test_contract_review_adoption_and_all_managed_output(tmp_path: pathlib.Path)
                 relative = item.relative_to(source).as_posix()
                 if relative != "SKILL.md" and relative not in refs:
                     assert (destination / skill / relative).read_bytes() == item.read_bytes()
-        repository_review = (destination / "ceratops-repo-lifecycle/references/repo-contracts-review.md").read_text(encoding="utf-8")
+        repository_review = " ".join((destination / "ceratops-repo-lifecycle/references/repo-contracts-review.md").read_text(encoding="utf-8").split())
         assert "including ecosystems absent from the contract" in repository_review
         assert "at most four web discovery queries per routine review" in repository_review
         assert "candidate dispositions with reasons: covered, proposed addition, deferred," in repository_review
-        skill_review = (destination / "ceratops-skill-lifecycle/references/skills-contract-review.md").read_text(encoding="utf-8")
+        skill_review = " ".join((destination / "ceratops-skill-lifecycle/references/skills-contract-review.md").read_text(encoding="utf-8").split())
         assert "Do not run `skills-consistency-source-validator.py`" in skill_review
         assert "at most two or three relevant installed OpenAI skill examples" in skill_review
     assert snapshots[0] == snapshots[1] == snapshots[2]
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required for the deployed runtime integration")
+def test_shared_skill_python_environment_reuses_lock_and_repairs_missing_package(tmp_path: pathlib.Path) -> None:
+    """Install once per lock, invoke directly, and repair at a new path."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    codex_home = tmp_path / "codex home"
+    destination = codex_home / "skills"
+    names = ["ceratops-repo-lifecycle", "ceratops-skill-lifecycle"]
+    installed = subprocess.run([
+        sys.executable, str(BOOTSTRAP), "--repo-root", str(ROOT), "--install-root", str(destination),
+        "--skill", names[0], "--skill", names[1],
+    ], capture_output=True, text=True, check=False)
+    assert installed.returncode == 0, installed.stderr
+    assert INSTALLER_VERSION == runpy.run_path(str(BOOTSTRAP))["INSTALLER_VERSION"]
+    uv = shutil.which("uv")
+    assert uv is not None
+    environment = {**os.environ, "CODEX_HOME": str(codex_home)}
+    manifests = [json.loads((destination / name / ".runtime-manifest.json").read_text()) for name in names]
+    runtimes = [pathlib.Path(item["python_runtime"]) for item in manifests]
+    assert runtimes[0] == runtimes[1]
+    assert runtimes[0].is_file()
+    assert runtimes[0].parent.parent.parent.parent == codex_home / "runtimes/ceratops/versions"
+    for name in names:
+        skill = destination / name
+        assert not (skill / ".venv").exists()
+        assert not (skill / "scripts/run-skill.py").exists()
+        assert not (skill / "scripts/python-runtime").exists()
+        (skill / "scripts/probe.py").write_text(
+            "import json, jsonschema, yaml, markdown_it, sys, subprocess\n"
+            "from zoneinfo import ZoneInfo\n"
+            "ZoneInfo('Asia/Jerusalem')\n"
+            "nested = subprocess.check_output([sys.executable, '-c', 'import sys; print(sys.executable)'], text=True).strip()\n"
+            "print(json.dumps({'schema':'probe.v1','status':'ready','python':sys.executable,'nested':nested,'args':sys.argv[1:]}))\n",
+        )
+
+    def invoke(name: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([
+            uv, "run", "--no-project", "--python", str(runtimes[names.index(name)]), "python",
+            str(destination / name / "scripts/probe.py"), "two words",
+        ], cwd=tmp_path, env=environment, capture_output=True, text=True, check=False)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(invoke, names))
+    assert all(item.returncode == 0 for item in results), [item.stderr for item in results]
+    first, second = [json.loads(item.stdout) for item in results]
+    assert first == second
+    assert first["args"] == ["two words"]
+    assert first["python"] == first["nested"]
+    interpreter = pathlib.Path(first["python"])
+    assert interpreter == runtimes[0]
+    assert json.loads(invoke(names[0]).stdout) == first
+    failed_script = destination / names[0] / "scripts/failed.py"
+    failed_script.write_text("import sys\nprint('helper failure', file=sys.stderr)\nraise SystemExit(7)\n")
+    failed = subprocess.run([
+        uv, "run", "--no-project", "--python", str(interpreter), "python", str(failed_script),
+    ], cwd=tmp_path, env=environment, capture_output=True, text=True, check=False)
+    assert failed.returncode == 7 and "helper failure" in failed.stderr
+
+    # A skill helper may run a target repository's uv command without sending
+    # that target into the shared skill environment.
+    repository = tmp_path / "target repository"
+    scripts = repository / "scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "pyproject.toml").write_text(
+        '[project]\nname="target-tools"\nversion="0.0.0"\n'
+        'requires-python=">=3.14,<3.15"\ndependencies=[]\n'
+        '[tool.uv]\npackage=false\n'
+    )
+    locked_target = subprocess.run([uv, "lock", "--project", str(scripts)], capture_output=True, text=True, check=False)
+    assert locked_target.returncode == 0, locked_target.stderr
+    (scripts / "probe.py").write_text(
+        "import json, pathlib, sys\n"
+        "pathlib.Path('target-python.json').write_text(json.dumps(sys.prefix))\n"
+    )
+    (repository / "sdlc").mkdir()
+    (repository / "sdlc/sdlc.yml").write_text(json.dumps({
+        "version": 3, "kind": "ceratops-sdlc", "repository": {
+            "validate": {"target": {"steps": [{"run": [uv, "run", "--locked", "scripts/probe.py"]}]}},
+            "tests": {"none": {"no-op": "Environment boundary fixture."}},
+        },
+    }))
+    through_skill = subprocess.run([
+        uv, "run", "--no-project", "--python", str(interpreter), "python",
+        str(destination / names[0] / "scripts/repository_operation.py"),
+        "--repo-root", str(repository), "--validate", "--ci",
+    ], cwd=tmp_path, env=environment, capture_output=True, text=True, check=False)
+    assert through_skill.returncode == 0, through_skill.stderr
+    assert pathlib.Path(json.loads((repository / "target-python.json").read_text())) == scripts / ".venv"
+    shared_import = subprocess.run([str(interpreter), "-c", "import jsonschema, yaml"], capture_output=True, text=True, check=False)
+    assert shared_import.returncode == 0, shared_import.stderr
+    removed = subprocess.run([uv, "pip", "uninstall", "--python", str(interpreter), "jsonschema"], capture_output=True, text=True, check=False)
+    assert removed.returncode == 0, removed.stderr
+    legacy_scripts = destination / names[0] / "scripts"
+    (legacy_scripts / "run-skill.py").write_text("# retired launcher\n")
+    legacy_project = legacy_scripts / "python-runtime"
+    legacy_project.mkdir()
+    (legacy_project / "pyproject.toml").write_text("# retired declaration\n")
+    (legacy_project / "uv.lock").write_text("# retired lock\n")
+    redeployed = subprocess.run([
+        sys.executable, str(BOOTSTRAP), "--repo-root", str(ROOT), "--install-root", str(destination),
+        "--skill", names[0], "--skill", names[1],
+    ], capture_output=True, text=True, check=False)
+    assert redeployed.returncode == 0, redeployed.stderr
+    assert not (legacy_scripts / "run-skill.py").exists()
+    assert not legacy_project.exists()
+    new_paths = [pathlib.Path(json.loads((destination / name / ".runtime-manifest.json").read_text())["python_runtime"]) for name in names]
+    assert new_paths[0] == new_paths[1] != interpreter
+    assert new_paths[0].is_file() and interpreter.is_file()
+    repaired = subprocess.run([
+        uv, "run", "--no-project", "--python", str(new_paths[0]), "python",
+        str(destination / names[0] / "scripts/probe.py"), "two words",
+    ], cwd=tmp_path, env=environment, capture_output=True, text=True, check=False)
+    assert repaired.returncode == 0, repaired.stderr
+    assert json.loads(repaired.stdout)["python"] == str(new_paths[0])
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required for the deployed runtime integration")
+def test_runtime_update_preserves_an_active_helper_environment(tmp_path: pathlib.Path) -> None:
+    """A lock change creates a new venv while an old helper still imports."""
+
+    repo = tmp_path / "source"
+    create_compatible_repo(repo, "example/versioned-runtime", ["alpha-tool"])
+    project = repo / "skills/sections/python"
+    shutil.copytree(ROOT / "skills/sections/python", project)
+    script = repo / "skills/alpha-tool/scripts/probe.py"
+    script.parent.mkdir(exist_ok=True)
+    script.write_text(
+        "import pathlib,sys,time\n"
+        "ready=pathlib.Path(sys.argv[1]); release=pathlib.Path(sys.argv[2])\n"
+        "ready.write_text('ready')\n"
+        "while not release.exists(): time.sleep(0.05)\n"
+        "import jsonschema\nprint('old runtime survived')\n",
+    )
+    section_manifest_path = repo / "skills/skill-sections.json"
+    section_manifest = json.loads(section_manifest_path.read_text(encoding="utf-8"))
+    section_manifest["python_runtime_skills"] = ["alpha-tool"]
+    section_manifest_path.write_text(
+        json.dumps(section_manifest, indent=2) + "\n", encoding="utf-8", newline="\n",
+    )
+    installed = tmp_path / "codex/skills"
+    command = [sys.executable, str(BOOTSTRAP), "--repo-root", str(repo), "--install-root", str(installed), "--skill", "alpha-tool"]
+    first = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert first.returncode == 0, first.stderr
+    manifest = installed / "alpha-tool/.runtime-manifest.json"
+    old_python = pathlib.Path(json.loads(manifest.read_text())["python_runtime"])
+    ready, release = tmp_path / "ready", tmp_path / "release"
+    uv = shutil.which("uv")
+    assert uv is not None
+    helper = subprocess.Popen(
+        [uv, "run", "--no-project", "--python", str(old_python), "python", str(installed / "alpha-tool/scripts/probe.py"), str(ready), str(release)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not ready.exists() and helper.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert ready.exists()
+        pyproject = project / "pyproject.toml"
+        pyproject.write_text(pyproject.read_text().replace(
+            'dependencies = ["jsonschema", "markdown-it-py", "PyYAML", "tzdata"]',
+            "dependencies = []",
+        ))
+        locked = subprocess.run([uv, "lock", "--project", str(project)], capture_output=True, text=True, check=False)
+        assert locked.returncode == 0, locked.stderr
+        second = subprocess.run(command, capture_output=True, text=True, check=False)
+        assert second.returncode == 0, second.stderr
+        new_python = pathlib.Path(json.loads(manifest.read_text())["python_runtime"])
+        assert new_python != old_python and new_python.is_file() and old_python.is_file()
+        release.write_text("go")
+        stdout, stderr = helper.communicate(timeout=10)
+        assert helper.returncode == 0, stderr
+        assert stdout.strip() == "old runtime survived"
+    finally:
+        release.write_text("go")
+        if helper.poll() is None:
+            helper.kill()
+            helper.communicate()
 
 
 @pytest.mark.parametrize("renderer", [BOOTSTRAP, INSTALLER_TEMPLATE, BUILDER], ids=["repository", "compatible", "managed"])
 def test_action_removal_and_selected_input_boundary(tmp_path: pathlib.Path, renderer: pathlib.Path) -> None:
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "example/actions", ["alpha-tool", "beta-tool"])
+    prepare_script_environment(repo)
     manifest = add_action_sections(repo)
     # An unrelated malformed sibling declaration must not block a selected install.
     manifest["actions"]["beta-tool"] = []
@@ -1034,3 +1296,34 @@ def test_action_removal_and_selected_input_boundary(tmp_path: pathlib.Path, rend
     assert result.returncode == 0, result.stderr
     assert installed.read_bytes() == (repo / "skills/alpha-tool/references/review.md").read_bytes()
     assert not (destination / "beta-tool").exists()
+
+
+
+@pytest.mark.parametrize("mode", ["all", "selected", "dirty", "no-op"])
+def test_installer_completion_receipt_identifies_actual_transaction(tmp_path: pathlib.Path, mode: str) -> None:
+    from tests.support.repositories import run_git
+
+    repo = tmp_path / "source"
+    destination = tmp_path / "installed"
+    create_compatible_repo(repo, "example/receipt", ["alpha-tool", "beta-tool"])
+    prepare_script_environment(repo)
+    for args in (("init", "-b", "main"), ("config", "user.email", "test@example.invalid"),
+                 ("config", "user.name", "Test Agent"), ("add", "."), ("commit", "-m", "source")):
+        assert run_git(repo, *args).returncode == 0
+    commit = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    if mode == "dirty":
+        (repo / "untracked.txt").write_text("dirty source")
+    flags = ["--skill", "alpha-tool"] if mode == "selected" else ["--base-revision", commit] if mode == "no-op" else []
+    result = subprocess.run([sys.executable, str(RUNTIME_INSTALLER), "--repo-root", str(repo),
+                             "--install-root", str(destination), *flags], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads(result.stdout)
+    assert receipt["schema"] == "ceratops-deployment-completion.v1"
+    assert receipt["commit"] == (None if mode == "dirty" else commit)
+    assert receipt["repo_root"] == str(repo) and receipt["install_root"] == str(destination)
+    assert receipt["status"] == ("no_op" if mode == "no-op" else "completed")
+    expected = [] if mode == "no-op" else ["alpha-tool"] if mode == "selected" else ["alpha-tool", "beta-tool"]
+    assert receipt["deployed"] == expected and receipt["removed"] == []
+    assert receipt["cleanup_debt"] == [] and receipt["promotion"] is None
+    for skill in expected:
+        assert (destination / skill / "SKILL.md").is_file()

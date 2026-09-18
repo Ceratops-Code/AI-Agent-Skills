@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
-"""Prepare, verify, and finalize one declared skill update workflow.
+"""Prepare, amend, verify, and finalize one declared skill update workflow.
 
 The helper records the caller's pre-existing Git baseline before source edits,
 then verifies that only declared paths changed and that undeclared dirty state
-was preserved. One changed in-scope snapshot may start a correction generation
-after success; it invalidates the earlier success before checks and cannot be
-reopened after passing. Prepare collects declared pytest nodes without running
-tests. Git whitespace preflight includes tracked and new files before declared
+was preserved. Selected skills may own shared sources through the repository's
+section assignments and runtime payload mappings. A failed preparation may
+accept monotonic request expansions without replacing that baseline or cleanup
+ownership. Deterministic search evidence is reused only while its declared
+inputs still match; other checks rerun. One changed in-scope snapshot may start
+a correction generation after success; it invalidates the earlier success
+before checks and cannot be reopened after passing. Prepare and amend collect
+declared pytest nodes without running tests. Git whitespace preflight includes
+tracked and new files before declared
 checks, which use closed structured forms and run without a shell.
+Collection and verification own temporary check folders and remove them on exit.
 Source files are never patched, staged, committed, installed, promoted, or
 rolled back. Prepare records exact cleanup ownership and an active-update
 retention marker beneath the verified task temp root, verify retains detailed
@@ -15,6 +21,8 @@ evidence, and finalize is the caller's explicit signal that successful
 verification and requested deployment/use are complete. Finalize removes only
 recorded workflow-owned request, state, evidence, and retention-marker files,
 then removes the verified task-temp root only when empty.
+Supersede validates a revised request after failure, preserves the original
+source baseline, and transfers cleanup ownership without deleting failed records.
 Stdout is only ``OK`` and failures are one compact stderr line.
 """
 
@@ -26,444 +34,114 @@ import json
 import os
 import pathlib
 import re
-import subprocess
 import sys
-import tempfile
 from collections.abc import Mapping, Sequence
 
-REQUEST_SCHEMA = "ceratops-skill-update-request.v2"
-STATE_SCHEMA = "ceratops-skill-update-state.v2"
-EVIDENCE_SCHEMA = "ceratops-skill-update-evidence.v2"
-CLEANUP_SCHEMA = "ceratops-skill-update-cleanup.v1"
-RETENTION_SCHEMA = "ceratops-skill-update-retention.v1"
-RETENTION_MARKER = ".ceratops-skill-update-active.json"
-REQUEST_FIELDS = {
-    "schema",
-    "repo_root",
-    "task_temp_root",
-    "evidence_output",
-    "disposable_artifacts",
-    "selected_skills",
-    "allowed_paths",
-    "change_groups",
-    "checks",
-}
-GROUP_FIELDS = {"name", "paths"}
-CHECK_FIELDS = {
-    "pytest": {"kind", "nodes"},
-    "command": {"kind", "argv"},
-    "search": {"kind", "pattern", "paths", "expected_matches"},
-}
-STATE_FIELDS = {
-    "schema",
-    "repo_root",
-    "branch",
-    "head",
-    "selected_skills",
-    "allowed_paths",
-    "change_groups",
-    "checks",
-    "baseline_dirty",
-    "baseline_targets",
-    "cleanup",
-    "verification",
-}
-CLEANUP_FIELDS = {
-    "schema",
-    "task_temp_root",
-    "owned_artifacts",
-    "protected_artifacts",
-}
-OWNED_ARTIFACT_FIELDS = {"role", "path", "sha256"}
-VERIFICATION_FIELDS = {"status", "evidence_sha256", "input_sha256", "generation"}
-DISPOSABLE_ROLES = {"request", "state", "evidence"}
-OWNED_ROLES = DISPOSABLE_ROLES | {"retention"}
-SKILL_NAME_RE = re.compile(
-    r"^(?![a-z0-9-]*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
+from runtime.managed_runtime_builder import IGNORE_NAMES, payload_parts
+from skill_update_checks import (
+    MAX_COMPACT_DETAIL,
+    CheckFailure,
+    UpdateExecutionError,
+    _run,
+    _run_check,
 )
-PYTEST_NODE_RE = re.compile(r"^tests/[A-Za-z0-9_./-]+\.py::\S+$")
-MAX_CAPTURE = 32_000
-MAX_COMPACT_DETAIL = 1_000
+from skill_update_scratch import check_environment
+from skill_update_state import (
+    CHECK_FIELDS,
+    CLEANUP_SCHEMA,
+    DISPOSABLE_ROLES,
+    EVIDENCE_SCHEMA,
+    GROUP_FIELDS,
+    PYTEST_NODE_RE,
+    REQUEST_FIELDS,
+    REQUEST_SCHEMA,
+    RETENTION_MARKER,
+    RETENTION_SCHEMA,
+    SKILL_NAME_RE,
+    STATE_SCHEMA,
+    _absolute,
+    _cleanup_payload,
+    _closed_fields,
+    _dirty_paths,
+    _file_sha256,
+    _finalize_primary_root,
+    _git,
+    _inherited_artifacts,
+    _is_link,
+    _is_tracked,
+    _prepared_request_path,
+    _read_json,
+    _reject_link_chain,
+    _run_bytes,
+    _safe_relative,
+    _snapshot,
+    _string_list,
+    _target,
+    _task_artifact,
+    _valid_sha256,
+    _validate_state_fields,
+    _validated_cleanup,
+    _validated_evidence,
+    _validated_verification,
+    _verified_task_temp_root,
+    _verify_task_worktree,
+    _write_json_atomic,
+)
 
 
-class UpdateExecutionError(RuntimeError):
-    """One compact request, baseline, check, or evidence failure."""
-
-
-def _run(
-    arguments: Sequence[str],
-    *,
-    cwd: pathlib.Path,
-) -> subprocess.CompletedProcess[str]:
-    """Run one declared process without shell interpretation."""
-
-    try:
-        return subprocess.run(
-            list(arguments),
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
-    except OSError as exc:
-        raise UpdateExecutionError(
-            f"could not start {arguments[0]}: {exc}"
-        ) from exc
-
-
-def _git(repo_root: pathlib.Path, *arguments: str) -> str:
-    result = _run(["git", "-C", str(repo_root), *arguments], cwd=repo_root)
-    if result.returncode:
-        detail = (result.stderr or result.stdout).strip()
-        message = f"git {' '.join(arguments)} failed"
-        raise UpdateExecutionError(f"{message}: {detail}" if detail else message)
-    return result.stdout
-
-
-def _read_json(path: pathlib.Path, label: str) -> Mapping[str, object]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise UpdateExecutionError(f"{label} is unreadable: {exc}") from exc
-    if not isinstance(value, Mapping):
-        raise UpdateExecutionError(f"{label} must be a JSON object")
-    return value
-
-
-def _closed_fields(
-    value: Mapping[str, object],
-    fields: set[str],
-    label: str,
-) -> None:
-    actual = set(value)
-    if actual == fields:
-        return
-    missing = sorted(fields - actual)
-    extra = sorted(actual - fields)
-    details: list[str] = []
-    if missing:
-        details.append("missing " + ", ".join(missing))
-    if extra:
-        details.append("unknown " + ", ".join(extra))
-    raise UpdateExecutionError(f"{label} fields are invalid: {'; '.join(details)}")
-
-
-def _string_list(value: object, label: str) -> list[str]:
-    if (
-        not isinstance(value, Sequence)
-        or isinstance(value, (str, bytes))
-        or not value
-        or not all(isinstance(item, str) and item for item in value)
-    ):
-        raise UpdateExecutionError(f"{label} must be a nonempty string list")
-    result = list(value)
-    if len(result) != len(set(result)):
-        raise UpdateExecutionError(f"{label} values must be unique")
-    return result
-
-
-def _safe_relative(value: str, label: str) -> pathlib.PurePosixPath:
-    pure = pathlib.PurePosixPath(value)
-    windows = pathlib.PureWindowsPath(value)
-    if (
-        not value
-        or "\\" in value
-        or pure.is_absolute()
-        or windows.is_absolute()
-        or windows.drive
-        or ".." in pure.parts
-        or str(pure) != value
-    ):
-        raise UpdateExecutionError(f"{label} is not a safe repo-relative path: {value}")
-    return pure
-
-
-def _target(repo_root: pathlib.Path, value: str) -> pathlib.Path:
-    pure = _safe_relative(value, "path")
-    target = repo_root.joinpath(*pure.parts)
-    try:
-        target.resolve(strict=False).relative_to(repo_root)
-    except ValueError as exc:
-        raise UpdateExecutionError(f"path escapes the repository: {value}") from exc
-    return target
-
-
-def _outside_repo(path: pathlib.Path, repo_root: pathlib.Path, label: str) -> None:
-    try:
-        path.relative_to(repo_root)
-    except ValueError:
-        return
-    raise UpdateExecutionError(f"{label} must be outside the repository")
-
-
-def _absolute(path: pathlib.Path) -> pathlib.Path:
-    """Return a lexical absolute path without resolving links."""
-
-    return pathlib.Path(os.path.abspath(path.expanduser()))
-
-
-def _is_link(path: pathlib.Path) -> bool:
-    """Treat symbolic links and Windows junctions as cleanup escapes."""
-
-    junction = getattr(path, "is_junction", None)
-    return path.is_symlink() or bool(junction and junction())
-
-
-def _reject_link_chain(path: pathlib.Path, label: str) -> None:
-    """Reject any existing link component from a path through its anchor."""
-
-    for candidate in (path, *path.parents):
-        if _is_link(candidate):
-            raise UpdateExecutionError(f"{label} uses a symlink or junction: {candidate}")
-
-
-def _task_artifact(
-    path: pathlib.Path,
-    task_temp_root: pathlib.Path,
-    label: str,
-    *,
-    must_exist: bool,
-) -> pathlib.Path:
-    """Validate one exact file path inside the declared task temp root."""
-
-    lexical = _absolute(path)
-    try:
-        relative = lexical.relative_to(task_temp_root)
-    except ValueError as exc:
-        raise UpdateExecutionError(f"{label} escapes task_temp_root") from exc
-    if not relative.parts:
-        raise UpdateExecutionError(f"{label} must be a file beneath task_temp_root")
-    current = task_temp_root
-    for part in relative.parts:
-        current = current / part
-        if _is_link(current):
-            raise UpdateExecutionError(f"{label} uses a symlink or junction: {current}")
-    if not lexical.parent.is_dir():
-        raise UpdateExecutionError(f"{label} directory does not exist: {lexical.parent}")
-    repository_probe = _run(
-        ["git", "-C", str(lexical.parent), "rev-parse", "--show-toplevel"],
-        cwd=lexical.parent,
-    )
-    if repository_probe.returncode == 0:
-        raise UpdateExecutionError(f"{label} must not be a repository file")
-    if must_exist:
-        if not lexical.is_file():
-            raise UpdateExecutionError(f"{label} must be a regular file: {lexical}")
-    elif lexical.exists() and not lexical.is_file():
-        raise UpdateExecutionError(f"{label} must be a regular file target: {lexical}")
-    resolved = lexical.resolve(strict=must_exist)
-    try:
-        resolved.relative_to(task_temp_root)
-    except ValueError as exc:
-        raise UpdateExecutionError(f"{label} resolves outside task_temp_root") from exc
-    return lexical
-
-
-def _file_sha256(path: pathlib.Path) -> str:
-    """Hash one recorded cleanup artifact without loading it all at once."""
-
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(65536), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _write_json_atomic(
-    path: pathlib.Path,
-    value: Mapping[str, object],
-    label: str,
-) -> None:
-    """Atomically write workflow state or evidence and clean its staging file."""
-
-    if not path.parent.is_dir():
-        raise UpdateExecutionError(f"{label} directory does not exist: {path.parent}")
-    if _is_link(path) or (path.exists() and not path.is_file()):
-        raise UpdateExecutionError(f"{label} must be a regular file target: {path}")
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.skill-update.",
-        dir=path.parent,
-    )
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-            json.dump(value, handle, separators=(",", ":"))
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary_name, path)
-    except OSError as exc:
-        raise UpdateExecutionError(f"could not write {label}: {exc}") from exc
-    finally:
-        if os.path.exists(temporary_name):
-            os.unlink(temporary_name)
-
-
-def _git_path(repo_root: pathlib.Path, value: str) -> pathlib.Path:
-    path = pathlib.Path(value.strip())
-    if not path.is_absolute():
-        path = repo_root / path
-    return path.resolve()
-
-
-def _verified_task_temp_root(
-    value: object,
+def _snapshot_at_head(
     repo_root: pathlib.Path,
-) -> pathlib.Path:
-    """Verify the repository-declared task-temp location and its boundaries."""
+    head: str,
+    path: str,
+) -> dict[str, object]:
+    """Reconstruct a clean path snapshot from the original prepared HEAD."""
 
-    if not isinstance(value, str) or not value:
-        raise UpdateExecutionError("task_temp_root must be nonempty text")
-    raw = pathlib.Path(value).expanduser()
-    if not raw.is_absolute():
-        raise UpdateExecutionError("task_temp_root must be absolute")
-    lexical = _absolute(raw)
-    _reject_link_chain(lexical, "task_temp_root")
-    if not lexical.is_dir():
-        raise UpdateExecutionError("task_temp_root must be an existing directory")
-    resolved = lexical.resolve(strict=True)
-    _outside_repo(resolved, repo_root, "task_temp_root")
-    inside_git = _run(
-        ["git", "-C", str(resolved), "rev-parse", "--show-toplevel"],
-        cwd=resolved,
-    )
-    if inside_git.returncode == 0:
-        raise UpdateExecutionError("task_temp_root must not be inside a Git worktree")
-    common_dir = _git_path(
-        repo_root,
-        _git(repo_root, "rev-parse", "--git-common-dir"),
-    )
-    primary_root = common_dir.parent
-    expected_parent = primary_root.parent / "tmp" / primary_root.name
-    if resolved.parent != expected_parent.resolve(strict=True):
-        raise UpdateExecutionError(
-            f"task_temp_root must be one task directory under {expected_parent}"
-        )
-    return resolved
-
-
-def _finalize_primary_root(cleanup: object) -> pathlib.Path:
-    """Recover the live primary checkout after a task worktree was removed.
-
-    Finalization uses this checkout only to revalidate the recorded task-temp
-    boundary. The path is derived from the required sibling ``tmp/<repo>``
-    layout and must resolve to the primary checkout of that Git repository.
-    """
-
-    if not isinstance(cleanup, Mapping):
-        raise UpdateExecutionError("state cleanup must be an object")
-    value = cleanup.get("task_temp_root")
-    if not isinstance(value, str) or not value:
-        raise UpdateExecutionError("state task_temp_root is invalid")
-    raw = pathlib.Path(value).expanduser()
-    if not raw.is_absolute():
-        raise UpdateExecutionError("state task_temp_root must be absolute")
-    task_temp_root = _absolute(raw)
-    _reject_link_chain(task_temp_root, "task_temp_root")
-    repository_temp_root = task_temp_root.parent
-    temp_root = repository_temp_root.parent
-    if temp_root.name != "tmp":
-        raise UpdateExecutionError("state task_temp_root lacks the required tmp layout")
-    primary_candidate = temp_root.parent / repository_temp_root.name
-    _reject_link_chain(primary_candidate, "derived primary checkout")
-    if not primary_candidate.is_dir():
-        raise UpdateExecutionError("derived primary checkout is unavailable")
-    primary_root = primary_candidate.resolve(strict=True)
-    if _git(primary_root, "rev-parse", "--is-inside-work-tree").strip() != "true":
-        raise UpdateExecutionError("derived primary checkout is not a Git worktree")
-    top = pathlib.Path(
-        _git(primary_root, "rev-parse", "--show-toplevel").strip()
-    ).resolve(strict=True)
-    git_dir = _git_path(primary_root, _git(primary_root, "rev-parse", "--git-dir"))
-    common_dir = _git_path(
-        primary_root,
-        _git(primary_root, "rev-parse", "--git-common-dir"),
-    )
-    if top != primary_root or git_dir != common_dir or common_dir.parent != primary_root:
-        raise UpdateExecutionError("derived checkout is not the repository primary")
-    return primary_root
-
-
-def _verify_task_worktree(repo_root: pathlib.Path) -> tuple[str, str]:
-    if _git(repo_root, "rev-parse", "--is-inside-work-tree").strip() != "true":
-        raise UpdateExecutionError("repo_root is not a Git worktree")
-    top = pathlib.Path(_git(repo_root, "rev-parse", "--show-toplevel").strip()).resolve()
-    if top != repo_root:
-        raise UpdateExecutionError("repo_root must be the Git worktree root")
-    git_dir = _git_path(repo_root, _git(repo_root, "rev-parse", "--git-dir"))
-    common_dir = _git_path(
-        repo_root,
-        _git(repo_root, "rev-parse", "--git-common-dir"),
-    )
-    if git_dir == common_dir:
-        raise UpdateExecutionError("repo_root must be a linked task worktree")
-    branch = _git(repo_root, "branch", "--show-current").strip()
-    if not branch:
-        raise UpdateExecutionError("task worktree must not use detached HEAD")
-    if branch in {"main", "release/local"}:
-        raise UpdateExecutionError(f"protected branch is not a task branch: {branch}")
-    return branch, _git(repo_root, "rev-parse", "HEAD").strip()
-
-
-def _dirty_paths(repo_root: pathlib.Path) -> set[str]:
-    commands = (
-        ("diff", "--name-only", "--no-renames", "-z"),
-        ("diff", "--cached", "--name-only", "--no-renames", "-z"),
-        ("ls-files", "--others", "--exclude-standard", "-z"),
-    )
-    paths: set[str] = set()
-    for command in commands:
-        output = _git(repo_root, *command)
-        paths.update(path.replace("\\", "/") for path in output.split("\0") if path)
-    return paths
-
-
-def _is_tracked(repo_root: pathlib.Path, path: str) -> bool:
-    """Allow existing ancillary files without permitting undeclared new surfaces."""
-
-    result = _run(
-        ["git", "-C", str(repo_root), "ls-files", "--error-unmatch", "--", path],
+    tree = _run_bytes(
+        ["git", "-C", str(repo_root), "ls-tree", "-z", head, "--", path],
         cwd=repo_root,
     )
-    return result.returncode == 0
-
-
-def _content_snapshot(target: pathlib.Path) -> dict[str, object]:
-    if target.is_symlink():
+    if tree.returncode:
+        detail = (tree.stderr or tree.stdout).decode("utf-8", errors="replace").strip()
+        raise UpdateExecutionError(
+            f"could not reconstruct original baseline for {path}: {detail}"
+        )
+    if not tree.stdout:
         return {
-            "kind": "symlink",
-            "sha256": hashlib.sha256(os.readlink(target).encode()).hexdigest(),
+            "content": {"kind": "missing"},
+            "index": "",
+            "status": "",
         }
-    if not target.exists():
-        return {"kind": "missing"}
-    if not target.is_file():
-        return {"kind": "other"}
+    entries = [entry for entry in tree.stdout.split(b"\0") if entry]
+    if len(entries) != 1 or b"\t" not in entries[0]:
+        raise UpdateExecutionError(f"original baseline is ambiguous: {path}")
+    metadata, recorded_path = entries[0].split(b"\t", 1)
     try:
-        content = target.read_bytes()
-    except OSError as exc:
-        raise UpdateExecutionError(f"could not read baseline path {target.name}: {exc}") from exc
+        mode, kind, object_id = metadata.decode("ascii").split()
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise UpdateExecutionError(
+            f"original baseline metadata is invalid: {path}"
+        ) from exc
+    if recorded_path != os.fsencode(path) or kind != "blob" or mode == "120000":
+        raise UpdateExecutionError(
+            f"added allowed path was not a regular file at prepared HEAD: {path}"
+        )
+    blob = _run_bytes(
+        ["git", "-C", str(repo_root), "cat-file", "blob", object_id],
+        cwd=repo_root,
+    )
+    if blob.returncode:
+        detail = (blob.stderr or blob.stdout).decode("utf-8", errors="replace").strip()
+        raise UpdateExecutionError(
+            f"could not read original baseline for {path}: {detail}"
+        )
     return {
-        "kind": "file",
-        "size": len(content),
-        "sha256": hashlib.sha256(content).hexdigest(),
-    }
-
-
-def _snapshot(repo_root: pathlib.Path, path: str) -> dict[str, object]:
-    target = repo_root.joinpath(*pathlib.PurePosixPath(path).parts)
-    return {
-        "content": _content_snapshot(target),
-        "index": _git(repo_root, "ls-files", "--stage", "-z", "--", path),
-        "status": _git(
-            repo_root,
-            "status",
-            "--porcelain=v1",
-            "-z",
-            "--untracked-files=all",
-            "--",
-            path,
-        ),
+        "content": {
+            "kind": "file",
+            "size": len(blob.stdout),
+            "sha256": hashlib.sha256(blob.stdout).hexdigest(),
+        },
+        "index": f"{mode} {object_id} 0\t{path}\0",
+        "status": "",
     }
 
 
@@ -528,6 +206,7 @@ def _validate_checks(
 def _collect_declared_pytest_nodes(
     repo_root: pathlib.Path,
     checks: Sequence[Mapping[str, object]],
+    task_temp_root: pathlib.Path,
 ) -> None:
     """Reject uncollectable declared pytest nodes before source edits begin."""
 
@@ -544,10 +223,11 @@ def _collect_declared_pytest_nodes(
     unique_nodes = list(dict.fromkeys(nodes))
     if not unique_nodes:
         return
-    result = _run(
-        [sys.executable, "-m", "pytest", "--collect-only", "-q", *unique_nodes],
-        cwd=repo_root,
-    )
+    with check_environment(task_temp_root) as environment:
+        result = _run(
+            [sys.executable, "-m", "pytest", "--collect-only", "-q", *unique_nodes],
+            cwd=repo_root, environment=environment,
+        )
     if result.returncode:
         detail = " ".join((result.stderr or result.stdout).split())
         if len(detail) > MAX_COMPACT_DETAIL:
@@ -556,8 +236,77 @@ def _collect_declared_pytest_nodes(
         raise UpdateExecutionError(f"{message}: {detail}" if detail else message)
 
 
+def _shared_source_owners(
+    repo_root: pathlib.Path, allowed: list[str], selected: set[str],
+) -> set[str]:
+    """Resolve selected consumers without expanding the caller's allowed paths.
+
+    Match declarations, not existing files, so a declared new file or a staged
+    deletion retains its ownership. Payload parents model recursive directory
+    copies; exact source-target mappings only own their source file. The normal
+    baseline checks still reject undeclared manifest or source changes.
+    """
+
+    if not selected:
+        return set()
+    manifest_path = _target(repo_root, "skills/skill-sections.json")
+    if not manifest_path.exists():
+        return set()
+    manifest = _read_json(manifest_path, "section manifest")
+
+    def mapping(name: str) -> Mapping[str, object]:
+        value = manifest.get(name, {})
+        if not isinstance(value, Mapping):
+            raise UpdateExecutionError(f"section manifest {name} must be an object")
+        return value
+
+    sections, assignments = mapping("sections"), mapping("skills")
+    actions, payloads = mapping("actions"), mapping("runtime_payloads")
+    paths = {pathlib.PurePosixPath(value) for value in allowed}
+    owners: set[str] = set()
+    for skill in sorted(selected.intersection(assignments)):
+        if "skills/skill-sections.json" in allowed:
+            owners.add(skill)
+        skill_actions = actions.get(skill, {})
+        if not isinstance(skill_actions, Mapping):
+            raise UpdateExecutionError(f"section manifest actions.{skill} must be an object")
+        for names in (assignments[skill], *skill_actions.values()):
+            if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+                raise UpdateExecutionError(f"section assignments for {skill} must be string lists")
+            for name in names:
+                source = sections.get(name)
+                if not isinstance(source, str):
+                    raise UpdateExecutionError(f"unknown section assignment for {skill}: {name}")
+                if _safe_relative(source, "section source") in paths:
+                    owners.add(skill)
+        for key in ("*", skill):
+            declarations = payloads.get(key, [])
+            if not isinstance(declarations, list):
+                raise UpdateExecutionError(f"runtime_payloads.{key} must be a list")
+            for index, declaration in enumerate(declarations):
+                try:
+                    pattern, mapped_target = payload_parts(declaration, f"runtime_payloads.{key}[{index}]")
+                except ValueError as exc:
+                    raise UpdateExecutionError(str(exc)) from exc
+                pattern = pattern.replace("\\", "/")
+                for path in paths:
+                    candidates = (path,) if mapped_target is not None else (path, *path.parents)
+                    if any(
+                        source != pathlib.PurePosixPath(".")
+                        and ".git" not in source.parts
+                        and source.full_match(pattern, case_sensitive=os.name != "nt")
+                        and not any(part in IGNORE_NAMES for part in path.relative_to(source).parts)
+                        for source in candidates
+                    ):
+                        owners.add(skill)
+    return owners
+
+
 def _validated_request(
     path: pathlib.Path,
+    *,
+    carried_paths: Sequence[str] = (),
+    collect_nodes: bool = True,
 ) -> tuple[
     dict[str, object],
     pathlib.Path,
@@ -639,16 +388,24 @@ def _validated_request(
         new_shared_source = (
             shared_source and not target.exists() and target.parent.is_dir()
         )
-        if not matches and not existing_ancillary and not new_shared_source:
+        # Explicitly declared repository tooling belongs to the same update as
+        # its skill-owned templates. Missing files still get a baseline snapshot.
+        new_maintenance = (
+            pure.is_relative_to(pathlib.PurePosixPath("scripts"))
+            and not target.exists() and target.parent.is_dir()
+        )
+        if (not matches and not existing_ancillary and not new_shared_source
+                and not new_maintenance and value not in carried_paths):
             raise UpdateExecutionError(
                 "allowed path must be selected-skill source, an existing "
-                "tracked ancillary file, or a new shared-section source: "
+                "tracked ancillary file, or declared new shared/maintenance source: "
                 + value
             )
         if target.is_symlink() or (target.exists() and not target.is_file()):
             raise UpdateExecutionError(f"allowed path must be a regular file target: {value}")
         if not target.exists() and not target.parent.is_dir():
             raise UpdateExecutionError(f"allowed path parent does not exist: {value}")
+    owners.update(_shared_source_owners(repo_root, allowed, set(selected) - owners))
     missing_owners = sorted(set(selected) - owners)
     if missing_owners:
         raise UpdateExecutionError(
@@ -685,7 +442,8 @@ def _validated_request(
         )
 
     checks = _validate_checks(request["checks"], repo_root, allowed_set)
-    _collect_declared_pytest_nodes(repo_root, checks)
+    if collect_nodes:
+        _collect_declared_pytest_nodes(repo_root, checks, task_temp_root)
     dirty = sorted(_dirty_paths(repo_root))
     baseline_dirty = {path: _snapshot(repo_root, path) for path in dirty}
     baseline_targets = {path: _snapshot(repo_root, path) for path in allowed}
@@ -705,7 +463,7 @@ def _validated_request(
 
 
 def command_prepare(request_path: pathlib.Path, state_path: pathlib.Path) -> None:
-    state, repo_root, task_temp_root, evidence_path, disposable = _validated_request(
+    state, _repo_root, task_temp_root, evidence_path, disposable = _validated_request(
         request_path
     )
     resolved_request = _absolute(request_path)
@@ -775,150 +533,17 @@ def command_prepare(request_path: pathlib.Path, state_path: pathlib.Path) -> Non
         raise
 
 
-def _valid_sha256(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )
-
-
-def _validated_cleanup(
-    raw: object,
+def _validated_state(
+    path: pathlib.Path,
     *,
-    state_path: pathlib.Path,
-    repo_root: pathlib.Path,
+    mutable_request_path: pathlib.Path | None = None,
 ) -> dict[str, object]:
-    """Validate the exact cleanup ownership recorded during prepare."""
-
-    if not isinstance(raw, Mapping):
-        raise UpdateExecutionError("state cleanup must be an object")
-    _closed_fields(raw, CLEANUP_FIELDS, "state cleanup")
-    if raw.get("schema") != CLEANUP_SCHEMA:
-        raise UpdateExecutionError(f"state cleanup schema must be {CLEANUP_SCHEMA}")
-    task_temp_root = _verified_task_temp_root(raw["task_temp_root"], repo_root)
-    artifacts = raw["owned_artifacts"]
-    if (
-        not isinstance(artifacts, Sequence)
-        or isinstance(artifacts, (str, bytes))
-        or not artifacts
-    ):
-        raise UpdateExecutionError("state owned_artifacts must be a nonempty list")
-    owned: list[dict[str, object]] = []
-    roles: set[str] = set()
-    paths: set[pathlib.Path] = set()
-    for index, artifact in enumerate(artifacts, start=1):
-        if not isinstance(artifact, Mapping):
-            raise UpdateExecutionError(f"owned artifact {index} must be an object")
-        _closed_fields(artifact, OWNED_ARTIFACT_FIELDS, f"owned artifact {index}")
-        role = artifact["role"]
-        if not isinstance(role, str) or role not in OWNED_ROLES:
-            raise UpdateExecutionError(f"owned artifact {index} role is invalid")
-        if role in roles:
-            raise UpdateExecutionError(f"duplicate owned artifact role: {role}")
-        raw_path = artifact["path"]
-        if not isinstance(raw_path, str) or not raw_path:
-            raise UpdateExecutionError(f"owned artifact {index} path is invalid")
-        path = _task_artifact(
-            pathlib.Path(raw_path),
-            task_temp_root,
-            f"owned {role}",
-            must_exist=role == "state",
-        )
-        if path in paths:
-            raise UpdateExecutionError("owned artifact paths must be unique")
-        expected_hash = artifact["sha256"]
-        if role in {"request", "retention"}:
-            if not _valid_sha256(expected_hash):
-                raise UpdateExecutionError(f"owned {role} hash is invalid")
-        elif expected_hash is not None:
-            raise UpdateExecutionError(f"owned {role} hash must be null")
-        roles.add(role)
-        paths.add(path)
-        owned.append({"role": role, "path": path, "sha256": expected_hash})
-    if not {"state", "evidence"}.issubset(roles):
-        raise UpdateExecutionError("state cleanup lacks owned workflow outputs")
-    state_record = next(item for item in owned if item["role"] == "state")
-    if state_record["path"] != state_path:
-        raise UpdateExecutionError("state cleanup path does not match loaded state")
-    protected = raw["protected_artifacts"]
-    if (
-        not isinstance(protected, Sequence)
-        or isinstance(protected, (str, bytes))
-        or not all(isinstance(item, str) and item for item in protected)
-    ):
-        raise UpdateExecutionError("state protected_artifacts must be a string list")
-    protected_paths = [_absolute(pathlib.Path(item)) for item in protected]
-    if len(protected_paths) != len(set(protected_paths)):
-        raise UpdateExecutionError("state protected_artifacts must be unique")
-    overlap = paths.intersection(protected_paths)
-    if overlap:
-        raise UpdateExecutionError("owned and protected artifact paths overlap")
-    return {
-        "schema": CLEANUP_SCHEMA,
-        "task_temp_root": task_temp_root,
-        "owned_artifacts": owned,
-        "protected_artifacts": protected_paths,
-    }
-
-
-def _validated_verification(value: object) -> dict[str, object] | None:
-    if value is None:
-        return None
-    if not isinstance(value, Mapping):
-        raise UpdateExecutionError("state verification must be null or an object")
-    _closed_fields(value, VERIFICATION_FIELDS, "state verification")
-    status = value.get("status")
-    if status not in {"passed", "pending", "invalidated"}:
-        raise UpdateExecutionError("state verification status is invalid")
-    evidence_sha256 = value.get("evidence_sha256")
-    if status == "passed":
-        if not _valid_sha256(evidence_sha256):
-            raise UpdateExecutionError("state verification evidence hash is invalid")
-    elif evidence_sha256 is not None:
-        raise UpdateExecutionError("non-passed verification has an evidence hash")
-    if not _valid_sha256(value.get("input_sha256")):
-        raise UpdateExecutionError("state verification input hash is invalid")
-    generation = value.get("generation")
-    if (
-        not isinstance(generation, int)
-        or isinstance(generation, bool)
-        or generation not in {0, 1}
-        or (status != "passed" and generation != 1)
-    ):
-        raise UpdateExecutionError("state verification generation is invalid")
-    return dict(value)
-
-
-def _cleanup_payload(cleanup: Mapping[str, object]) -> dict[str, object]:
-    """Convert validated cleanup paths back to the closed JSON contract."""
-
-    owned = cleanup["owned_artifacts"]
-    protected = cleanup["protected_artifacts"]
-    assert isinstance(owned, list)
-    assert isinstance(protected, list)
-    return {
-        "schema": CLEANUP_SCHEMA,
-        "task_temp_root": str(cleanup["task_temp_root"]),
-        "owned_artifacts": [
-            {
-                "role": artifact["role"],
-                "path": str(artifact["path"]),
-                "sha256": artifact["sha256"],
-            }
-            for artifact in owned
-        ],
-        "protected_artifacts": [str(path) for path in protected],
-    }
-
-
-def _validated_state(path: pathlib.Path) -> dict[str, object]:
     state_path = _absolute(path)
     _reject_link_chain(state_path, "state")
     if not state_path.is_file():
         raise UpdateExecutionError(f"state must be a regular file: {state_path}")
     raw = _read_json(state_path, "state")
-    _closed_fields(raw, STATE_FIELDS, "state")
+    _validate_state_fields(raw)
     if raw.get("schema") != STATE_SCHEMA:
         raise UpdateExecutionError(f"state schema must be {STATE_SCHEMA}")
     repo_value = raw["repo_root"]
@@ -954,14 +579,21 @@ def _validated_state(path: pathlib.Path) -> dict[str, object]:
         snapshot = baseline_targets_value.get(value)
         content = snapshot.get("content") if isinstance(snapshot, Mapping) else None
         new_shared_source = (
-            pure.is_relative_to(pathlib.PurePosixPath("skills/sections"))
+            (pure.is_relative_to(pathlib.PurePosixPath("skills/sections"))
+             or pure.is_relative_to(pathlib.PurePosixPath("scripts")))
             and isinstance(content, Mapping)
             and content.get("kind") == "missing"
         )
-        if not matches and not _is_tracked(repo_root, value) and not new_shared_source:
-            raise UpdateExecutionError(
-                f"state ancillary path is not tracked: {value}"
-            )
+        # The index loses a staged deletion; its prepared commit retains ownership.
+        if not matches and not new_shared_source and not _is_tracked(repo_root, value):
+            prepared_paths = _git(
+                repo_root, "ls-tree", "--name-only", "-z", str(raw["head"]), "--", value,
+            ).split("\0")
+            if value not in prepared_paths:
+                raise UpdateExecutionError(
+                    f"state ancillary path is not tracked at the prepared commit: {value}"
+                )
+    owners.update(_shared_source_owners(repo_root, allowed, set(selected) - owners))
     if owners != set(selected):
         raise UpdateExecutionError("state selected skills lack allowed source paths")
     cleanup = _validated_cleanup(
@@ -969,7 +601,12 @@ def _validated_state(path: pathlib.Path) -> dict[str, object]:
         state_path=state_path,
         repo_root=repo_root,
     )
+    if mutable_request_path is not None:
+        expected_request = _prepared_request_path(cleanup)
+        if _absolute(mutable_request_path) != expected_request:
+            raise UpdateExecutionError("amend request differs from prepared ownership")
     verification = _validated_verification(raw["verification"])
+    _inherited_artifacts(raw, cleanup, required=True)
     owned_cleanup = cleanup["owned_artifacts"]
     assert isinstance(owned_cleanup, list)
     for artifact in owned_cleanup:
@@ -980,8 +617,20 @@ def _validated_state(path: pathlib.Path) -> dict[str, object]:
         expected_hash = artifact["sha256"]
         assert isinstance(role, str)
         assert isinstance(owned_path, pathlib.Path)
+        if role == "request" and mutable_request_path is not None:
+            continue
         if not owned_path.is_file() or _file_sha256(owned_path) != expected_hash:
             raise UpdateExecutionError(f"owned {role} changed after prepare")
+    if verification is not None and verification["evidence_sha256"] is not None:
+        evidence_record = next(
+            artifact for artifact in owned_cleanup if artifact["role"] == "evidence"
+        )
+        evidence_path = evidence_record["path"]
+        assert isinstance(evidence_path, pathlib.Path)
+        _validated_evidence(
+            evidence_path,
+            str(verification["evidence_sha256"]),
+        )
     baseline_dirty = raw["baseline_dirty"]
     baseline_targets = raw["baseline_targets"]
     if not isinstance(baseline_dirty, Mapping) or not isinstance(baseline_targets, Mapping):
@@ -1101,6 +750,48 @@ def _verification_surface_sha256(state: Mapping[str, object]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _validate_descendant_scope(
+    repo_root: pathlib.Path,
+    prepared_head: str,
+    allowed_paths: Sequence[str],
+) -> None:
+    """Accept only descendants whose committed paths stay in declared scope."""
+
+    head = _git(repo_root, "rev-parse", "HEAD").strip()
+    if head == prepared_head:
+        return
+    ancestor = _run(
+        [
+            "git",
+            "-C",
+            str(repo_root),
+            "merge-base",
+            "--is-ancestor",
+            prepared_head,
+            head,
+        ],
+        cwd=repo_root,
+    )
+    if ancestor.returncode:
+        raise UpdateExecutionError("task HEAD is not a descendant of prepared HEAD")
+    committed = {
+        path
+        for path in _git(
+            repo_root,
+            "diff",
+            "--name-only",
+            "--no-renames",
+            f"{prepared_head}..{head}",
+        ).splitlines()
+        if path
+    }
+    broadened = sorted(committed - set(allowed_paths))
+    if broadened:
+        raise UpdateExecutionError(
+            f"committed path is outside prepared scope: {broadened[0]}"
+        )
+
+
 def _verification_input(
     state: Mapping[str, object],
 ) -> tuple[str, list[str], list[dict[str, object]]]:
@@ -1108,42 +799,170 @@ def _verification_input(
 
     changed, groups = _baseline_changes(state)
     repo_root = pathlib.Path(str(state["repo_root"]))
-    head = _git(repo_root, "rev-parse", "HEAD").strip()
-    if head != state["head"]:
-        ancestor = _run(
-            [
-                "git",
-                "-C",
-                str(repo_root),
-                "merge-base",
-                "--is-ancestor",
-                str(state["head"]),
-                head,
-            ],
-            cwd=repo_root,
-        )
-        if ancestor.returncode:
-            raise UpdateExecutionError("task HEAD is not a descendant of prepared HEAD")
-        committed = {
-            path
-            for path in _git(
-                repo_root,
-                "diff",
-                "--name-only",
-                "--no-renames",
-                f"{state['head']}..{head}",
-            ).splitlines()
-            if path
-        }
-        allowed_paths = state["allowed_paths"]
-        assert isinstance(allowed_paths, list)
-        allowed = set(allowed_paths)
-        broadened = sorted(committed - allowed)
-        if broadened:
-            raise UpdateExecutionError(
-                f"committed path is outside prepared scope: {broadened[0]}"
-            )
+    allowed_paths = state["allowed_paths"]
+    assert isinstance(allowed_paths, list)
+    _validate_descendant_scope(
+        repo_root,
+        str(state["head"]),
+        [str(path) for path in allowed_paths],
+    )
     return _verification_surface_sha256(state), changed, groups
+
+
+def _require_monotonic_prefix(
+    original: Sequence[object],
+    amended: Sequence[object],
+    label: str,
+) -> None:
+    if len(amended) < len(original) or list(amended[: len(original)]) != list(original):
+        raise UpdateExecutionError(f"amendment changed existing {label}")
+
+
+def _validate_amended_groups(
+    original: Sequence[Mapping[str, object]],
+    amended: Sequence[Mapping[str, object]],
+) -> None:
+    if len(amended) < len(original):
+        raise UpdateExecutionError("amendment removed an existing change group")
+    for index, prior in enumerate(original):
+        candidate = amended[index]
+        if candidate.get("name") != prior.get("name"):
+            raise UpdateExecutionError("amendment changed an existing change group")
+        prior_paths = prior.get("paths")
+        candidate_paths = candidate.get("paths")
+        if not isinstance(prior_paths, list) or not isinstance(candidate_paths, list):
+            raise UpdateExecutionError("amendment change group is invalid")
+        _require_monotonic_prefix(
+            prior_paths,
+            candidate_paths,
+            "change-group paths",
+        )
+
+
+def command_amend(request_path: pathlib.Path, state_path: pathlib.Path) -> None:
+    """Monotonically expand one failed preparation without replacing its baseline."""
+
+    resolved_request = _absolute(request_path)
+    state = _validated_state(
+        state_path,
+        mutable_request_path=resolved_request,
+    )
+    verification = state["verification"]
+    if not isinstance(verification, Mapping) or verification.get("status") != "pending":
+        raise UpdateExecutionError("amend requires recorded pending verification")
+    evidence_sha256 = verification.get("evidence_sha256")
+    if not _valid_sha256(evidence_sha256):
+        raise UpdateExecutionError("pending verification lacks trusted failed evidence")
+    assert isinstance(evidence_sha256, str)
+    cleanup = state["cleanup"]
+    assert isinstance(cleanup, Mapping)
+    owned_artifacts = cleanup["owned_artifacts"]
+    assert isinstance(owned_artifacts, list)
+    evidence_record = next(
+        artifact for artifact in owned_artifacts if artifact["role"] == "evidence"
+    )
+    evidence_path = evidence_record["path"]
+    assert isinstance(evidence_path, pathlib.Path)
+    evidence = _validated_evidence(evidence_path, evidence_sha256)
+    if (
+        evidence["status"] != "failed"
+        or evidence["branch"] != state["branch"]
+        or evidence["generation"] != verification["generation"]
+        or evidence["input_sha256"] != verification["input_sha256"]
+        or evidence["selected_skills"] != state["selected_skills"]
+        or not evidence["failures"]
+    ):
+        raise UpdateExecutionError("pending evidence does not match prepared failure")
+
+    candidate, repo_root, task_temp_root, candidate_evidence, disposable = (
+        _validated_request(resolved_request)
+    )
+    cleanup_root = cleanup["task_temp_root"]
+    assert isinstance(cleanup_root, pathlib.Path)
+    if repo_root != pathlib.Path(str(state["repo_root"])):
+        raise UpdateExecutionError("amendment changed repo_root")
+    if task_temp_root != cleanup_root:
+        raise UpdateExecutionError("amendment changed task_temp_root")
+    if candidate_evidence != evidence_path:
+        raise UpdateExecutionError("amendment changed evidence ownership")
+    expected_disposable = {
+        str(artifact["role"])
+        for artifact in owned_artifacts
+        if artifact["role"] in DISPOSABLE_ROLES
+    }
+    if disposable != expected_disposable:
+        raise UpdateExecutionError("amendment changed disposable artifact ownership")
+    if candidate["branch"] != state["branch"]:
+        raise UpdateExecutionError("amendment changed task branch")
+
+    original_selected = state["selected_skills"]
+    original_allowed = state["allowed_paths"]
+    original_checks = state["checks"]
+    original_groups = state["change_groups"]
+    amended_selected = candidate["selected_skills"]
+    amended_allowed = candidate["allowed_paths"]
+    amended_checks = candidate["checks"]
+    amended_groups = candidate["change_groups"]
+    assert isinstance(original_selected, list)
+    assert isinstance(original_allowed, list)
+    assert isinstance(original_checks, list)
+    assert isinstance(original_groups, list)
+    assert isinstance(amended_selected, list)
+    assert isinstance(amended_allowed, list)
+    assert isinstance(amended_checks, list)
+    assert isinstance(amended_groups, list)
+    _require_monotonic_prefix(original_selected, amended_selected, "selected skills")
+    _require_monotonic_prefix(original_allowed, amended_allowed, "allowed paths")
+    _require_monotonic_prefix(original_checks, amended_checks, "checks")
+    _validate_amended_groups(original_groups, amended_groups)
+    if (
+        amended_selected == original_selected
+        and amended_allowed == original_allowed
+        and amended_checks == original_checks
+        and amended_groups == original_groups
+    ):
+        raise UpdateExecutionError("amendment does not expand prepared scope")
+    _validate_descendant_scope(
+        repo_root,
+        str(state["head"]),
+        [str(path) for path in amended_allowed],
+    )
+
+    baseline_dirty = state["baseline_dirty"]
+    baseline_targets = state["baseline_targets"]
+    assert isinstance(baseline_dirty, Mapping)
+    assert isinstance(baseline_targets, Mapping)
+    amended_targets = dict(baseline_targets)
+    for path in amended_allowed[len(original_allowed) :]:
+        assert isinstance(path, str)
+        if path in baseline_dirty:
+            amended_targets[path] = baseline_dirty[path]
+        else:
+            amended_targets[path] = _snapshot_at_head(
+                repo_root,
+                str(state["head"]),
+                path,
+            )
+
+    amended_state = {
+        **state,
+        "selected_skills": amended_selected,
+        "allowed_paths": amended_allowed,
+        "change_groups": amended_groups,
+        "checks": amended_checks,
+        "baseline_targets": amended_targets,
+    }
+    amended_state["verification"] = {
+        "status": "pending",
+        "evidence_sha256": evidence_sha256,
+        "input_sha256": _verification_surface_sha256(amended_state),
+        "generation": verification["generation"],
+    }
+    for artifact in owned_artifacts:
+        if artifact["role"] == "request":
+            artifact["sha256"] = _file_sha256(resolved_request)
+    amended_state["cleanup"] = _cleanup_payload(cleanup)
+    _write_json_atomic(_absolute(state_path), amended_state, "state output")
 
 
 def _check_whitespace(
@@ -1166,94 +985,107 @@ def _check_whitespace(
             raise UpdateExecutionError(f"Git whitespace check failed for {path}: {detail}")
 
 
-def _bounded(value: str) -> str:
-    return value if len(value) <= MAX_CAPTURE else value[:MAX_CAPTURE] + "\n[truncated]"
-
-
-def _run_check(
+def _search_applicability_sha256(
     repo_root: pathlib.Path,
     check: Mapping[str, object],
-) -> dict[str, object]:
-    kind = check.get("kind")
-    if kind == "pytest":
-        nodes = check.get("nodes")
-        if not isinstance(nodes, list) or not all(isinstance(node, str) for node in nodes):
-            raise UpdateExecutionError("state pytest check is invalid")
-        argv = [sys.executable, "-m", "pytest", "-q", *nodes]
-        result = _run(argv, cwd=repo_root)
-        evidence = {
-            "kind": kind,
-            "nodes": nodes,
-            "returncode": result.returncode,
-            "stdout": _bounded(result.stdout),
-            "stderr": _bounded(result.stderr),
-        }
-        if result.returncode:
-            raise CheckFailure("pytest check failed", evidence)
-        return evidence
-    if kind == "command":
-        raw_argv = check.get("argv")
-        if not isinstance(raw_argv, list) or not all(
-            isinstance(item, str) for item in raw_argv
-        ):
-            raise UpdateExecutionError("state command check is invalid")
-        command_argv = [str(item) for item in raw_argv]
-        result = _run(command_argv, cwd=repo_root)
-        evidence = {
-            "kind": kind,
-            "argv": command_argv,
-            "returncode": result.returncode,
-            "stdout": _bounded(result.stdout),
-            "stderr": _bounded(result.stderr),
-        }
-        if result.returncode:
-            raise CheckFailure(f"command check failed with {result.returncode}", evidence)
-        return evidence
-    if kind != "search":
-        raise UpdateExecutionError("state check kind is invalid")
-    pattern = check.get("pattern")
+) -> str:
+    """Hash every deterministic input consumed by one declared search."""
+
     paths = check.get("paths")
-    expected = check.get("expected_matches")
-    if (
-        not isinstance(pattern, str)
-        or not isinstance(paths, list)
-        or not all(isinstance(path, str) for path in paths)
-        or not isinstance(expected, int)
-        or isinstance(expected, bool)
-    ):
+    if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
         raise UpdateExecutionError("state search check is invalid")
-    regex = re.compile(pattern)
-    matches = 0
-    for path in paths:
-        target = _target(repo_root, path)
-        if target.is_symlink() or not target.is_file():
-            raise UpdateExecutionError(f"search path does not exist: {path}")
-        try:
-            text = target.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
-            raise UpdateExecutionError(f"search path is unreadable: {path}: {exc}") from exc
-        matches += sum(1 for _ in regex.finditer(text))
-    evidence = {
-        "kind": kind,
-        "pattern": pattern,
-        "paths": paths,
-        "expected_matches": expected,
-        "actual_matches": matches,
-        "returncode": 0 if matches == expected else 1,
+    payload = {
+        "check": dict(check),
+        "paths": {path: _snapshot(repo_root, path) for path in paths},
+        "python": list(sys.version_info[:3]),
     }
-    if matches != expected:
-        raise CheckFailure(
-            f"search expected {expected} matches, found {matches}", evidence
-        )
-    return evidence
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
-class CheckFailure(UpdateExecutionError):
-    """A check failure that carries its detailed evidence record."""
+def _result_matches_check(
+    check: Mapping[str, object],
+    result: Mapping[str, object],
+) -> bool:
+    """Match successful evidence to the exact structured check that produced it."""
 
-    def __init__(self, message: str, evidence: dict[str, object]) -> None:
-        super().__init__(message)
-        self.evidence = evidence
+    kind = check.get("kind")
+    if result.get("kind") != kind or result.get("returncode") != 0:
+        return False
+    if kind == "pytest":
+        return result.get("nodes") == check.get("nodes")
+    if kind == "command":
+        return result.get("argv") == check.get("argv")
+    if kind != "search":
+        return False
+    return (
+        result.get("pattern") == check.get("pattern")
+        and result.get("paths") == check.get("paths")
+        and result.get("expected_matches") == check.get("expected_matches")
+        and result.get("actual_matches") == check.get("expected_matches")
+        and _valid_sha256(result.get("applicability_sha256"))
+    )
+
+
+def _reusable_check_results(
+    state: Mapping[str, object],
+    evidence_path: pathlib.Path,
+) -> dict[int, dict[str, object]]:
+    """Reuse only successful searches whose exact declared inputs still match."""
+
+    verification = state["verification"]
+    if not isinstance(verification, Mapping):
+        return {}
+    evidence_sha256 = verification.get("evidence_sha256")
+    if (
+        verification.get("status") != "pending"
+        or not _valid_sha256(evidence_sha256)
+    ):
+        return {}
+    evidence = _validated_evidence(evidence_path, str(evidence_sha256))
+    if (
+        evidence["status"] != "failed"
+        or evidence["branch"] != state["branch"]
+        or evidence["generation"] != verification["generation"]
+    ):
+        return {}
+    recorded_skills = evidence["selected_skills"]
+    selected_skills = state["selected_skills"]
+    if not isinstance(recorded_skills, list) or not isinstance(selected_skills, list):
+        return {}
+    if selected_skills[: len(recorded_skills)] != recorded_skills:
+        return {}
+    checks = state["checks"]
+    recorded_results = evidence["checks"]
+    assert isinstance(checks, list)
+    assert isinstance(recorded_results, list)
+    reusable: dict[int, dict[str, object]] = {}
+    for index, raw_result in enumerate(recorded_results):
+        if index >= len(checks) or not isinstance(raw_result, Mapping):
+            break
+        raw_check = checks[index]
+        if not isinstance(raw_check, Mapping) or not _result_matches_check(
+            raw_check,
+            raw_result,
+        ):
+            continue
+        if raw_check.get("kind") != "search":
+            continue
+        if _search_applicability_sha256(
+            pathlib.Path(str(state["repo_root"])),
+            raw_check,
+        ) != raw_result.get("applicability_sha256"):
+            continue
+        reused = dict(raw_result)
+        reused["reused"] = True
+        reused["source_evidence_sha256"] = evidence_sha256
+        reusable[index] = reused
+    return reusable
 
 
 def command_verify(state_path: pathlib.Path, evidence_path: pathlib.Path) -> None:
@@ -1273,6 +1105,7 @@ def command_verify(state_path: pathlib.Path, evidence_path: pathlib.Path) -> Non
     verification = state["verification"]
     generation = 0
     terminal_error: str | None = None
+    reusable: dict[int, dict[str, object]] = {}
     if verification is not None:
         assert isinstance(verification, Mapping)
         status = verification["status"]
@@ -1298,15 +1131,25 @@ def command_verify(state_path: pathlib.Path, evidence_path: pathlib.Path) -> Non
             }
             state["cleanup"] = _cleanup_payload(cleanup)
             _write_json_atomic(_absolute(state_path), state, "state output")
-        elif status == "pending" and input_sha256 != verification["input_sha256"]:
+        else:
+            reusable = _reusable_check_results(state, resolved_evidence)
             state["verification"] = {
                 "status": "pending",
                 "evidence_sha256": None,
                 "input_sha256": input_sha256,
-                "generation": 1,
+                "generation": generation,
             }
             state["cleanup"] = _cleanup_payload(cleanup)
             _write_json_atomic(_absolute(state_path), state, "state output")
+    else:
+        state["verification"] = {
+            "status": "pending",
+            "evidence_sha256": None,
+            "input_sha256": input_sha256,
+            "generation": 0,
+        }
+        state["cleanup"] = _cleanup_payload(cleanup)
+        _write_json_atomic(_absolute(state_path), state, "state output")
     changed: list[str] = []
     groups: list[dict[str, object]] = []
     results: list[dict[str, object]] = []
@@ -1322,25 +1165,40 @@ def command_verify(state_path: pathlib.Path, evidence_path: pathlib.Path) -> Non
             failures.append(str(exc))
     checks = state["checks"]
     assert isinstance(checks, list)
-    for raw_check in (checks if not failures else []):
-        if not isinstance(raw_check, Mapping):
-            failures.append("state check is invalid")
-            break
-        try:
-            results.append(_run_check(repo_root, raw_check))
-        except CheckFailure as exc:
-            results.append(exc.evidence)
-            failures.append(str(exc))
-            break
-        except UpdateExecutionError as exc:
-            results.append(
-                {
-                    "kind": raw_check.get("kind", "unknown"),
-                    "error": str(exc),
-                }
-            )
-            failures.append(str(exc))
-            break
+    try:
+        if not failures:
+            with check_environment(pathlib.Path(str(cleanup["task_temp_root"]))) as environment:
+                for index, raw_check in enumerate(checks):
+                    if not isinstance(raw_check, Mapping):
+                        failures.append("state check is invalid")
+                        break
+                    if index in reusable:
+                        results.append(reusable[index])
+                        continue
+                    try:
+                        results.append(_run_check(
+                            repo_root,
+                            raw_check,
+                            environment,
+                            resolve_target=_target,
+                            search_applicability=lambda value: (
+                                _search_applicability_sha256(repo_root, value)
+                            ),
+                        ))
+                    except CheckFailure as exc:
+                        results.append(exc.evidence)
+                        failures.append(str(exc))
+                        break
+                    except UpdateExecutionError as exc:
+                        results.append({
+                            "kind": raw_check.get("kind", "unknown"),
+                            "error": str(exc),
+                            "reused": False,
+                        })
+                        failures.append(str(exc))
+                        break
+    except OSError as exc:
+        failures.append(str(exc))
     if not failures or results:
         try:
             final_input_sha256, final_changed, final_groups = _verification_input(state)
@@ -1366,7 +1224,21 @@ def command_verify(state_path: pathlib.Path, evidence_path: pathlib.Path) -> Non
         "failures": failures,
     }
     _write_json_atomic(resolved_evidence, evidence, "evidence output")
+    state["failure_evidence_sha256"] = _file_sha256(resolved_evidence) if failures else None
     if failures:
+        verification = state["verification"]
+        if not (
+            isinstance(verification, Mapping)
+            and verification.get("status") == "invalidated"
+        ):
+            state["verification"] = {
+                "status": "pending",
+                "evidence_sha256": _file_sha256(resolved_evidence),
+                "input_sha256": input_sha256,
+                "generation": generation,
+            }
+            state["cleanup"] = _cleanup_payload(cleanup)
+            _write_json_atomic(_absolute(state_path), state, "state output")
         raise UpdateExecutionError(failures[0])
     state["verification"] = {
         "status": "passed",
@@ -1378,6 +1250,114 @@ def command_verify(state_path: pathlib.Path, evidence_path: pathlib.Path) -> Non
     _write_json_atomic(_absolute(state_path), state, "state output")
 
 
+def command_supersede(state_path: pathlib.Path, request_path: pathlib.Path, new_state_path: pathlib.Path) -> None:
+    """Transfer an intact failed attempt to a revised request, without source edits.
+
+    Validate all inputs before publishing the successor. Publish its state first
+    and pivot the active marker last; rollback a caught marker-write failure.
+    The predecessor's state, request and evidence remain unchanged until the
+    successfully verified successor is explicitly finalized.
+    """
+    old = _validated_state(state_path)
+    cleanup = old["cleanup"]
+    assert isinstance(cleanup, Mapping)
+    verification = old["verification"]
+    if verification is not None:
+        assert isinstance(verification, Mapping)
+        if verification["status"] != "pending":
+            raise UpdateExecutionError("only failed verification can be superseded")
+    owned = cleanup["owned_artifacts"]
+    assert isinstance(owned, list)
+    if not any(item["role"] == "retention" for item in owned):
+        raise UpdateExecutionError("supersede requires an active retention marker")
+    evidence = next(item["path"] for item in owned if item["role"] == "evidence")
+    if not old.get("failure_evidence_sha256") or not evidence.is_file():
+        raise UpdateExecutionError("supersede requires recorded failed verification")
+    if _file_sha256(evidence) != old["failure_evidence_sha256"]:
+        raise UpdateExecutionError("failed evidence changed after recording")
+    failed = _read_json(evidence, "failed evidence")
+    input_hash, _, _ = _verification_input(old)
+    generation = verification["generation"] if verification is not None else 0
+    if (failed.get("schema") != EVIDENCE_SCHEMA or failed.get("status") != "failed"
+            or failed.get("branch") != old["branch"]
+            or failed.get("generation") != generation or failed.get("selected_skills") != old["selected_skills"]):
+        raise UpdateExecutionError("failed evidence does not match the prepared request")
+    # In-scope fixes after failure are allowed, just as for verify retries. The
+    # original baseline, not the earlier failure's source snapshot, owns scope.
+    # Already-created maintenance files retain their validated original owner.
+    carried = _string_list(old["allowed_paths"], "prepared allowed paths")
+    state, repo, root, new_evidence, disposable = _validated_request(
+        request_path, carried_paths=carried, collect_nodes=False,
+    )
+    if (state["repo_root"] != old["repo_root"] or state["branch"] != old["branch"]
+            or root != cleanup["task_temp_root"]):
+        raise UpdateExecutionError("successor must use the same repository, branch and task temp")
+    for key in ("allowed_paths", "selected_skills"):
+        previous_scope, revised_scope = old[key], state[key]
+        assert isinstance(previous_scope, list) and isinstance(revised_scope, list)
+        if not set(previous_scope).issubset(revised_scope):
+            raise UpdateExecutionError("supersede cannot remove prepared scope")
+    if all(state[key] == old[key] for key in ("allowed_paths", "selected_skills", "change_groups", "checks")):
+        raise UpdateExecutionError("supersede requires a revised request; retry unchanged scope with verify")
+    request = _absolute(request_path)
+    destination = _task_artifact(new_state_path, root, "successor state", must_exist=False)
+    inherited = _inherited_artifacts(old, cleanup, required=True)
+    previous = [*inherited, *[item for item in owned if item["role"] != "retention"]]
+    marker = next(item["path"] for item in owned if item["role"] == "retention")
+    reserved = {item["path"] for item in previous} | set(cleanup["protected_artifacts"]) | {marker}
+    if len({request, destination, new_evidence}) != 3 or reserved & {request, destination, new_evidence}:
+        raise UpdateExecutionError("successor artifact paths overlap existing ownership")
+    if destination.exists() or new_evidence.exists():
+        raise UpdateExecutionError("refusing to overwrite successor outputs")
+    # Collection can import repository code. Reject scope and ownership changes
+    # before invoking any revised check, including collection-only pytest calls.
+    checks = state["checks"]
+    assert isinstance(checks, list)
+    _collect_declared_pytest_nodes(repo, checks, root)
+    # The old baseline is authoritative for carried paths and unrelated dirt.
+    state["head"] = old["head"]
+    state["baseline_dirty"] = old["baseline_dirty"]
+    targets, previous_targets = state["baseline_targets"], old["baseline_targets"]
+    assert isinstance(targets, dict) and isinstance(previous_targets, dict)
+    targets.update(previous_targets)
+    # The previous evidence remains inherited cleanup-owned data. It cannot
+    # identify the successor's still-unwritten evidence or revised checks.
+    state["verification"] = {
+        "status": "pending",
+        "evidence_sha256": None,
+        "input_sha256": _verification_surface_sha256(state),
+        "generation": generation,
+    }
+    state["failure_evidence_sha256"] = None
+    state["superseded_artifacts"] = [
+        {"path": str(item["path"]), "sha256": _file_sha256(item["path"])} for item in previous
+    ]
+    marker_payload = {"schema": RETENTION_SCHEMA, "state": str(destination)}
+    marker_bytes = (json.dumps(marker_payload, separators=(",", ":")) + "\n").encode("utf-8")
+    new_owned = [
+        {"role": "retention", "path": str(marker), "sha256": hashlib.sha256(marker_bytes).hexdigest()},
+        {"role": "state", "path": str(destination), "sha256": None},
+        {"role": "evidence", "path": str(new_evidence), "sha256": None},
+    ]
+    protected = [str(path) for path in cleanup["protected_artifacts"]]
+    if "request" in disposable:
+        new_owned.append({"role": "request", "path": str(request), "sha256": _file_sha256(request)})
+    else:
+        protected.append(str(request))
+    state["cleanup"] = {"schema": CLEANUP_SCHEMA, "task_temp_root": str(root),
+                        "owned_artifacts": new_owned, "protected_artifacts": protected}
+    # Recheck source and old ownership after collection before the marker pivot.
+    _validated_state(state_path)
+    if _verification_input(old)[0] != input_hash:
+        raise UpdateExecutionError("prepared scope changed while supersede was preparing")
+    _write_json_atomic(destination, state, "successor state")
+    try:
+        _write_json_atomic(marker, marker_payload, "retention marker")
+    except (OSError, UpdateExecutionError):
+        destination.unlink()
+        raise
+
+
 def command_finalize(state_path: pathlib.Path) -> None:
     """Remove exact owned artifacts after the caller signals completed use."""
 
@@ -1386,7 +1366,7 @@ def command_finalize(state_path: pathlib.Path) -> None:
     if not resolved_state.is_file():
         raise UpdateExecutionError(f"state must be a regular file: {resolved_state}")
     raw = _read_json(resolved_state, "state")
-    _closed_fields(raw, STATE_FIELDS, "state")
+    _validate_state_fields(raw)
     if raw.get("schema") != STATE_SCHEMA:
         raise UpdateExecutionError(f"state schema must be {STATE_SCHEMA}")
     repo_value = raw["repo_root"]
@@ -1414,6 +1394,7 @@ def command_finalize(state_path: pathlib.Path) -> None:
         raise UpdateExecutionError("refusing to finalize before successful verification")
     artifacts = cleanup["owned_artifacts"]
     assert isinstance(artifacts, list)
+    artifacts = [*_inherited_artifacts(raw, cleanup), *artifacts]
     for artifact in artifacts:
         role = artifact["role"]
         path = artifact["path"]
@@ -1454,11 +1435,18 @@ def build_parser() -> argparse.ArgumentParser:
     prepare = commands.add_parser("prepare")
     prepare.add_argument("--request", required=True, type=pathlib.Path)
     prepare.add_argument("--state", required=True, type=pathlib.Path)
+    amend = commands.add_parser("amend")
+    amend.add_argument("--request", required=True, type=pathlib.Path)
+    amend.add_argument("--state", required=True, type=pathlib.Path)
     verify = commands.add_parser("verify")
     verify.add_argument("--state", required=True, type=pathlib.Path)
     verify.add_argument("--evidence-output", required=True, type=pathlib.Path)
     finalize = commands.add_parser("finalize")
     finalize.add_argument("--state", required=True, type=pathlib.Path)
+    supersede = commands.add_parser("supersede")
+    supersede.add_argument("--state", required=True, type=pathlib.Path)
+    supersede.add_argument("--request", required=True, type=pathlib.Path)
+    supersede.add_argument("--new-state", required=True, type=pathlib.Path)
     return parser
 
 
@@ -1467,8 +1455,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "prepare":
             command_prepare(args.request, args.state)
+        elif args.command == "amend":
+            command_amend(args.request, args.state)
         elif args.command == "verify":
             command_verify(args.state, args.evidence_output)
+        elif args.command == "supersede":
+            command_supersede(args.state, args.request, args.new_state)
         else:
             command_finalize(args.state)
     except (UpdateExecutionError, OSError) as exc:

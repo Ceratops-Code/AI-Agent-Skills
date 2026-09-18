@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import importlib
+import io
 import json
+import os
 import pathlib
 import shutil
 import subprocess
 import sys
 
 import pytest
+import tomllib
 import yaml
 
 from tests.repository_lifecycle.support import (
@@ -16,10 +19,15 @@ from tests.repository_lifecycle.support import (
     SECTION_MANIFEST_TEMPLATE,
 )
 from tests.skill_lifecycle.support import add_action_sections
-from tests.support.processes import COMPATIBILITY_ENGINE, run_compatibility_engine
+from tests.support.processes import (
+    CI_ACTION_REVISION,
+    COMPATIBILITY_ENGINE,
+    run_compatibility_engine,
+)
 from tests.support.repositories import (
     ROOT,
     create_compatible_repo,
+    run_ci_action,
     write_sdlc_contract,
 )
 
@@ -28,7 +36,7 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     tmp_path: pathlib.Path,
 ) -> None:
     repo = tmp_path / "compatible"
-    create_compatible_repo(repo, "stale/source", ["alpha-tool", "beta-tool"])
+    create_compatible_repo(repo, "stale/source", ["alpha-tool", "beta-tool"], skill_runtime=True)
     write_sdlc_contract(
         repo,
         deliverables={"tools": {"publish": {
@@ -36,8 +44,13 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         }}},
     )
     (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
-    shutil.rmtree(repo / "skills" / "sections")
+    (repo / "skills" / "sections" / "core.md").unlink()
     (repo / "skills" / "skill-sections.json").unlink()
+    alpha_scripts = repo / "skills" / "alpha-tool" / "scripts"
+    alpha_scripts.mkdir()
+    (alpha_scripts / "helper.py").write_text(
+        "print('Python helper')\n", encoding="utf-8", newline="\n"
+    )
     beta = repo / "skills" / "beta-tool" / "SKILL.md"
     (beta.parent / "references").mkdir()
     (beta.parent / "references" / "run.md").write_text(
@@ -56,18 +69,12 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         + "- Run: `references/run.md`\n"
         + "- Check: `references/check.md`\n"
         + "\n"
-        + "\n".join(
-            [
-                "<!-- CERATOPS_SHARED_SECTIONS_START -->",
-                "<!-- SECTION SOURCE: skills/sections/core.md -->",
-                "## Generated Core",
-                "",
-                "<!-- SECTION SOURCE: skills/sections/multi-action-skill.md -->",
-                "## Generated Multi Action",
-                "<!-- CERATOPS_SHARED_SECTIONS_END -->",
-                "",
-            ]
-        ),
+        + "<!-- CERATOPS_SHARED_SECTIONS_START -->\n"
+        "<!-- SECTION SOURCE: skills/sections/core.md -->\n"
+        "## Generated Core\n\n"
+        "<!-- SECTION SOURCE: skills/sections/multi-action-skill.md -->\n"
+        "## Generated Multi Action\n"
+        "<!-- CERATOPS_SHARED_SECTIONS_END -->\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -94,6 +101,7 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         "alpha-tool": ["core"],
         "beta-tool": ["core", "multi-action-skill"],
     }
+    assert manifest["python_runtime_skills"] == ["alpha-tool"]
     assert manifest["runtime_source_id"] != json.loads(
         SECTION_MANIFEST_TEMPLATE.read_text(encoding="utf-8")
     )["runtime_source_id"]
@@ -114,7 +122,7 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     assert contract["deliverables"]["skills"]["deploy-local"]["standalone"] == {
         "steps": [
             {
-                "run": ["python", "scripts/deploy-skills.py"],
+                "run": ["uv", "run", "--locked", "scripts/deploy-skills.py"],
             }
         ]
     }
@@ -122,6 +130,14 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         "public": {
             "steps": [{"run": [sys.executable, "-V"]}]
         }
+    }
+    assert manifest["runtime_payloads"] == {}
+    assert not (repo / "skills/sections/scripts/run-skill.py").exists()
+    assert tomllib.loads((repo / "skills/sections/python/pyproject.toml").read_text())["project"]["name"] == "target-skill-runtime"
+    assert (repo / "skills/sections/python/uv.lock").is_file()
+    updates = yaml.safe_load((repo / ".github/dependabot.yml").read_text())["updates"]
+    assert {item["directory"] for item in updates if item["package-ecosystem"] == "uv"} == {
+        "/scripts", "/skills/sections/python",
     }
     materializer = importlib.import_module(
         "ceratops_repo_compatibility_engine.apply_ceratops_compatibility"
@@ -154,17 +170,65 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     assert skillless["deliverables"]["skills"] == {
         "validate": {"ceratops-managed": custom, "custom-check": custom},
         "deploy-local": {"ceratops-managed": {"handoff": "target-owned/deployment"}},
+        "tests": {"none": {"no-op": "No deliverable-specific test operation is declared; repository tests remain separately selectable."}},
     }
     assert (repo / "scripts" / "deploy-skills.py").is_file()
     assert (repo / "scripts" / "validate-repository.py").is_file()
     assert (repo / ".github" / "workflows" / "validate.yml").is_file()
     assert output["repository_validation"] == {
-        "checks": [],
+        "checks": ["npm-markdown-lint", "ruff", "mypy"],
         "validator": "applied",
         "workflow": "applied",
     }
+    package = json.loads((repo / "scripts/package.json").read_text(encoding="utf-8"))
+    lock = json.loads((repo / "scripts/package-lock.json").read_text(encoding="utf-8"))
+    assert package["private"] is True
+    assert package["scripts"]["lint:markdown"] == (
+        'markdownlint "../**/*.md" --ignore "../**/node_modules/**" --config .markdownlint.json'
+    )
+    assert package["devDependencies"] == {"markdownlint-cli": "0.49.1"}
+    assert lock["packages"][""]["devDependencies"] == package["devDependencies"]
+    assert lock["packages"]["node_modules/markdownlint-cli"]["version"] == "0.49.1"
+    assert not (repo / ".markdownlint.json").exists()
+    assert json.loads((repo / "scripts/.markdownlint.json").read_text(encoding="utf-8"))["MD013"] == {
+        "line_length": 80, "code_blocks": False, "tables": False,
+    }
+    # Exercise the selected YAML command with a rule override that would fail
+    # under default discovery, then prove existing root configuration still wins.
+    probe = repo / "lint-probe.yaml"
+    probe.write_text("value: " + "x" * 120 + "\n", encoding="utf-8", newline="\n")
+    for name in (".yamllint", ".yamllint.yaml", ".yamllint.yml"):
+        configuration = repo / "scripts" / name
+        configuration.write_text(
+            "extends: default\nrules:\n  document-start: disable\n  line-length: disable\n",
+            encoding="utf-8", newline="\n",
+        )
+        check = next(item for item in materializer.contract_checks(repo) if item["id"] == "yaml-lint")
+        command = [sys.executable if value == "{python}" else probe.name if value == "." else value for value in check["command"]]
+        assert command[-2:] == ["--config-file", f"scripts/{name}"]
+        lint = subprocess.run(command, cwd=repo, capture_output=True, text=True, check=False)
+        assert lint.returncode == 0, lint.stdout + lint.stderr
+        root_configuration = repo / ".yamllint"
+        root_configuration.write_text("extends: default\n", encoding="utf-8", newline="\n")
+        root_check = next(item for item in materializer.contract_checks(repo) if item["id"] == "yaml-lint")
+        root_command = [sys.executable if value == "{python}" else probe.name if value == "." else value for value in root_check["command"]]
+        root_lint = subprocess.run(root_command, cwd=repo, capture_output=True, text=True, check=False)
+        assert root_lint.returncode == 1 and "line-length" in root_lint.stdout
+        root_configuration.unlink()
+        configuration.unlink()
+    probe.unlink()
+    assert (repo / ".gitignore").read_text(encoding="utf-8").endswith("/scripts/node_modules/\n/.build/\n")
+    steps = yaml.safe_load(
+        (repo / ".github/workflows/validate.yml").read_text(encoding="utf-8")
+    )["jobs"]["validate-repository"]["steps"]
+    assert next(step["with"] for step in steps if step["name"] == "Set up Node.js") == {
+        "node-version": "24",
+    }
+    assert next(
+        step["run"] for step in steps if step["name"] == "Install npm validation dependencies"
+    ) == "npm --prefix scripts ci"
     payload = repo / "skills" / "sections" / "scripts" / "shared.py"
-    payload.parent.mkdir()
+    payload.parent.mkdir(exist_ok=True)
     payload.write_text("VALUE = True\n", encoding="utf-8", newline="\n")
     manifest["runtime_payloads"] = {
         "alpha-tool": [
@@ -187,6 +251,98 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         "valid": True,
         "errors": [],
     }
+
+
+    # Required surfaces are structural checks, including the skill bootstrap.
+    for relative in ("scripts/validate-repository.py", ".github/workflows/validate.yml",
+                     "scripts/deploy-skills.py", "skills/sections/python/pyproject.toml",
+                     "skills/sections/python/uv.lock"):
+        target = repo / relative
+        original = target.read_bytes()
+        target.unlink()
+        missing = compatibility.validate_ceratops_compatibility(repo)
+        assert missing["valid"] is False
+        assert f"missing {relative}" in missing["errors"]
+        target.write_bytes(original)
+
+    workflow = repo / ".github/workflows/validate.yml"
+    original_workflow = workflow.read_bytes()
+    workflow.write_text(workflow.read_text(encoding="utf-8").replace(
+        "--evidence-file ", "--evidence-file=",
+    ), encoding="utf-8")
+    assert compatibility.validate_ceratops_compatibility(repo)["valid"] is True
+    workflow.write_bytes(original_workflow)
+
+    # A real alternate bundle changes generation, bootstrap sync, and checking
+    # through contract data, without changing any executable implementation.
+    bundle = tmp_path / "alternate-bundle"
+    shutil.copytree(REPOSITORY_LIFECYCLE_SOURCE, bundle)
+    shutil.copytree(ROOT / "skills/sections", bundle / "skills/sections")
+    contract_path = bundle / "references/contracts/ceratops-compatibility-deterministic-contract.json"
+    defaults = json.loads(contract_path.read_text(encoding="utf-8"))
+    defaults["surfaces"]["skill_bootstrap"]["path"] = "scripts/bootstrap-skills.py"
+    defaults["surfaces"]["skill_bootstrap"]["template"] = "bootstrap-skills.py.tmpl"
+    defaults["managed_skill_operations"]["validate"]["ceratops-managed"]["handoff"] = "target-lifecycle/source-check"
+    defaults["managed_skill_operations"]["deploy-local"]["standalone"]["steps"][0]["run"][-1] = "scripts/bootstrap-skills.py"
+    templates = bundle / "references/templates"
+    (templates / "deploy-skills.py.tmpl").rename(templates / "bootstrap-skills.py.tmpl")
+    contract_path.write_text(json.dumps(defaults), encoding="utf-8")
+    alternate = tmp_path / "alternate-target"
+    create_compatible_repo(alternate, "target/alternate", ["alpha-tool"])
+    (alternate / ".git").write_text("gitdir: test\n", encoding="utf-8")
+    (alternate / "scripts/deploy-skills.py").unlink()
+    # Keep target-owned operation preservation separate from generated defaults.
+    (alternate / "sdlc/sdlc.yml").unlink()
+    write_sdlc_contract(alternate)
+    changed = run_compatibility_engine(bundle / "scripts", "apply", "--target-repo-root", str(alternate))
+    assert changed.returncode == 0, changed.stdout + changed.stderr
+    assert (alternate / "scripts/bootstrap-skills.py").is_file()
+    assert not (alternate / "scripts/deploy-skills.py").exists()
+    actual = yaml.safe_load((alternate / "sdlc/sdlc.yml").read_text(encoding="utf-8"))
+    assert actual["deliverables"]["skills"]["deploy-local"]["standalone"]["steps"][0]["run"] == [
+        "uv", "run", "--locked", "scripts/bootstrap-skills.py",
+    ]
+    assert actual["deliverables"]["skills"]["validate"]["ceratops-managed"] == {
+        "handoff": "target-lifecycle/source-check"
+    }
+
+
+def test_non_python_skill_needs_no_shared_skill_runtime(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "non-python"
+    create_compatible_repo(repo, "example/non-python", ["alpha-tool"])
+    (repo / ".git").write_text("gitdir: test\n", encoding="utf-8")
+
+    result = run_compatibility_engine(
+        REPOSITORY_LIFECYCLE_SCRIPTS,
+        "apply", "--target-repo-root", str(repo),
+    )
+
+    assert result.returncode == 0, result.stdout
+    manifest = json.loads((repo / "skills/skill-sections.json").read_text())
+    assert manifest["python_runtime_skills"] == []
+    assert not (repo / "skills/sections/python").exists()
+    updates = yaml.safe_load((repo / ".github/dependabot.yml").read_text())["updates"]
+    assert not any(item.get("directory") == "/skills/sections/python" for item in updates)
+    compatibility = importlib.import_module(
+        "ceratops_repo_compatibility_engine.validate_ceratops_compatibility"
+    )
+    assert compatibility.validate_ceratops_compatibility(repo)["valid"] is True
+
+    install_root = tmp_path / "installed"
+    installed = subprocess.run(
+        [sys.executable, str(repo / "scripts/deploy-skills.py"),
+         "--repo-root", str(repo), "--install-root", str(install_root),
+         "--skill", "alpha-tool"],
+        capture_output=True, text=True, check=False,
+    )
+    assert installed.returncode == 0, installed.stderr
+    installed_manifest = json.loads(
+        (install_root / "alpha-tool/.runtime-manifest.json").read_text()
+    )
+    assert "python_runtime" not in installed_manifest
+    assert not (tmp_path / "runtimes/ceratops").exists()
 
 
 def test_compatibility_materializer_supports_repositories_without_skills(
@@ -225,7 +381,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     )
     (repo / "tests").mkdir()
     (repo / "tests" / "test_probe.py").write_text(
-        "import unittest\n\n"
+        "import unittest\n\n\n"
         "class TestProbe(unittest.TestCase):\n"
         "    def test_probe(self) -> None:\n"
         "        self.assertTrue(True)\n",
@@ -298,12 +454,12 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert not (repo / "skills").exists()
     contract = yaml.safe_load((repo / "sdlc" / "sdlc.yml").read_text())
     assert contract["repository"]["validate"]["repository"]["steps"] == [
-        {"run": ["python", "scripts/validate-repository.py"]}
+        {"run": ["uv", "run", "--locked", "scripts/validate-repository.py"]}
     ]
     assert "deliverables" not in contract
     assert not (repo / "scripts" / "deploy-skills.py").exists()
     assert output["repository_validation"] == {
-        "checks": ["npm-lint", "unittest"],
+        "checks": ["npm-lint", "ruff", "mypy"],
         "validator": "applied",
         "workflow": "applied",
     }
@@ -331,24 +487,13 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert validation.stdout == "OK\n"
     assert not validation_evidence.exists()
     assert not validation_temporary.exists()
-    assert not list(repo.rglob("__pycache__"))
+    assert not [path for path in repo.rglob("__pycache__") if ".venv" not in path.parts]
 
-    omitted = tmp_path / "empty-without-sdlc"
-    shutil.copytree(repo, omitted)
-    omitted_result = run_compatibility_engine(
-        engine_scripts,
-        "apply",
-        "--target-repo-root",
-        str(omitted),
-        "--no-sdlc-contract",
+    omitted = run_compatibility_engine(
+        engine_scripts, "apply", "--target-repo-root", str(repo), "--no-sdlc-contract",
     )
-    assert omitted_result.returncode == 0, omitted_result.stdout
-    assert (omitted / "sdlc" / "sdlc.yml").read_bytes() == (repo / "sdlc" / "sdlc.yml").read_bytes()
-    assert json.loads(omitted_result.stdout)["repository_validation"] == {
-        "checks": [],
-        "validator": "preserved",
-        "workflow": "preserved",
-    }
+    assert omitted.returncode != 0
+    assert (repo / "sdlc/sdlc.yml").is_file()
 
     def empty_repository(name: str) -> pathlib.Path:
         target = tmp_path / name
@@ -360,6 +505,57 @@ def test_compatibility_materializer_supports_repositories_without_skills(
             newline="\n",
         )
         return target
+
+    materializer = importlib.import_module("ceratops_repo_compatibility_engine.apply_ceratops_compatibility")
+    for manager, flag, lockfile in (("npm", "--prefix", "package-lock.json"), ("pnpm", "--dir", "pnpm-lock.yaml")):
+        nested = tmp_path / f"nested-{manager}"
+        (nested / "scripts").mkdir(parents=True)
+        (nested / "scripts/package.json").write_text(json.dumps({
+            "packageManager": manager + "@10.33.4",
+            "scripts": {"lint": "echo lint", "test": "echo test"},
+        }), encoding="utf-8")
+        (nested / "scripts" / lockfile).write_text("{}\n", encoding="utf-8")
+        check = next(item for item in materializer.contract_checks(nested) if item["id"] == manager + "-lint")
+        assert check["command"] == ["{" + manager + "}", flag, "scripts", "run", "lint"]
+        assert materializer.default_markdown_files(nested) == {}
+        _, setup = materializer._validation_workflow(nested, [check], markdown_files={})
+        assert f"{manager} {flag} scripts " in setup
+        (nested / ".build").mkdir()
+        (nested / ".build/test_diagnostic.py").write_text("raise AssertionError\n", encoding="utf-8")
+        rules = materializer.load_compatibility_contract()["python_test_detection"]
+        assert materializer.discover_python_tests(nested, rules) == []
+
+    # A transpiling build does not establish type safety. Preserve an explicit
+    # typecheck for either package manager, with or without a build script.
+    for manager in ("npm", "pnpm"):
+        for has_build in (False, True):
+            typecheck_repo = empty_repository(f"{manager}-typecheck-{has_build}")
+            scripts = {"typecheck": "tsc --noEmit"}
+            if has_build:
+                scripts["build"] = "vite build"
+            package: dict[str, object] = {"scripts": scripts}
+            if manager == "pnpm":
+                package["packageManager"] = "pnpm@10.33.4"
+                (typecheck_repo / "pnpm-lock.yaml").write_text(
+                    "lockfileVersion: '9.0'\n", encoding="utf-8", newline="\n"
+                )
+            else:
+                (typecheck_repo / "package-lock.json").write_text(
+                    json.dumps({"lockfileVersion": 3, "requires": True, "packages": {}})
+                    + "\n", encoding="utf-8", newline="\n"
+                )
+            (typecheck_repo / "package.json").write_text(
+                json.dumps(package) + "\n", encoding="utf-8", newline="\n"
+            )
+            typecheck_result = run_compatibility_engine(
+                engine_scripts, "apply", "--target-repo-root", str(typecheck_repo)
+            )
+            assert typecheck_result.returncode == 0, typecheck_result.stdout
+            selected = json.loads(typecheck_result.stdout)["repository_validation"]["checks"]
+            assert f"{manager}-typecheck" in selected
+            assert (f"{manager}-build" in selected) is has_build
+            other_manager = "npm" if manager == "pnpm" else "pnpm"
+            assert f"{other_manager}-typecheck" not in selected
 
     pnpm_repo = empty_repository("pnpm-compatible")
     (pnpm_repo / "package.json").write_text(
@@ -395,7 +591,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert pnpm_result.returncode == 0, pnpm_result.stdout
     assert json.loads(pnpm_result.stdout)["repository_validation"]["checks"] == [
         "pnpm-build",
-        "pytest",
+        "ruff",
         "mypy",
     ]
     pnpm_workflow = (
@@ -404,14 +600,17 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert "actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903" in pnpm_workflow
     assert "corepack prepare pnpm@10.33.4 --activate" in pnpm_workflow
     assert "pnpm install --frozen-lockfile" in pnpm_workflow
-    assert "python -m pip install -r requirements-dev.txt" in pnpm_workflow
+    assert "python -m pip install" not in pnpm_workflow
     pnpm_steps = yaml.safe_load(pnpm_workflow)["jobs"]["validate-repository"]["steps"]
     assert [
         step["run"].splitlines()
         for step in pnpm_steps
         if step.get("name") == "Install Python validation dependencies"
-    ] == [["python -m pip install -r requirements-dev.txt"]]
-    assert 'python-version: "3.12"' in pnpm_workflow
+    ] == []
+    assert 'python-version: "3.12"' not in pnpm_workflow
+    pnpm_runtime = tomllib.loads((pnpm_repo / "scripts/pyproject.toml").read_text())
+    assert "mypy" in pnpm_runtime["project"]["dependencies"]
+    assert (pnpm_repo / "requirements-dev.txt").read_text() == "pytest==9.1.1\n"
 
     uv_repo = empty_repository("uv-compatible")
     (uv_repo / "uv.lock").write_text("version = 1\n", encoding="utf-8", newline="\n")
@@ -436,7 +635,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     )
     assert uv_result.returncode == 0, uv_result.stdout
     assert json.loads(uv_result.stdout)["repository_validation"]["checks"] == [
-        "pytest",
+        "npm-markdown-lint",
         "ruff",
         "mypy",
         "yaml-lint",
@@ -445,16 +644,20 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         encoding="utf-8"
     )
     assert "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9" in uv_workflow
-    assert 'python-version-file: "pyproject.toml"' in uv_workflow
+    assert 'python-version-file: "pyproject.toml"' not in uv_workflow
     assert 'python-version: "3.12"' not in uv_workflow
-    assert "uv sync --extra dev --frozen" in uv_workflow
+    assert "uv sync --extra dev --frozen" not in uv_workflow
     uv_steps = yaml.safe_load(uv_workflow)["jobs"]["validate-repository"]["steps"]
     assert [
         step["run"].splitlines()
         for step in uv_steps
         if step.get("name") == "Install Python validation dependencies"
-    ] == [["uv sync --extra dev --frozen"]]
-    assert "uv run --no-sync python scripts/validate-repository.py" in uv_workflow
+    ] == []
+    action_step = next(step for step in yaml.safe_load(uv_workflow)["jobs"]["validate-repository"]["steps"]
+                       if step.get("uses", "").startswith("Ceratops-Code/"))
+    assert action_step["uses"].endswith("@" + CI_ACTION_REVISION)
+    assert set(action_step["with"]) == {"repo-root", "evidence-file"}
+    assert (uv_repo / "uv.lock").read_text() == "version = 1\n"
 
     # Synthetic recipes exercise extension behavior without coupling the shipped
     # contract to any repository's private check names or command conventions.
@@ -497,6 +700,9 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     )
     assert powershell_result.returncode == 0, powershell_result.stdout
     assert json.loads(powershell_result.stdout)["repository_validation"]["checks"] == [
+        "npm-markdown-lint",
+        "ruff",
+        "mypy",
         "powershell-lint",
     ]
     powershell_workflow = (
@@ -528,7 +734,9 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     )
     assert unittest_result.returncode == 0, unittest_result.stdout
     assert json.loads(unittest_result.stdout)["repository_validation"]["checks"] == [
-        "unittest",
+        "npm-markdown-lint",
+        "ruff",
+        "mypy",
     ]
 
     docs_repo = empty_repository("docs-compatible")
@@ -552,8 +760,9 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     )
     assert docs_result.returncode == 0, docs_result.stdout
     assert json.loads(docs_result.stdout)["repository_validation"]["checks"] == [
-        "unittest",
+        "npm-markdown-lint",
         "ruff",
+        "mypy",
     ]
     docs_workflow = (
         docs_repo / ".github" / "workflows" / "validate.yml"
@@ -598,6 +807,8 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert json.loads(authoritative_result.stdout)["repository_validation"]["checks"] == [
         "custom-validator"
     ]
+    assert not (authoritative_repo / "package.json").exists()
+    assert not (authoritative_repo / ".markdownlint.json").exists()
     authoritative_validator = (
         authoritative_repo / "scripts" / "validate-repository.py"
     ).read_text(encoding="utf-8")
@@ -620,8 +831,8 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert "child_evidence: custom-validation.log" in retained_evidence
     assert "inner diagnostic" in retained_evidence
 
-    # Every documented pytest configuration form selects pytest and suppresses
-    # unittest, even when the target only declares the tool through its config.
+    # Every supported configuration identifies repository-owned Python tests;
+    # no test framework belongs to the generated repository validator.
     for index, (config, contents) in enumerate([
         ("pytest.toml", "[pytest]\n"),
         (".pytest.toml", "[pytest]\n"),
@@ -639,7 +850,11 @@ def test_compatibility_materializer_supports_repositories_without_skills(
             engine_scripts, "apply", "--target-repo-root", str(config_repo)
         )
         assert configured.returncode == 0, configured.stdout
-        assert json.loads(configured.stdout)["repository_validation"]["checks"] == ["pytest"]
+        assert json.loads(configured.stdout)["repository_validation"]["checks"] == [
+            "npm-markdown-lint", "ruff", "mypy"
+        ]
+        assert (config_repo / "scripts/run-tests.py").is_file()
+        assert "python" in yaml.safe_load((config_repo / "sdlc/sdlc.yml").read_text())["repository"]["tests"]
 
     # Contract validation covers entries which do not match the target and
     # rejects broken metadata or evidence links before target mutation.
@@ -727,23 +942,51 @@ def test_compatibility_materializer_preserves_existing_validator_and_ci(
     )
 
     assert result.returncode == 0, result.stdout
-    assert {
-        path: (path.read_bytes(), path.stat().st_mode)
-        for path in (validator, workflow)
-    } == before
+    # Setup adds the shared bootstrap while preserving the custom validator's
+    # behavior and executable mode.
+    preserved = subprocess.run(
+        [sys.executable, str(validator)], cwd=tmp_path,
+        capture_output=True, text=True, check=False,
+    )
+    assert preserved.returncode == 0, preserved.stderr
+    assert preserved.stdout == "target-owned\n"
+    assert validator.stat().st_mode == before[validator][1]
+    workflow_steps = yaml.safe_load(workflow.read_text())["jobs"]["validate"]["steps"]
+    assert any(step.get("uses", "").endswith("ceratops-repo-lifecycle/scripts@" + CI_ACTION_REVISION) for step in workflow_steps)
+    assert json.loads(result.stdout)["custom_validation_review_required"] is True
     assert json.loads(result.stdout)["repository_validation"] == {
         "checks": [],
         "validator": "preserved",
-        "workflow": "preserved",
+        "workflow": "applied",
     }
+    assert not (repo / "package.json").exists()
+    assert not (repo / ".markdownlint.json").exists()
 
 
+@pytest.mark.parametrize("configuration", [
+    ".markdownlint.jsonc", ".markdownlint.yaml", ".markdownlint.cjs", ".markdownlintrc",
+    "scripts/.markdownlint.json", "scripts/.markdownlint.cjs",
+])
 def test_compatibility_materializer_preserves_existing_identity_and_custom_sections(
     tmp_path: pathlib.Path,
+    configuration: str,
 ) -> None:
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "preserved/source", ["alpha-tool"])
     (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
+    markdown_config = repo / configuration
+    configuration_bytes = {
+        ".markdownlint.jsonc": b'{"MD013": false}\r\n',
+        ".markdownlint.yaml": b"MD013: false\r\n",
+        ".markdownlint.cjs": b"module.exports = { MD013: false };\r\n",
+        ".markdownlintrc": b'{"MD013": false}\r\n',
+        "scripts/.markdownlint.json": b'{"MD013": false}\r\n',
+        "scripts/.markdownlint.cjs": b"module.exports = { MD013: false };\r\n",
+    }[configuration]
+    markdown_config.parent.mkdir(parents=True, exist_ok=True)
+    markdown_config.write_bytes(configuration_bytes)
+    ignore = repo / ".gitignore"
+    ignore.write_bytes(b"build/\r\n!node_modules/")
     custom = repo / "skills" / "sections" / "custom.md"
     custom.write_text(
         "## Custom Rules\n\nPreserve this target behavior.\n",
@@ -778,6 +1021,18 @@ def test_compatibility_materializer_preserves_existing_identity_and_custom_secti
     assert custom.read_text(encoding="utf-8").endswith(
         "Preserve this target behavior.\n"
     )
+    assert markdown_config.read_bytes() == configuration_bytes
+    assert not (repo / ".markdownlint.json").exists()
+    assert ignore.read_bytes() == b"build/\r\n!node_modules/\r\n/scripts/node_modules/\r\n/.build/\r\n"
+    package = json.loads((repo / "scripts/package.json").read_text(encoding="utf-8"))
+    selected_configuration = pathlib.PurePosixPath(configuration).name if configuration.startswith("scripts/") else "../" + configuration
+    assert package["scripts"]["lint:markdown"].endswith(f" --config {selected_configuration}")
+    if not configuration.startswith("scripts/"):
+        assert not (repo / "scripts/.markdownlint.json").exists()
+    preserved = {
+        name: (repo / name).read_bytes()
+        for name in (configuration, ".gitignore", "scripts/package.json", "scripts/package-lock.json")
+    }
 
     overridden = run_compatibility_engine(
         REPOSITORY_LIFECYCLE_SCRIPTS,
@@ -791,10 +1046,13 @@ def test_compatibility_materializer_preserves_existing_identity_and_custom_secti
     assert json.loads(manifest_path.read_text(encoding="utf-8"))[
         "runtime_source_id"
     ] == "explicit/source"
+    assert {name: (repo / name).read_bytes() for name in preserved} == preserved
 
 
+@pytest.mark.parametrize("existing_ignore", [False, True])
 def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
     tmp_path: pathlib.Path,
+    existing_ignore: bool,
 ) -> None:
     lifecycle_bundle = tmp_path / "lifecycle-bundle"
     shutil.copytree(REPOSITORY_LIFECYCLE_SOURCE, lifecycle_bundle)
@@ -807,8 +1065,8 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
     )
     workflow_template.write_text(
         workflow_template.read_text(encoding="utf-8").replace(
-            "__VALIDATOR_PYTHON__ scripts/validate-repository.py",
-            "__VALIDATOR_PYTHON__ scripts/not-the-repository-validator.py",
+            "repo-root: __CI_REPO_ROOT__",
+            "wrong-input: __CI_REPO_ROOT__",
         ),
         encoding="utf-8",
         newline="\n",
@@ -817,6 +1075,9 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "preserved/source", ["alpha-tool"])
     (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
+    ignore = repo / ".gitignore"
+    if existing_ignore:
+        ignore.write_bytes(b"build/\r\n")
     skill_md = repo / "skills" / "alpha-tool" / "SKILL.md"
     skill_md.write_text(
         skill_md.read_text(encoding="utf-8")
@@ -851,6 +1112,13 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
     assert {path: path.read_bytes() for path in changed_paths} == original
     assert not (repo / "scripts" / "validate-repository.py").exists()
     assert not (repo / ".github" / "workflows" / "validate.yml").exists()
+    assert all(not (repo / name).exists() for name in (
+        "scripts/package.json", "scripts/package-lock.json", "scripts/.markdownlint.json",
+    ))
+    if existing_ignore:
+        assert ignore.read_bytes() == b"build/\r\n"
+    else:
+        assert not ignore.exists()
 
 
 def test_compatibility_materializer_blocks_invalid_assignments_before_writes(
@@ -896,6 +1164,58 @@ def test_compatibility_materializer_blocks_invalid_assignments_before_writes(
     } == original
 
 
+    # Malformed bundled policy fails before touching even an invalid target.
+    loader = importlib.import_module("ceratops_repo_compatibility_engine.compatibility_contract")
+    bundle = tmp_path / "invalid-contract-bundle"
+    shutil.copytree(REPOSITORY_LIFECYCLE_SOURCE, bundle)
+    contract_path = bundle / "references/contracts" / loader.CONTRACT_NAME
+    current = json.loads(contract_path.read_text(encoding="utf-8"))
+    invalid_values = []
+    unknown = json.loads(json.dumps(current))
+    unknown["python_packages"] = ["pytest"]
+    invalid_values.append((unknown, "python_packages"))
+    escaping = json.loads(json.dumps(current))
+    escaping["surfaces"]["validator"]["path"] = "../outside.py"
+    invalid_values.append((escaping, "surfaces/validator/path"))
+    duplicate = json.loads(json.dumps(current))
+    duplicate["surfaces"]["workflow"]["path"] = duplicate["surfaces"]["validator"]["path"]
+    invalid_values.append((duplicate, "destinations must be unique"))
+    unsupported = json.loads(json.dumps(current))
+    unsupported["generated_manifest_profile"] = "unknown"
+    invalid_values.append((unsupported, "profile must be accepted"))
+    missing_template = json.loads(json.dumps(current))
+    missing_template["surfaces"]["sdlc"]["template"] = "absent.tmpl"
+    invalid_values.append((missing_template, "missing regular compatibility template"))
+    for value, message in invalid_values:
+        contract_path.write_text(json.dumps(value), encoding="utf-8")
+        with pytest.raises(RuntimeError, match=message):
+            loader.load_compatibility_contract(bundle)
+    blocked = run_compatibility_engine(bundle / "scripts", "apply", "--target-repo-root", str(repo))
+    assert blocked.returncode == 1
+    blocked_output = json.loads(blocked.stdout)
+    assert blocked_output["rollback"] == "not_started"
+    assert "compatibility template" in blocked_output["reason"]
+    assert {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in observed_paths} == original
+
+    contract_path.write_text(json.dumps(current), encoding="utf-8")
+    review_path = contract_path.with_name(current["non_deterministic_review_file"])
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    review["evidence"] = {"command": "python -m github_contract_engine collect"}
+    review_path.write_text(json.dumps(review), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="invalid compatibility contract"):
+        loader.load_compatibility_contract(bundle)
+    review.pop("evidence")
+    review["deterministic_contract"] = "unrelated-contract.json"
+    review_path.write_text(json.dumps(review), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="review must reference"):
+        loader.load_compatibility_contract(bundle)
+    review["deterministic_contract"] = loader.CONTRACT_NAME
+    review["checks"].append(review["checks"][0])
+    review_path.write_text(json.dumps(review), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="check IDs must be unique"):
+        loader.load_compatibility_contract(bundle)
+
+
 @pytest.mark.parametrize("invalid", [False, True])
 def test_compatibility_materializes_action_assignments(tmp_path: pathlib.Path, invalid: bool) -> None:
     repo = tmp_path / "compatible"
@@ -918,3 +1238,283 @@ def test_compatibility_materializes_action_assignments(tmp_path: pathlib.Path, i
         assert updated["skills"] == manifest["skills"]
         for relative in manifest["actions"]["alpha-tool"]:
             assert (repo / "skills/alpha-tool" / relative).read_bytes() == before[pathlib.Path("skills/alpha-tool") / relative]
+
+
+
+def test_generated_scripts_and_skill_owned_ci_keep_environments_and_tests_separate(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def install_npm(target: pathlib.Path) -> None:
+        npm = "npm.cmd" if os.name == "nt" else "npm"
+        installed = subprocess.run(
+            [npm, "--prefix", "scripts", "ci"], cwd=target,
+            capture_output=True, text=True, check=False,
+        )
+        assert installed.returncode == 0, installed.stdout + installed.stderr
+
+    repo = tmp_path / "independent"
+    repo.mkdir()
+    (repo / "scripts").mkdir()
+    (repo / "scripts/.gitignore").write_text("/custom-output/\n")
+    (repo / ".git").write_text("gitdir: test\n")
+    # A nested tooling workspace must not rewrite the application's lock or
+    # adopt its incompatible Python constraint.
+    application = '[project]\nname="application"\nversion="1.0"\nrequires-python=">=3.11"\n[tool.uv.workspace]\nmembers=[]\n'
+    (repo / "pyproject.toml").write_text(application)
+    (repo / "requirements.txt").write_text("# repository-owned\n")
+    tests = repo / "tests"
+    tests.mkdir()
+    probe = tests / "test_probe.py"
+    probe.write_text("def test_probe():\n    raise AssertionError('test-gate-evidence')\n")
+    custom = repo / "scripts/nested/probe.py"
+    custom.parent.mkdir()
+    custom.write_text(
+        '"""A repository-owned script with imports before its main body."""\n'
+        "from __future__ import annotations\n\n"
+        "import json\nimport os\nimport sys\nfrom importlib.metadata import version\n\n"
+        "version('ruff')\n"
+        "print(json.dumps({'python':sys.executable,'prefix':sys.prefix,'cwd':os.getcwd(),'args':sys.argv[1:]}))\n"
+    )
+    original_custom = custom.read_bytes()
+    # Test and validation commands share scripts/.venv while the application's
+    # own declarations remain untouched.
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "no-installed-skills"))
+    created = run_compatibility_engine(REPOSITORY_LIFECYCLE_SCRIPTS, "apply", "--target-repo-root", str(repo))
+    assert created.returncode == 0, created.stdout + created.stderr
+    assert (repo / "pyproject.toml").read_text() == application
+    assert (repo / "requirements.txt").read_text() == "# repository-owned\n"
+    assert not (repo / "scripts/sdlc.py").exists()
+    assert not (repo / "scripts/runtime").exists()
+    dependencies = tomllib.loads((repo / "scripts/pyproject.toml").read_text())["project"]["dependencies"]
+    assert "jsonschema" not in dependencies and "PyYAML" not in dependencies
+    updates = yaml.safe_load((repo / ".github/dependabot.yml").read_text())["updates"]
+    assert any(item["package-ecosystem"] == "github-actions" and item["directory"] == "/" for item in updates)
+    assert any(item["package-ecosystem"] == "npm" and item["directory"] == "/scripts" for item in updates)
+    assert not (repo / "uv.lock").exists()
+    assert (repo / "scripts/.gitignore").read_text() == "/custom-output/\n.venv/\n**/__pycache__/\n"
+    assert custom.read_bytes() == original_custom
+    child_environment = dict(os.environ)
+    child_environment.pop("UV_PROJECT_ENVIRONMENT", None)
+    direct_command = ["uv", "run", "--locked", str(custom), "two words"]
+    direct = subprocess.run(direct_command, cwd=tmp_path, env=child_environment, capture_output=True, text=True, check=False)
+    assert direct.returncode == 0, direct.stderr
+    actual = json.loads(direct.stdout)
+    assert pathlib.Path(actual["prefix"]) == repo / "scripts/.venv"
+    assert pathlib.Path(actual["cwd"]) == tmp_path
+    assert actual["args"] == ["two words"]
+    uninstalled = subprocess.run(["uv", "pip", "uninstall", "--python", actual["python"], "ruff"], capture_output=True, text=True, check=False)
+    assert uninstalled.returncode == 0, uninstalled.stderr
+    repaired = subprocess.run(direct_command, cwd=tmp_path, env=child_environment, capture_output=True, text=True, check=False)
+    assert repaired.returncode == 0, repaired.stderr
+    assert json.loads(repaired.stdout) == actual
+    project = repo / "scripts/pyproject.toml"
+    project_before = project.read_bytes()
+    lock_before = (repo / "scripts/uv.lock").read_bytes()
+    project.write_text(project.read_text().replace('version = "0.0.0"', 'version = "0.1.0"'))
+    stale = subprocess.run(direct_command, cwd=tmp_path, env=child_environment, capture_output=True, text=True, check=False)
+    assert stale.returncode != 0 and not stale.stdout.strip()
+    assert (repo / "scripts/uv.lock").read_bytes() == lock_before
+    project.write_bytes(project_before)
+    install_npm(repo)
+    prefix = ["uv", "run", "--locked"]
+    validation = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=repo, capture_output=True, text=True, check=False)
+    assert validation.returncode == 0, validation.stderr
+    # The generated settings must be consumed, not merely written to TOML.
+    check_probe = repo / "scripts/check_probe.py"
+    check_probe.write_text("import math\n")
+    lint_failure = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=repo, capture_output=True, text=True, check=False)
+    assert json.loads(lint_failure.stdout)["check"] == "ruff"
+    check_probe.write_text('def value() -> int:\n    return "wrong-type"\n')
+    type_failure = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=repo, capture_output=True, text=True, check=False)
+    assert json.loads(type_failure.stdout)["check"] == "mypy"
+    check_probe.write_text("def value() -> int:\n    return 1\n")
+    evidence = tmp_path / "sdlc-failure.json"
+    bundle = tmp_path / "ci-action"
+    failed = run_ci_action(repo, evidence, bundle)
+    assert failed.returncode == 1, failed.stdout + failed.stderr
+    result = json.loads(evidence.read_text())
+    assert result["status"] == "tests_failed"
+    assert result["operation"] == "repository.tests.python"
+    assert any("test-gate-evidence" in line for line in result["diagnostic"]["stdout_tail"])
+    collector = importlib.import_module("github_contract_engine.collectors.local_repository")
+    facts = collector._repository_validation_facts(
+        {"available": True, "root": str(repo)}, [{"id": "content.repository_validation"}], str(evidence),
+    )
+    assert facts["valid"] is False
+    assert [entry["status"] for entry in facts["gate_results"]] == ["completed", "tests_failed"]
+    probe.write_text("def test_probe():\n    assert True\n")
+    passed = run_ci_action(repo, evidence, bundle)
+    assert passed.returncode == 0, passed.stdout + passed.stderr
+    assert not evidence.exists()
+    assert json.loads(passed.stdout)["completed_operations"] == ["repository.validate.repository", "repository.tests.python"]
+    lock = (repo / "scripts/uv.lock").read_bytes()
+    reapplied = run_compatibility_engine(REPOSITORY_LIFECYCLE_SCRIPTS, "apply", "--target-repo-root", str(repo))
+    assert reapplied.returncode == 0, reapplied.stdout
+    assert (repo / "scripts/uv.lock").read_bytes() == lock
+    # Preserve a repository's adjusted tool settings and comments on reapply.
+    project.write_text(project.read_text().replace('ignore = ["E501"]', 'ignore = ["E501", "F401"] # repository choice'))
+    configured = project.read_bytes()
+    check_probe.write_text("import math\n")
+    reapplied = run_compatibility_engine(REPOSITORY_LIFECYCLE_SCRIPTS, "apply", "--target-repo-root", str(repo))
+    assert reapplied.returncode == 0, reapplied.stdout
+    assert project.read_bytes() == configured
+    configured_check = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=repo, capture_output=True, text=True, check=False)
+    assert configured_check.returncode == 0, configured_check.stdout + configured_check.stderr
+    # Adding an absent table must preserve the other tool's configuration.
+    without_mypy = project.read_text().split("\n[tool.mypy]", 1)[0].rstrip() + "\n"
+    project.write_text(without_mypy)
+    reapplied = run_compatibility_engine(REPOSITORY_LIFECYCLE_SCRIPTS, "apply", "--target-repo-root", str(repo))
+    assert reapplied.returncode == 0, reapplied.stdout
+    assert project.read_text().startswith(without_mypy)
+    assert tomllib.loads(project.read_text())["tool"]["mypy"] == tomllib.loads(project_before.decode())["tool"]["mypy"]
+    # Root settings must not be shadowed by newly generated scripts settings.
+    root_configured = tmp_path / "root-configured"
+    root_configured.mkdir()
+    (root_configured / ".git").write_text("gitdir: test\n")
+    (root_configured / "pyproject.toml").write_text(
+        '[tool.ruff.lint]\nselect=["F"]\nignore=["F401"]\n'
+        '[tool.mypy]\nfiles=["scripts/check_probe.py"]\ndisable_error_code=["return-value"]\n'
+    )
+    (root_configured / "scripts").mkdir()
+    (root_configured / "scripts/check_probe.py").write_text('import math\ndef value() -> int:\n    return "allowed"\n')
+    created = run_compatibility_engine(REPOSITORY_LIFECYCLE_SCRIPTS, "apply", "--target-repo-root", str(root_configured))
+    assert created.returncode == 0, created.stdout
+    install_npm(root_configured)
+    defaults = tomllib.loads((root_configured / "scripts/pyproject.toml").read_text())["tool"]
+    assert "ruff" not in defaults and "mypy" not in defaults
+    root_check = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=root_configured, capture_output=True, text=True, check=False)
+    assert root_check.returncode == 0, root_check.stdout + root_check.stderr
+
+
+@pytest.mark.parametrize("inherited_form", ["joined", "separate"])
+def test_generated_python_runner_cleans_owned_temp_even_with_overrides(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, inherited_form: str,
+) -> None:
+    repo = tmp_path / "runner"
+    (repo / "scripts").mkdir(parents=True)
+    marker = tmp_path / "observed.json"
+    (repo / "test_probe.py").write_text(
+        "import json, pathlib\n"
+        "def test_probe(tmp_path):\n"
+        f"    pathlib.Path({str(marker)!r}).write_text(json.dumps(str(tmp_path)))\n"
+        "    assert False\n"
+    )
+    template = (REPOSITORY_LIFECYCLE_SOURCE / "references/templates/run-tests.py.tmpl").read_text()
+    runner = repo / "scripts/run-tests.py"
+    runner.write_text(template.replace("__TEST_TARGETS__", "['test_probe.py']"))
+    templates = REPOSITORY_LIFECYCLE_SOURCE / "references/templates"
+    (repo / "scripts/pyproject.toml").write_text(
+        (templates / "validation-pyproject.toml.tmpl").read_text().replace("__DEPENDENCIES__", '["pytest"]')
+    )
+    subprocess.run(["uv", "lock", "--project", str(repo / "scripts")], check=True, capture_output=True)
+    outside = tmp_path / "caller-temp"
+    inherited = f'--basetemp="{tmp_path}"' if inherited_form == "joined" else f'--basetemp "{tmp_path}"'
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-q " + inherited)
+    result = subprocess.run([
+        "uv", "run", "--locked", str(runner), "--pytest-arg=--basetemp", "--pytest-arg=" + str(outside),
+        "--pytest-arg=--basetemp=" + str(repo),
+    ], cwd=repo, capture_output=True, text=True, check=False)
+    assert result.returncode == 1, result.stderr
+    observed = pathlib.Path(json.loads(marker.read_text()))
+    assert not observed.exists()
+    assert not outside.exists()
+
+
+def test_missing_uv_rolls_back_generated_files_before_compatibility_claim(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    generator = importlib.import_module("ceratops_repo_compatibility_engine.apply_ceratops_compatibility")
+    runtime = importlib.import_module("ceratops_repo_compatibility_engine.validation_environment")
+    (tmp_path / ".git").write_text("gitdir: test\n")
+    monkeypatch.setattr(runtime.shutil, "which", lambda name: None)
+    assert generator.main(["--target-repo-root", str(tmp_path), "--ci-action-revision", CI_ACTION_REVISION]) == 1
+    outcome = json.loads(capsys.readouterr().out)
+    assert outcome["phase"] == "validator_environment_setup"
+    assert outcome["rollback"] == "completed"
+    assert {p.name for p in tmp_path.iterdir()} == {".git"}
+
+
+@pytest.mark.parametrize("failure", [None, "git", "ambiguous", "missing-action", "wrong-action"])
+def test_ci_action_resolution_requires_published_unambiguous_action(
+    monkeypatch: pytest.MonkeyPatch, failure: str | None,
+) -> None:
+    ci = importlib.import_module("ceratops_repo_compatibility_engine.ci_workflow")
+    contract = importlib.import_module("ceratops_repo_compatibility_engine.compatibility_contract").load_compatibility_contract()
+    action = contract["ci_action"]
+    calls = []
+
+    def git(argv, **kwargs):
+        calls.append(argv)
+        assert kwargs["timeout"] == 30
+        output = CI_ACTION_REVISION + "\t" + action["ref"] + "\n"
+        return subprocess.CompletedProcess(argv, 1 if failure == "git" else 0,
+                                           stdout=output * (2 if failure == "ambiguous" else 1), stderr="")
+
+    def published(url, **kwargs):
+        assert CI_ACTION_REVISION in url and url.endswith("/action.yml")
+        assert kwargs["timeout"] == 30
+        if failure == "missing-action":
+            raise OSError("not published")
+        return io.BytesIO(b"runs: {using: node24}" if failure == "wrong-action" else b"runs: {using: composite}")
+
+    monkeypatch.setattr(ci.subprocess, "run", git)
+    monkeypatch.setattr(ci.urllib.request, "urlopen", published)
+    if failure:
+        with pytest.raises(RuntimeError, match="publication is unavailable"):
+            ci.resolve_action(action)
+    else:
+        assert ci.resolve_action(action) == action["uses"] + "@" + CI_ACTION_REVISION
+    assert len(calls) == 1
+    # Explicit revisions support offline planning but never accept a floating ref.
+    assert ci.resolve_action(action, CI_ACTION_REVISION).endswith("@" + CI_ACTION_REVISION)
+    with pytest.raises(RuntimeError, match="full lowercase Git commit"):
+        ci.resolve_action(action, "main")
+    assert len(calls) == 1
+
+
+def test_ci_action_reconciliation_preserves_pins_and_rejects_unsafe_bindings(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ci = importlib.import_module("ceratops_repo_compatibility_engine.ci_workflow")
+    generator = importlib.import_module("ceratops_repo_compatibility_engine.apply_ceratops_compatibility")
+    action = generator.load_compatibility_contract()["ci_action"]
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts/validate-repository.py").write_text("print('OK')\n")
+    workflow = tmp_path / ".github/workflows/validate.yml"
+    workflow.parent.mkdir(parents=True)
+    step = {"name": "Custom checks", "uses": action["uses"] + "@" + CI_ACTION_REVISION,
+            "with": dict(action["inputs"]), "if": "success()"}
+    payload = {"jobs": {"checks": {"runs-on": "ubuntu-latest", "steps": [step]}}}
+    workflow.write_text(yaml.safe_dump(payload))
+
+    def unexpected_resolution(*args, **kwargs):
+        raise AssertionError("existing pin must not resolve remote state")
+
+    monkeypatch.setattr(generator, "resolve_action", unexpected_resolution)
+    assert generator.validation_surfaces(tmp_path)[1] is None
+    assert not ci.workflow_errors(workflow, action)
+    step["continue-on-error"] = True
+    workflow.write_text(yaml.safe_dump(payload))
+    assert any("continue on error" in error for error in ci.workflow_errors(workflow, action))
+    del step["continue-on-error"], step["with"]["evidence-file"]
+    workflow.write_text(yaml.safe_dump(payload))
+    assert any("inputs" in error for error in ci.workflow_errors(workflow, action))
+    step["uses"] = action["uses"] + "@main"
+    workflow.write_text(yaml.safe_dump(payload))
+    with pytest.raises(RuntimeError, match="full commit pin"):
+        generator.validation_surfaces(tmp_path)
+
+
+def test_unpublished_ci_action_blocks_compatibility_before_target_writes(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    generator = importlib.import_module("ceratops_repo_compatibility_engine.apply_ceratops_compatibility")
+    (tmp_path / ".git").write_text("gitdir: fixture\n")
+
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("CI action publication is unavailable")
+
+    monkeypatch.setattr(generator, "resolve_action", unavailable)
+    assert generator.main(["--target-repo-root", str(tmp_path)]) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["phase"] == "compatibility_planning"
+    assert result["rollback"] == "not_started"
+    assert {path.name for path in tmp_path.iterdir()} == {".git"}

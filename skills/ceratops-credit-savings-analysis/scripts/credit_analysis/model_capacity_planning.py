@@ -7,13 +7,19 @@ controller state. Calls remain
 attached to their source run; transport parts are an input-capacity mechanism,
 not independent semantic runs.
 """
-# ruff: noqa: F401,F403,F405,I001
+# ruff: noqa: I001
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from .single_thread_analysis import *
+
+
+# Sol also has to classify source calls. Saved 38-57-candidate reviews with
+# 130-151 calls exceeded output capacity, so the count cap remains a heuristic
+# alongside input-byte planning rather than a guarantee of a complete result.
+SOL_REVIEW_CANDIDATE_BUDGET = 30
 
 
 def _capacity_json_bytes(value: Any) -> int:
@@ -210,6 +216,7 @@ def _exact_reviewer_bins(
     bin_count: int,
     capacity_bytes: int,
     minimum_output_bytes: int,
+    maximum_groups_per_bin: int,
 ) -> list[list[dict[str, Any]]]:
     """Find a complete packing, using exact search only when best-fit fails."""
 
@@ -231,6 +238,10 @@ def _exact_reviewer_bins(
         raise CreditAnalysisError(
             "one Luna report cannot fit the proven Sol reviewer envelope"
         )
+    if len(ordered) > bin_count * maximum_groups_per_bin:
+        raise CreditAnalysisError(
+            "Luna parts exceed the fixed Sol candidate budget"
+        )
     if sum(sizes) > bin_count * capacity_bytes:
         raise CreditAnalysisError(
             "accepted Luna reports cannot fit the proven Sol reviewer envelope"
@@ -244,6 +255,7 @@ def _exact_reviewer_bins(
                 index
                 for index in range(bin_count)
                 if loads[index] + size <= capacity_bytes
+                and len(bins[index]) < maximum_groups_per_bin
             ]
             if not choices:
                 return None
@@ -256,12 +268,15 @@ def _exact_reviewer_bins(
     if assigned is None:
         bins: list[list[int]] = [[] for _ in range(bin_count)]
         loads = [0] * bin_count
-        failed: set[tuple[int, tuple[int, ...]]] = set()
+        failed: set[tuple[int, tuple[tuple[int, int], ...]]] = set()
 
         def search(item_index: int) -> bool:
             if item_index == len(ordered):
                 return True
-            state = (item_index, tuple(sorted(loads)))
+            state = (
+                item_index,
+                tuple(sorted((load, len(bins[index])) for index, load in enumerate(loads))),
+            )
             if state in failed:
                 return False
             size = sizes[item_index]
@@ -269,12 +284,17 @@ def _exact_reviewer_bins(
                 range(bin_count),
                 key=lambda index: (-loads[index], index),
             )
-            seen_loads: set[int] = set()
+            seen_loads: set[tuple[int, int]] = set()
             for selected in choices:
                 load = loads[selected]
-                if load in seen_loads or load + size > capacity_bytes:
+                bin_state = (load, len(bins[selected]))
+                if (
+                    bin_state in seen_loads
+                    or load + size > capacity_bytes
+                    or len(bins[selected]) >= maximum_groups_per_bin
+                ):
                     continue
-                seen_loads.add(load)
+                seen_loads.add(bin_state)
                 bins[selected].append(item_index)
                 loads[selected] += size
                 if search(item_index + 1):
@@ -307,6 +327,7 @@ def plan_luna_reviewers(
     Fixed inventory and framing are packed first. Each task on one reviewer then
     receives the same flexible allowance from that reviewer's exact remainder.
     Actual Luna reports may be smaller but are never repacked after execution.
+    Candidate limits divide one conservative review budget before Luna launches.
     """
 
     if not groups or bin_count < 1 or capacity_bytes < 1:
@@ -324,11 +345,21 @@ def plan_luna_reviewers(
             bin_count=min(bin_count, len(prepared)),
             capacity_bytes=capacity_bytes,
             minimum_output_bytes=minimum_output_bytes,
+            maximum_groups_per_bin=SOL_REVIEW_CANDIDATE_BUDGET,
         )
         if group_bin
     ]
     planned: list[list[dict[str, Any]]] = []
     for reviewer_index, group_bin in enumerate(bins, start=1):
+        group_bin.sort(
+            key=lambda group: (
+                int(group["run_ordinal"]),
+                int(group["run_window_ordinal"]),
+            )
+        )
+        # One slot per Luna part is guaranteed by the count-bounded packing.
+        candidate_budget = SOL_REVIEW_CANDIDATE_BUDGET
+        per_task, remainder = divmod(candidate_budget, len(group_bin))
         fixed_bytes = sum(
             int(group["inventory_bytes"]) + int(group["framing_bytes"])
             for group in group_bin
@@ -346,20 +377,15 @@ def plan_luna_reviewers(
                 **group,
                 "reviewer_ordinal": reviewer_index,
                 "output_byte_limit": allowance,
+                "candidate_limit": per_task + int(index < remainder),
                 "planned_routing_bytes": (
                     int(group["inventory_bytes"])
                     + int(group["framing_bytes"])
                     + allowance
                 ),
             }
-            for group in group_bin
+            for index, group in enumerate(group_bin)
         ]
-        enriched.sort(
-            key=lambda group: (
-                int(group["run_ordinal"]),
-                int(group["run_window_ordinal"]),
-            )
-        )
         if (
             sum(int(group["planned_routing_bytes"]) for group in enriched)
             > capacity_bytes
@@ -446,10 +472,11 @@ def _validate_sol_call_budget(
 
 
 __all__ = (
-    "_validate_sol_call_budget",
-    "_sol_validation_error_count",
-    "_sol_attempt_capacity",
+    "SOL_REVIEW_CANDIDATE_BUDGET",
     "_can_retry_sol_validation",
+    "_sol_attempt_capacity",
+    "_sol_validation_error_count",
+    "_validate_sol_call_budget",
     "partition_luna_inputs",
     "plan_luna_reviewers",
     "select_luna_tasks",

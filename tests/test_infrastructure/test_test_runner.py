@@ -18,6 +18,69 @@ BASE = "1" * 40
 HEAD = "2" * 40
 
 
+@pytest.mark.parametrize("target", [
+    "tests/test_infrastructure/test_repository_validator.py::test_runtime_dependencies_supply_timezones_without_an_os_database",
+    "tests/test_infrastructure/test_repository_validator.py",
+])
+def test_explicit_targets_collect_and_run_only_requested_cases(test_runner_module: Any, capsys: Any, target: str) -> None:
+    execution = DeterministicExecution(test_runner_module, b"")
+    assert test_runner_module.execute([target, target], repo_root=ROOT,
+                                     text_runner=execution.text, bytes_runner=execution.bytes) == 0
+    result = payload(capsys)
+    assert result["mode"] == "targets"
+    assert result["pytest_targets"] == [target]
+    assert result["full_suite"] is False
+    assert execution.final_pytest == [(sys.executable, "-m", "pytest", "-q", target)]
+
+
+@pytest.mark.parametrize("arguments", [
+    ["tests/missing.py"], ["../outside.py"],
+    ["tests/test_infrastructure/test_repository_validator.py::missing_node"],
+    ["tests/test_infrastructure", "--all"], ["--auto", "--worktree"], ["--", "-q"],
+])
+def test_invalid_explicit_selection_never_runs_tests(test_runner_module: Any, tmp_path: pathlib.Path,
+                                                   capsys: Any, arguments: list[str]) -> None:
+    execution = DeterministicExecution(test_runner_module, b"")
+    assert test_runner_module.execute(["--diagnostic-output", str(tmp_path / "failure.json"), *arguments],
+                                     repo_root=ROOT, text_runner=execution.text,
+                                     bytes_runner=execution.bytes) != 0
+    assert not execution.final_pytest
+    assert payload(capsys)["pytest"]["outcome"] == "not-run"
+
+
+@pytest.mark.parametrize("context", ["local", "push", "pull_request", "malformed", "unsupported"])
+def test_auto_uses_explicit_ci_context_and_preserves_local_full_selection(
+    test_runner_module: Any, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: Any, context: str,
+) -> None:
+    execution = DeterministicExecution(test_runner_module, b"M\0tools/ceratops_tool_manager/cli.py\0")
+    monkeypatch.setenv("GITHUB_ACTIONS", "false" if context == "local" else "true")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request" if context == "malformed" else context)
+    event = tmp_path / "event.json"
+    event.write_text(json.dumps({"pull_request": {"base": {"sha": BASE}, "head": {"sha": HEAD}}})
+                     if context != "malformed" else "{}", encoding="utf-8")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
+    # Real selection, bounded collection fixture: the execution contract under test
+    # is argv selection, not a second collection of the entire repository.
+    def commands(command, cwd):
+        if "--collect-only" in command:
+            return subprocess.CompletedProcess(command, 0, "tests/fixture.py::test_value\n", "")
+        return execution.text(command, cwd)
+    code = test_runner_module.execute(["--auto", "--diagnostic-output", str(tmp_path / "failure.json")],
+                                      repo_root=ROOT, text_runner=commands, bytes_runner=execution.bytes)
+    result = payload(capsys)
+    if context in {"malformed", "unsupported"}:
+        assert code != 0 and not execution.final_pytest
+        assert result["status"] == "configuration-error"
+    elif context == "pull_request":
+        assert code == 0
+        assert (result["base"], result["head"]) == (BASE, HEAD)
+        assert result["pytest_targets"] == ["tests/tool_manager"]
+    else:
+        assert code == 0 and result["full_suite"]
+        assert result["pytest_targets"] == list(test_runner_module.all_selection(
+            test_runner_module.load_manifest(ROOT / "tests/test-impact.json")).pytest_targets)
+
+
 class DeterministicExecution:
     """Provide Git evidence and collect real tests while stubbing final execution."""
 
@@ -115,6 +178,24 @@ def payload(capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
     return json.loads(capsys.readouterr().out)
 
 
+def assert_pretest_diagnostic(
+    path: pathlib.Path, result: dict[str, Any], exit_code: int,
+) -> dict[str, Any]:
+    """Check the persisted failure and the exact evidence reference returned."""
+    content = path.read_bytes()
+    complete = json.loads(content)
+    assert complete["schema"] == "ai-agent-skills-test-runner-diagnostic.v1"
+    assert complete["exit_code"] == exit_code
+    assert complete["result"] == {key: value for key, value in result.items() if key != "diagnostic"}
+    assert complete["result"]["pytest"] == {"exit_code": None, "outcome": "not-run"}
+    assert result["diagnostic"] == {
+        "bytes": len(content), "path": str(path.resolve()),
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }
+    assert not list(path.parent.glob(f".{path.name}.*.tmp"))
+    return complete
+
+
 def test_committed_diff_mode_collects_and_invokes_only_selected_suite(
     test_runner_module: Any, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -162,18 +243,28 @@ def test_committed_diff_mode_collects_and_invokes_only_selected_suite(
     )
 
 
+@pytest.mark.parametrize("shared_value", ["short", "shared" * 200])
 def test_failure_summary_matches_real_long_pytest_titles(
-    test_runner_module: Any, tmp_path: pathlib.Path
+    test_runner_module: Any, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+    shared_value: str,
 ) -> None:
+    # This fixture owns its pytest arguments and output format; the enclosing
+    # workflow's basetemp must not become the nested invocation's ancestor.
+    monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
     names = ["test_before", "test_" + "long_name_" * 12, "test_after"]
     path = tmp_path / "test_failures.py"
-    path.write_text(
-        "\n".join(
-            f"def {name}():\n    raise AssertionError('{index}-only')\n"
-            for index, name in enumerate(names)
-        ),
-        encoding="utf-8",
-    )
+    source: list[str] = []
+    assertion_lines: list[int] = []
+    for index, name in enumerate(names):
+        source.append(f"def {name}():")
+        source.extend(f"    assert {setup} == {setup}" for setup in range(10))
+        source.append(
+            f"    assert [{shared_value!r}, 'actual-{index}'] == "
+            f"[{shared_value!r}, 'expected-{index}'], '{index}-only'"
+        )
+        assertion_lines.append(len(source))
+        source.append("")
+    path.write_text("\n".join(source), encoding="utf-8")
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "--color=no", "-o", "addopts=", path.name],
         cwd=tmp_path, capture_output=True, text=True, check=False,
@@ -182,9 +273,14 @@ def test_failure_summary_matches_real_long_pytest_titles(
     summary = test_runner_module.pytest_diagnostics.pytest_failure_summary(result.stdout, result.stderr)
     assert summary["failed_tests"] == [f"{path.name}::{name}" for name in names]
     for index, failure in enumerate(summary["failures"]):
-        assert failure["source_location"] == f"{path.name}:{index * 3 + 2}"
+        assert failure["source_location"] == f"{path.name}:{assertion_lines[index]}"
         assert f"{index}-only" in failure["excerpt"]
+        assert f"At index 1 diff: 'actual-{index}' != 'expected-{index}'" in failure["excerpt"]
+        assert "assert 0 == 0" not in failure["excerpt"]
+        assert len(failure["excerpt"].encode("utf-8")) <= 800
         assert all(f"{other}-only" not in failure["excerpt"] for other in range(3) if other != index)
+    assert "At index 1 diff: 'actual-0' != 'expected-0'" in summary["decisive_excerpt"]
+    assert "assert 0 == 0" not in summary["decisive_excerpt"]
 
 
 @pytest.mark.parametrize(
@@ -197,14 +293,23 @@ def test_failure_summary_matches_real_long_pytest_titles(
         ("ERROR collecting tests/test_a.py", "tests/test_a.py"),
     ],
 )
+@pytest.mark.parametrize(
+    ("traceback_line", "expected_excerpt"),
+    [
+        ("E       exact-match", "E       exact-match"),
+        (">       assert actual == expected", ">       assert actual == expected"),
+        ("assert setup_ok", "exact-reason"),
+    ],
+)
 def test_failure_summary_matches_exact_identities_without_order_fallback(
-    test_runner_module: Any, title: str, identity: str
+    test_runner_module: Any, title: str, identity: str,
+    traceback_line: str, expected_excerpt: str,
 ) -> None:
     output = (
         "___ test_prefix ___\nE       wrong-prefix\ntests/test_a.py:10: AssertionError\n"
         "___ TestOther.test_same[a::b] ___\nE       wrong-class\ntests/test_a.py:20: AssertionError\n"
         "___ TestExample.test_same[other] ___\nE       wrong-parameter\ntests/test_a.py:30: AssertionError\n"
-        f"_ {title} _\nE       exact-match\ntests/test_a.py:40: AssertionError\n"
+        f"_ {title} _\n{traceback_line}\ntests/test_a.py:40: AssertionError\n"
         "=== short test summary info ===\n"
         "FAILED tests/test_a.py::test_missing - missing-reason\n"
         f"FAILED {identity} - exact-reason\n"
@@ -213,9 +318,12 @@ def test_failure_summary_matches_exact_identities_without_order_fallback(
     summary = test_runner_module.pytest_diagnostics.pytest_failure_summary(output, "")
     assert summary["failures"] == [
         {"test": "tests/test_a.py::test_missing", "source_location": None, "excerpt": "missing-reason"},
-        {"test": identity, "source_location": "tests/test_a.py:40", "excerpt": "E       exact-match"},
+        {"test": identity, "source_location": "tests/test_a.py:40", "excerpt": expected_excerpt},
         {"test": "tests/test_a.py::test_prefix", "source_location": "tests/test_a.py:10", "excerpt": "E       wrong-prefix"},
     ]
+    assert "wrong-class" not in summary["decisive_excerpt"]
+    assert "wrong-parameter" not in summary["decisive_excerpt"]
+    assert "assert setup_ok" not in summary["decisive_excerpt"]
 
 
 @pytest.mark.parametrize("with_locations", [True, False])
@@ -242,11 +350,13 @@ def test_failure_summary_requires_evidence_for_duplicate_titles(
     ]
 
 
-def test_failure_summary_bounds_multibyte_fields(test_runner_module: Any) -> None:
+@pytest.mark.parametrize("error_lines", [1, 6])
+def test_failure_summary_bounds_multibyte_fields(test_runner_module: Any, error_lines: int) -> None:
     diagnostics = test_runner_module.pytest_diagnostics
     identity = "tests/" + "界" * 250 + ".py::test_long"
     output = (
-        "_ test_long _\nE       " + "界" * 1_000 + "\n"
+        "_ test_long _\n"
+        + "\n".join(f"E       {index}: " + "界" * 1_000 for index in range(error_lines)) + "\n"
         + identity.partition("::")[0] + ":10: AssertionError\n"
         + "=== short test summary info ===\nFAILED " + identity + "\n"
     )
@@ -255,6 +365,7 @@ def test_failure_summary_bounds_multibyte_fields(test_runner_module: Any) -> Non
     for field, limit in (("test", 400), ("source_location", 500), ("excerpt", 800)):
         assert len(failure[field].encode("utf-8")) <= limit
         assert failure[field].endswith("...")
+    assert len(failure["excerpt"].splitlines()) == error_lines
     assert len(summary["decisive_excerpt"].encode("utf-8")) <= 2_000
     assert len(summary["context_excerpt"].encode("utf-8")) <= 2_000
 
@@ -265,6 +376,7 @@ def test_pytest_failure_writes_full_diagnostic_and_emits_bounded_summary(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     runner = test_runner_module
+    assert runner.DEFAULT_DIAGNOSTIC_PATH == pathlib.Path(".build/test-diagnostics/pytest-failure.json")
     stdout = (
         "___________________________ test_contract ____________________________\n"
         ">       assert 1 == 2\n"
@@ -318,15 +430,12 @@ def test_pytest_failure_writes_full_diagnostic_and_emits_bounded_summary(
         {
             "test": "tests/test_example.py::test_contract",
             "source_location": "tests/test_example.py:41",
-            "excerpt": ">       assert 1 == 2\nE       assert 1 == 2",
+            "excerpt": "E       assert 1 == 2",
         },
         {
             "test": "tests/test_other.py::test_configuration",
             "source_location": "tests/test_other.py:23",
-            "excerpt": (
-                ">       raise RuntimeError('bad configuration')\n"
-                "E       RuntimeError: bad configuration"
-            ),
+            "excerpt": "E       RuntimeError: bad configuration",
         },
     ]
     assert result["pytest"]["decisive_excerpt"] == (
@@ -441,13 +550,14 @@ def test_committed_diff_treats_deleted_test_as_intentional_full_suite(
     [
         None,
         "skills/ceratops-credit-savings-analysis/scripts/credit_analysis/luna_sol_analysis.py",
-        "pyproject.toml",
+        "scripts/pyproject.toml",
     ],
 )
 @pytest.mark.parametrize("unmapped_path", ["src/unmapped.py", "tests/unmapped/test_new.py"])
 def test_mapping_gap_returns_before_pytest_collection_or_execution(
     test_runner_module: Any,
     capsys: pytest.CaptureFixture[str],
+    tmp_path: pathlib.Path,
     mode: str,
     mapped_path: str | None,
     unmapped_path: str,
@@ -457,9 +567,11 @@ def test_mapping_gap_returns_before_pytest_collection_or_execution(
     if mapped_path is not None:
         diff += f"M\0{mapped_path}\0"
     execution = DeterministicExecution(runner, diff.encode())
+    diagnostic = tmp_path / "selection failure.json"
+    arguments = ["--worktree"] if mode == "worktree" else ["--base", BASE, "--head", HEAD]
 
     exit_code = runner.execute(
-        ["--worktree"] if mode == "worktree" else ["--base", BASE, "--head", HEAD],
+        [*arguments, "--diagnostic-output", str(diagnostic)],
         repo_root=ROOT,
         text_runner=execution.text,
         bytes_runner=execution.bytes,
@@ -485,6 +597,8 @@ def test_mapping_gap_returns_before_pytest_collection_or_execution(
         for command in execution.commands
     )
     assert execution.final_pytest == []
+    complete = assert_pretest_diagnostic(diagnostic, result, exit_code)
+    assert complete["commands"] == []
 
 
 def test_full_mode_uses_sorted_manifest_targets_without_ambient_inference(
@@ -546,15 +660,26 @@ def test_explicit_worktree_mode_selects_tracked_and_untracked_changes(
     assert len(execution.final_pytest) == 1
 
 
+@pytest.mark.parametrize("output_kind", ["explicit", "default", "unwritable"])
 def test_revision_mode_requires_two_full_commit_shas(
-    test_runner_module: Any, capsys: pytest.CaptureFixture[str]
+    test_runner_module: Any, capsys: pytest.CaptureFixture[str],
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, output_kind: str,
 ) -> None:
     runner = test_runner_module
+    diagnostic = tmp_path / "runner failure.json"
+    if output_kind == "unwritable":
+        blocked_parent = tmp_path / "blocked"
+        blocked_parent.write_text("existing file", encoding="utf-8")
+        diagnostic = blocked_parent / "failure.json"
+    monkeypatch.setattr(runner, "DEFAULT_DIAGNOSTIC_PATH", diagnostic)
+    output_arguments = [] if output_kind == "default" else ["--diagnostic-output", str(diagnostic)]
 
-    missing_head = runner.execute(["--base", BASE], repo_root=ROOT)
+    missing_head = runner.execute(["--base", BASE, *output_arguments], repo_root=ROOT)
     first = payload(capsys)
+    if output_kind != "unwritable":
+        assert_pretest_diagnostic(diagnostic, first, missing_head)
     short_sha = runner.execute(
-        ["--base", "1234", "--head", HEAD], repo_root=ROOT
+        ["--base", "1234", "--head", HEAD, *output_arguments], repo_root=ROOT
     )
     second = payload(capsys)
 
@@ -563,6 +688,72 @@ def test_revision_mode_requires_two_full_commit_shas(
     assert short_sha == runner.CONFIGURATION_EXIT_CODE
     assert second["status"] == "configuration-error"
     assert "full 40-character SHA" in second["manifest_errors"][0]
+    if output_kind == "unwritable":
+        for result in (first, second):
+            assert "cannot create diagnostic output parent" in result["diagnostic"]["error"]
+            assert result["diagnostic"]["path"] == str(diagnostic.resolve())
+        assert not diagnostic.exists()
+        assert blocked_parent.read_text(encoding="utf-8") == "existing file"
+    else:
+        assert_pretest_diagnostic(diagnostic, second, short_sha)
+
+
+@pytest.mark.parametrize("failure", [
+    "manifest-load", "manifest-validation", "selected-collection", "full-collection",
+    "revision-resolution", "worktree-resolution",
+])
+def test_pretest_failures_preserve_report_and_full_command_output(
+    test_runner_module: Any, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], failure: str,
+) -> None:
+    runner = test_runner_module
+    execution = DeterministicExecution(
+        runner, b"M\0skills/ceratops-credit-savings-analysis/SKILL.md\0",
+    )
+    diagnostic = tmp_path / "runner failure.json"
+    stdout = "ImportError: decisive detail\n" + "later noise\n" * 100
+    stderr = "complete error stream\n"
+    root = ROOT
+    arguments = ["--base", BASE, "--head", HEAD]
+    if failure == "manifest-load":
+        root = tmp_path / "invalid-repository"
+        (root / "tests").mkdir(parents=True)
+        (root / "tests/test-impact.json").write_text("{invalid json", encoding="utf-8")
+    elif failure == "manifest-validation":
+        monkeypatch.setattr(runner, "validate_manifest", lambda *_args, **_kwargs: ["invalid ownership"])
+    elif failure == "full-collection":
+        arguments = ["--write-collection", str(tmp_path / "collection.json")]
+    elif failure == "worktree-resolution":
+        arguments = ["--worktree"]
+
+    def failing_command(command: Any, cwd: pathlib.Path) -> subprocess.CompletedProcess[str]:
+        if "--collect-only" in command or (
+            failure in {"revision-resolution", "worktree-resolution"} and command[0] == "git"
+        ):
+            return subprocess.CompletedProcess(command, 2, stdout, stderr)
+        return execution.text(command, cwd)
+
+    exit_code = runner.execute(
+        [*arguments, "--diagnostic-output", str(diagnostic)], repo_root=root,
+        text_runner=failing_command, bytes_runner=execution.bytes,
+    )
+    result = payload(capsys)
+    assert exit_code == runner.CONFIGURATION_EXIT_CODE
+    assert result["status"] == (
+        "manifest-invalid" if failure.startswith("manifest-") else
+        "configuration-error" if failure.endswith("resolution") else "collection-invalid"
+    )
+    complete = assert_pretest_diagnostic(diagnostic, result, exit_code)
+    assert complete["cwd"] == str(root.resolve())
+    assert execution.final_pytest == []
+    if failure.startswith("manifest-"):
+        assert complete["commands"] == []
+    else:
+        assert complete["commands"]
+        assert all(command["stdout"] == stdout and command["stderr"] == stderr
+                   for command in complete["commands"])
+        assert "ImportError: decisive detail" not in json.dumps(result)
+    assert not (tmp_path / "collection.json").exists()
 
 
 def test_manifest_validation_mode_collects_every_declared_target(
@@ -663,8 +854,9 @@ def test_collection_node_map_resolves_ambiguous_identity(
         "tests/beta/test_flow.py::test_case[value]",
     )
     ambiguous = CollectionExecution(runner, candidates)
+    diagnostic = tmp_path / "collection failure.json"
     mismatch_exit = runner.execute(
-        ["--reconcile-collection", str(baseline_path)],
+        ["--reconcile-collection", str(baseline_path), "--diagnostic-output", str(diagnostic)],
         repo_root=ROOT,
         text_runner=ambiguous.text,
         bytes_runner=ambiguous.bytes,
@@ -676,6 +868,7 @@ def test_collection_node_map_resolves_ambiguous_identity(
     assert mismatch["collection"]["ambiguous"] == [
         {"old": old, "candidates": list(candidates)}
     ]
+    assert_pretest_diagnostic(diagnostic, mismatch, mismatch_exit)
     missing = runner.reconcile_collections((old,), (), {})
     assert missing["ok"] is False
     assert missing["missing"] == [old]
@@ -957,6 +1150,7 @@ def test_pytest_cleanup_error_preserves_output_and_test_exit_code(
     test_runner_module: Any, tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch, failure: bool,
 ) -> None:
+    monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
     runner = test_runner_module
     test = tmp_path / "test_example.py"
     test.write_text(
@@ -1001,3 +1195,40 @@ def test_pytest_setup_failure_returns_diagnostic_before_launch(
     assert result.stdout == "" and "unavailable template" in result.stderr
     ordinary = runner.run_text([sys.executable, "-c", "print('ordinary command')"], tmp_path)
     assert ordinary.returncode == 0 and ordinary.stdout.strip() == "ordinary command"
+
+@pytest.mark.parametrize(
+    ("arguments", "diff", "expected", "exit_code"),
+    [
+        (["--base", BASE, "--head", HEAD], b"M\0skills/ceratops-repo-lifecycle/SKILL.md\0", "selection-valid", 0),
+        (["--base", BASE, "--head", HEAD], b"", "selection-valid", 0),
+        (["--worktree"], b"M\0skills/ceratops-repo-lifecycle/SKILL.md\0", "selection-valid", 0),
+        (["--base", BASE, "--head", HEAD], b"R100\0retired/old.py\0skills/ceratops-repo-lifecycle/SKILL.md\0", "selection-valid", 0),
+        (["--base", BASE, "--head", HEAD], b"A\0unknown/new.py\0", "mapping-gap", 3),
+        (["--all"], b"", "configuration-error", 2),
+        (["--validate-manifest"], b"", "configuration-error", 2),
+        (["--base", BASE], b"", "configuration-error", 2),
+    ],
+)
+def test_selection_only_reuses_diff_mapping_without_starting_pytest(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str],
+    test_runner_module: Any, arguments: list[str], diff: bytes, expected: str, exit_code: int,
+) -> None:
+    execution = DeterministicExecution(test_runner_module, diff)
+    diagnostic = tmp_path / "selection.json"
+    diagnostic.write_text("retained pytest failure", encoding="utf-8")
+    code = test_runner_module.execute(
+        [*arguments, "--select-only", "--diagnostic-output", str(diagnostic)],
+        repo_root=ROOT, text_runner=execution.text, bytes_runner=execution.bytes,
+    )
+    result = payload(capsys)
+    assert code == exit_code
+    assert result["status"] == expected
+    assert result["pytest"] == {"exit_code": None, "outcome": "not-run"}
+    assert not any("pytest" in command for command in execution.commands)
+    assert not execution.final_pytest
+    if code:
+        assert_pretest_diagnostic(diagnostic, result, exit_code)
+    else:
+        assert diagnostic.read_text(encoding="utf-8") == "retained pytest failure"
+        if diff.startswith(b"R"):
+            assert result["full_suite"] is True

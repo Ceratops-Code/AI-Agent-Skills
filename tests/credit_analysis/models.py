@@ -4,7 +4,8 @@ import importlib.util
 import json
 import pathlib
 import sys
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any, ClassVar
 
 from tests.credit_analysis.paths import CREDIT_ANALYSIS_WORKFLOW
 
@@ -49,7 +50,7 @@ class FakeCreditModelRunner:
     """Return sparse Luna discovery and complete sharded Sol synthesis."""
 
     available_models = holistic_model_catalog()
-    usage_by_phase = {
+    usage_by_phase: ClassVar[dict[str, dict[str, int]]] = {
         "luna-discovery": {
             "input_tokens": 800,
             "cached_input_tokens": 0,
@@ -79,6 +80,36 @@ class FakeCreditModelRunner:
     def __init__(self, *, temporary_controls: bool = True) -> None:
         self.calls: list[dict[str, Any]] = []
         self.temporary_controls = temporary_controls
+        full_response = self.run
+
+        def transport(**kwargs: Any) -> dict[str, Any]:
+            # Wrap the outermost override so defect-injecting subclasses still
+            # edit full synthetic judgments before the fake transport encodes them.
+            result = full_response(**kwargs)
+            if "baseline_sha256" in kwargs["schema"].get("properties", {}) and "baseline_sha256" not in result:
+                from credit_analysis.model_response_contract import (
+                    _call_details,
+                    project_response_correction,
+                )
+
+                feedback = json.loads(kwargs["prompt"].split("\nCorrection request:\n", 1)[1])
+                prior = feedback["prior_response"]
+                correction = project_response_correction(prior, result, kwargs["schema"])
+                permitted_calls = {identity for branch in kwargs["schema"]["properties"]["edits"]["items"].get("anyOf", [])
+                                   for identity in branch["properties"].get("call_id", {}).get("enum", [])}
+                current_calls = _call_details(result)
+                for index, group in enumerate(prior.get("call_classifications") or []):
+                    for identity in group["call_ids"]:
+                        if (identity not in permitted_calls and identity in current_calls
+                                and group["classification"] != current_calls[identity]["classification"]):
+                            # Preserve adversarial judgment changes as invalid
+                            # transport instead of silently filtering the defect.
+                            correction["edits"].append({"path": f"/call_classifications/{index}/classification",
+                                                        "value": current_calls[identity]["classification"]})
+                return correction
+            return result
+
+        self.run = transport  # type: ignore[method-assign]
 
     @staticmethod
     def _records(packet: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -180,6 +211,13 @@ class FakeCreditModelRunner:
             ]
             if selected:
                 add(suffix, "temporary-control", records[-1], selected)
+        candidate_limit = task.get("candidate_limit")
+        if isinstance(candidate_limit, int):
+            primary = candidates[:3]
+            remaining = candidates[3:]
+            controls = [item for item in remaining if item["kind"] == "temporary-control"]
+            other = [item for item in remaining if item["kind"] != "temporary-control"]
+            candidates = [*primary, *controls, *other][:candidate_limit]
         result = {
             "schema": "ceratops-credit-analysis-luna-result.v5",
             "analysis_id": packet["analysis_id"],
@@ -439,15 +477,101 @@ class FakeCreditModelRunner:
                 classifications[-1]["call_ids"].append(call_id)
             else:
                 classifications.append({"call_ids": [call_id], **detail})
-        categories = list(prior[0]["helper_category_reviews"]) if prior else []
         return {
             "candidate_decisions": decisions,
             "confirmed_findings": findings,
             "plausible_risks": risks,
             "temporary_control_reviews": reviews,
             "temporary_control_merges": list(merge_index.values()),
-            "helper_category_reviews": categories,
+            "helper_category_reviews": [],
             "call_classifications": classifications,
+        }
+
+    @staticmethod
+    def _final_delta(
+        full: Mapping[str, Any], packet: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Project the older full fixture into the new final-model delta contract."""
+        recovery = packet.get("recovery_result")
+        sources = [
+            *packet["prior_adjudication_results"],
+            *([recovery] if isinstance(recovery, Mapping) else []),
+        ]
+        prior_decisions = {
+            item["luna_candidate_id"]
+            for source in sources for item in source["candidate_decisions"]
+        }
+        prior_by_field = {
+            field: {
+                item["id"]: item
+                for source in sources for item in source[field]
+            }
+            for field in (
+                "confirmed_findings", "plausible_risks", "temporary_control_reviews"
+            )
+        }
+        reviewed = {
+            item["finding_id"] for item in packet["deep_review_evidence"]
+        }
+        def semantic(value: Mapping[str, Any]) -> dict[str, Any]:
+            record = {
+                key: detail for key, detail in value.items()
+                if key not in {"affected_call_ids", "evidence_refs", "workstream"}
+            }
+            record["recurrence"] = {
+                key: detail for key, detail in value["recurrence"].items()
+                if key != "estimated_calls_saved_per_similar_run"
+            }
+            return record
+
+        findings = []
+        for item in full["confirmed_findings"]:
+            previous = prior_by_field["confirmed_findings"].get(item["id"])
+            if previous is None or (
+                item["id"] in reviewed and semantic(item) != semantic(previous)
+            ):
+                findings.append(item)
+        risks = [
+            item for item in full["plausible_risks"]
+            if item["id"] not in prior_by_field["plausible_risks"]
+        ]
+        reviews = [
+            item for item in full["temporary_control_reviews"]
+            if item["id"] not in prior_by_field["temporary_control_reviews"]
+        ]
+        old_merge_keys = {
+            (item["owning_producer"], item["control_key"])
+            for source in sources for item in source["temporary_control_merges"]
+        }
+        merges = [
+            item for item in full["temporary_control_merges"]
+            if (item["owning_producer"], item["control_key"]) not in old_merge_keys
+        ]
+        prior_classes = {
+            call_id: {key: value for key, value in group.items()
+                      if key not in {"call_ids", "workstream"}}
+            for source in sources for group in source["call_classifications"]
+            for call_id in group["call_ids"]
+        }
+        classes = [
+            {**group, "call_ids": [call_id]}
+            for group in full["call_classifications"]
+            for call_id in group["call_ids"]
+            if {key: value for key, value in group.items() if key != "call_ids"}
+            != prior_classes.get(call_id)
+        ]
+        return {
+            "candidate_decisions": [
+                {key: value for key, value in item.items() if key != "disposition"}
+                for item in full["candidate_decisions"]
+                if item["luna_candidate_id"] not in prior_decisions
+            ],
+            "confirmed_findings": findings,
+            "plausible_risks": risks,
+            "temporary_control_reviews": reviews,
+            "temporary_control_merges": merges,
+            "helper_category_reviews": [],
+            "call_classifications": classes,
         }
 
     @staticmethod
@@ -457,9 +581,10 @@ class FakeCreditModelRunner:
                 0.0 if volume_only else float(call_count)
             ),
             "additional_recurring_calls_per_affected_run": 0.0,
-            "affected_similar_run_frequency": 0.5,
-            "affected_similar_run_frequency_range": [0.25, 0.75],
-            "assumptions": ["synthetic recurrence evidence"],
+            # Large orchestration fixtures must still exercise accepted findings.
+            "affected_similar_run_frequency": 10.0,
+            "affected_similar_run_frequency_range": [8.0, 12.0],
+            "assumptions": ["synthetic evidence of ten affected comparable runs"],
         }
 
     @classmethod
@@ -586,7 +711,6 @@ class FakeCreditModelRunner:
                     )
                 )
                 finding_ids = [finding_id]
-                disposition = "confirmed-finding"
             elif candidate["kind"] == "plausible-risk":
                 candidate_key = str(candidate["candidate_ids"][0])
                 risk_id = f"risk-{index}"
@@ -609,16 +733,11 @@ class FakeCreditModelRunner:
                     }
                 )
                 risk_ids = [risk_id]
-                disposition = "plausible-risk"
             elif candidate_id in durable_candidates:
                 finding_ids = ["temporary-control-gap"]
-                disposition = "confirmed-finding"
-            else:
-                disposition = "dismissed-candidate"
             decisions.append(
                 {
                     "luna_candidate_id": candidate_id,
-                    "disposition": disposition,
                     "reason": "Original evidence was checked in the final pass.",
                     "evidence_refs": evidence_refs,
                     "finding_ids": finding_ids,
@@ -784,7 +903,7 @@ class FakeCreditModelRunner:
         if task["phase"] == "sol-direct-evidence":
             return self._audit(task, input_payload, input_sha256)
         if task["phase"] == "sol-final":
-            return self._final(input_payload)
+            return self._final_delta(self._final(input_payload), input_payload)
         return self._sol(task, input_payload, input_sha256)
 
 

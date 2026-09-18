@@ -2,11 +2,15 @@
   "version": 1,
   "suites": {
     "design-document-lifecycle": {
-      "pytest": ["tests/design_document_lifecycle"],
+      "pytest": [
+        "tests/design_document_lifecycle"
+      ],
       "depends_on": []
     },
     "tool_manager": {
-      "pytest": ["tests/tool_manager"],
+      "pytest": [
+        "tests/tool_manager"
+      ],
       "depends_on": []
     },
     "credit-analysis": {
@@ -55,18 +59,28 @@
   "rules": [
     {
       "id": "design-document-lifecycle-source",
-      "paths": ["skills/design-document-lifecycle/**"],
-      "suites": ["design-document-lifecycle"]
+      "paths": [
+        "skills/design-document-lifecycle/**"
+      ],
+      "suites": [
+        "design-document-lifecycle"
+      ]
     },
     {
       "id": "tool_manager_source",
       "paths": [
         ".codex/config.toml",
         "tools/**",
-        "scripts/deploy-tool-manager.py",
-        "skills/ceratops-tool-lifecycle/**"
+        "scripts/deploy-tool-manager.py"
       ],
-      "suites": ["tool_manager"]
+      "suites": [
+        "tool_manager"
+      ]
+    },
+    {
+      "id": "tool-lifecycle-source",
+      "paths": ["skills/ceratops-tool-lifecycle/**"],
+      "suites": ["tool_manager", "repository-lifecycle"]
     },
     {
       "id": "credit-analysis-source",
@@ -140,25 +154,29 @@
   "full_suite_paths": [
     ".github/dependabot.yml",
     ".github/workflows/**",
+    ".gitignore",
     "AGENTS.history.json",
     "AGENTS.md",
-    "package-lock.json",
-    "package.json",
-    "pyproject.toml",
-    "requirements-dev.txt",
-    "requirements-runtime.txt",
+    "scripts/.markdownlint.json",
+    "scripts/.yamllint.yml",
+    "scripts/package-lock.json",
+    "scripts/package.json",
     "scripts/testing/run-tests.py",
+    "scripts/testing/runner_requests.py",
     "scripts/testing/pytest-diagnostics.py",
     "scripts/testing/pytest-environment.py",
     "scripts/validate-repository.py",
     "skills/ceratops-automation-run/**",
     "skills/ceratops-code-consistency-audit/**",
+    "skills/codex-desktop-upgrade/**",
     "skills/sections/**",
     "skills/skill-sections.json",
     "tests/__init__.py",
     "tests/conftest.py",
     "tests/support/**",
-    "tests/test-impact.json"
+    "tests/test-impact.json",
+    "scripts/pyproject.toml",
+    "scripts/uv.lock"
   ],
   "ignored_paths": [
     {
@@ -169,6 +187,7 @@
         ".github/pull_request_template.md",
         "CHANGELOG.md",
         "CONTRIBUTING.md",
+        "docs/design-draft.md",
         "LICENSE",
         "README.md",
         "hooks/README.md"

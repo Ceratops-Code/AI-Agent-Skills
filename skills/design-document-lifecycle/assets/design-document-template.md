@@ -34,8 +34,9 @@ current implementation from approved intent in each relevant section.
 
 ## 1 Purpose and goals
 
-State purpose, scope, stakeholders, goals, and non-goals; identify the design
-questions readers must decide.
+State purpose, scope, stakeholders, intended readers, prerequisite knowledge,
+goals, and non-goals; identify the design questions readers must decide and
+prioritize the architectural quality goals that drive them.
 
 ## 2 Constraints and assumptions
 

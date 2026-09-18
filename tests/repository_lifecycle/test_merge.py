@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import runpy
 import subprocess
 import sys
 from typing import Any
@@ -19,6 +20,354 @@ from tests.repository_lifecycle.support import (
 from tests.support.repositories import (
     run_git,
 )
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        ({"base_oid": "a" * 40, "behind_by": 0}, "current"),
+        ({"base_oid": "a" * 40, "behind_by": 2}, "behind"),
+        ({"base_oid": "b" * 40, "behind_by": 0}, "failed"),
+        ({"base_oid": "a" * 40, "behind_by": True}, "failed"),
+        ({"base_oid": "a" * 40, "behind_by": -1}, "failed"),
+        ({}, "failed"),
+        ([], "failed"),
+        ("invalid JSON", "failed"),
+        ("timeout", "failed"),
+    ],
+)
+def test_dependency_branch_comparison_requires_exact_evidence(
+    monkeypatch: pytest.MonkeyPatch, response: Any, expected: str,
+) -> None:
+    evidence = load_pr_workflow_module(monkeypatch, "dependency_evidence")
+    calls = []
+
+    def query(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append((command, kwargs))
+        if response == "timeout":
+            raise subprocess.TimeoutExpired(command, 1)
+        return subprocess.CompletedProcess(
+            command, 0,
+            response if isinstance(response, str) else json.dumps(response), "",
+        )
+
+    monkeypatch.setattr(evidence, "run_command", query)
+    result = evidence.branch_freshness(
+        "owner/repo", {"base_oid": "a" * 40, "head_oid": "c" * 40, "merge_state": "CLEAN"}
+    )
+    assert result["status"] == expected
+    assert calls[0][0][2] == f"repos/owner/repo/compare/{'a' * 40}...{'c' * 40}"
+    assert calls[0][1]["timeout"] == 30
+    assert evidence.branch_freshness("owner/repo", {})["status"] == "failed"
+    assert len(calls) == 1
+    projected = evidence.project_pr({"baseRefOid": "a" * 40, "headRefOid": "c" * 40})
+    assert projected["base_oid"] == "a" * 40
+
+
+@pytest.mark.parametrize("ending", ["rebased", "timeout", "query_failure", "closed"])
+def test_dependency_rebase_wait_batches_and_reuses_commit_comparisons(
+    monkeypatch: pytest.MonkeyPatch, ending: str,
+) -> None:
+    queue = load_pr_workflow_module(monkeypatch, "dependency_queue")
+    now = [0.0]
+    probes, polls = [], []
+    old = {
+        "state": "OPEN", "author": "app/dependabot",
+        "head_oid": "b" * 40, "base_oid": "a" * 40,
+    }
+    current = {**old, "head_oid": "c" * 40}
+    human = {**old, "author": "human"}
+    details = {("owner/repo", 1): old.copy(), ("owner/repo", 2): current, ("owner/repo", 3): human}
+
+    def compare(repo: str, live: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        probes.append((repo, live["base_oid"], live["head_oid"]))
+        return {
+            "status": "behind" if live["head_oid"] == "b" * 40 else "current",
+            "behind_by": 1 if live["head_oid"] == "b" * 40 else 0,
+        }
+
+    def refresh(requested: dict[str, set[int]], **kwargs: Any):
+        polls.append(requested)
+        assert requested == {"owner/repo": {1}}
+        if ending == "query_failure":
+            return {}, [{"repo": "owner/repo", "pr": 1, "check": "pr_query", "message": "denied"}]
+        live = old.copy()
+        if len(polls) == 2:
+            if ending == "rebased":
+                live.update(head_oid="d" * 40, base_oid="e" * 40)
+            elif ending == "closed":
+                live["state"] = "CLOSED"
+        return {("owner/repo", 1): live}, []
+
+    monkeypatch.setattr(queue.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(queue.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds))
+    monkeypatch.setattr(queue, "branch_freshness", compare)
+    monkeypatch.setattr(queue, "fetch_pr_batch", refresh)
+    result, blockers = queue.wait_for_dependabot_rebases(
+        details, wait_seconds=30, interval_seconds=15
+    )
+    assert now[0] <= 30
+    assert result[("owner/repo", 2)]["rebase_wait"]["status"] == "ready"
+    assert "branch_freshness" not in result[("owner/repo", 3)]
+    assert len(probes) == (3 if ending == "rebased" else 2)
+    if ending == "rebased":
+        assert result[("owner/repo", 1)]["head_oid"] == "d" * 40
+        assert result[("owner/repo", 1)]["rebase_wait"]["status"] == "ready"
+    elif ending == "timeout":
+        assert result[("owner/repo", 1)]["rebase_wait"]["status"] == "timed_out"
+    elif ending == "closed":
+        assert result[("owner/repo", 1)]["state"] == "CLOSED"
+    else:
+        assert blockers[0]["message"] == "denied"
+    assert bool(blockers) == (ending == "query_failure")
+
+
+def test_dependency_rebase_wait_skips_sleep_for_current_or_failed_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queue = load_pr_workflow_module(monkeypatch, "dependency_queue")
+    monkeypatch.setattr(queue.time, "sleep", lambda _: pytest.fail("unexpected sleep"))
+    monkeypatch.setattr(queue, "fetch_pr_batch", lambda *_: pytest.fail("unexpected refresh"))
+    for status in ("current", "failed"):
+        monkeypatch.setattr(
+            queue, "branch_freshness",
+            lambda *_, status=status, **kwargs: {"status": status, "message": "comparison unavailable"},
+        )
+        _, blockers = queue.wait_for_dependabot_rebases({
+            ("owner/repo", 1): {"state": "OPEN", "author": "dependabot[bot]"},
+        })
+        assert bool(blockers) == (status == "failed")
+
+
+@pytest.mark.parametrize("mode", ["timeout", "cleaned", "cleanup_blocked"])
+def test_dependency_finalization_preserves_gate_and_reports_cleanup(
+    monkeypatch: pytest.MonkeyPatch, mode: str,
+) -> None:
+    from tests.repository_lifecycle.test_github_workflow import (
+        DependencyFinalizationTests,
+    )
+
+    finalization = load_pr_workflow_module(monkeypatch, "dependency_finalization")
+    original_index = finalization.preflight_pr_index
+
+    def index(payload: dict[str, Any]) -> dict[Any, Any]:
+        result = original_index(payload)
+        if mode == "timeout":
+            result[("owner/repo", 1)]["pr"]["live"]["rebase_wait"] = {"status": "timed_out"}
+        return result
+
+    cleanup_calls = []
+    monkeypatch.setattr(finalization, "preflight_pr_index", index)
+    monkeypatch.setattr(finalization, "selected_worktree_cleanup", lambda *_: ({"selected": "task"}, None))
+
+    def cleanup(plan: dict[str, str]):
+        assert finalization.run_sync.called
+        cleanup_calls.append(plan)
+        error = "folder retained" if mode == "cleanup_blocked" else None
+        return {"status": "blocked" if error else "cleaned"}, error
+
+    monkeypatch.setattr(finalization, "finalize_worktree_cleanup", cleanup)
+    fixture = DependencyFinalizationTests()
+    payload, _, merges = fixture._finalize_case(
+        [("owner/repo", 1)], {("owner/repo", 1): fixture._live("a" * 40)}, snapshot_open=[]
+    )
+    if mode == "timeout":
+        assert not merges and not cleanup_calls
+        assert payload["blockers"][0]["check"] == "dependabot_rebase"
+    else:
+        assert merges == [("owner/repo", 1)]
+        assert cleanup_calls == [{"selected": "task"}]
+        assert payload["pull_requests"][0]["cleanup"]["status"] == (
+            "blocked" if mode == "cleanup_blocked" else "cleaned"
+        )
+    assert payload["outcome"]["blocked"] == (mode != "cleaned")
+
+
+@pytest.mark.parametrize(
+    "mode", ["clean", "residual", "dirty", "changed_head", "other_scope", "interrupted", "unmerged"]
+)
+def test_dependency_selected_cleanup_reuses_manager_and_preserves_unapproved_work(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, mode: str,
+) -> None:
+    finalization = load_pr_workflow_module(monkeypatch, "dependency_finalization")
+    repo = tmp_path / "Repository"
+    repo.mkdir()
+    for arguments in (
+        ("init", "-b", "main"),
+        ("config", "user.email", "test@example.invalid"),
+        ("config", "user.name", "Test Agent"),
+    ):
+        assert run_git(repo, *arguments).returncode == 0
+    (repo / ".gitignore").write_text("node_modules/\n", encoding="utf-8")
+    (repo / "file.txt").write_text("base\n", encoding="utf-8")
+    assert run_git(repo, "add", ".").returncode == 0
+    assert run_git(repo, "commit", "-m", "base").returncode == 0
+    worktree = tmp_path / "worktrees" / repo.name / "selected"
+    assert run_git(repo, "worktree", "add", "-b", "selected", str(worktree)).returncode == 0
+    (worktree / "file.txt").write_text("change\n", encoding="utf-8")
+    assert run_git(worktree, "commit", "-am", "change").returncode == 0
+    head = run_git(worktree, "rev-parse", "HEAD").stdout.strip()
+    assert finalization.selected_worktree_cleanup({"path": str(worktree)}, head, "main") == (None, None)
+    assert finalization.selected_worktree_cleanup(
+        {"explicit": True, "path": str(repo)}, head, "main"
+    ) == (None, None)
+    plan, error = finalization.selected_worktree_cleanup(
+        {"explicit": True, "path": str(worktree)}, head, "main"
+    )
+    assert error is None and plan is not None
+    if mode != "unmerged":
+        assert run_git(repo, "merge", "--ff-only", "selected").returncode == 0
+    target = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    assert run_git(repo, "update-ref", "refs/remotes/origin/main", target).returncode == 0
+
+    manager = runpy.run_path(str(PR_WORKFLOW_SCRIPTS / "manage-pending-work.py"))
+    monkeypatch.setattr(finalization.runpy, "run_path", lambda _: manager)
+    scope = manager["_scope_path"](repo, "main")
+    original_scope = None
+    if mode == "other_scope":
+        assert run_git(repo, "branch", "unrelated").returncode == 0
+        assert manager["record_scope"](
+            repo, target_branch="main", target_commit=target, source_branches=["unrelated"]
+        )["status"] == "ready"
+        original_scope = scope.read_bytes()
+    if mode in {"dirty", "changed_head"}:
+        (worktree / "file.txt").write_text("later work\n", encoding="utf-8")
+        if mode == "changed_head":
+            assert run_git(worktree, "commit", "-am", "later work").returncode == 0
+    if mode in {"residual", "interrupted"}:
+        namespace = manager["finalize_scope"].__globals__
+        original_run = namespace["run_command"]
+
+        def leave_residue(command: list[str], **kwargs: Any):
+            completed = original_run(command, **kwargs)
+            if command[-3:] == ["worktree", "remove", str(worktree.resolve())]:
+                assert completed.returncode == 0
+                folder = worktree / "node_modules" / "leftover"
+                folder.mkdir(parents=True)
+                (folder / "index.js").write_text("generated", encoding="utf-8")
+            return completed
+
+        monkeypatch.setitem(namespace, "run_command", leave_residue)
+        if mode == "interrupted":
+            def interrupt(*_: Any):
+                raise manager["PendingWorkError"]("simulated cleanup interruption")
+            monkeypatch.setitem(namespace, "_finish_recorded_residual_cleanup", interrupt)
+
+    result, error = finalization.finalize_worktree_cleanup(plan)
+    if mode in {"clean", "residual"}:
+        assert error is None, result
+        assert result["status"] == "cleaned"
+        assert not worktree.exists()
+        assert run_git(repo, "show-ref", "--verify", "--quiet", "refs/heads/selected").returncode == 1
+        assert not scope.exists()
+    else:
+        assert error and result["status"] == "blocked"
+        assert worktree.exists()
+        assert run_git(repo, "show-ref", "--verify", "--quiet", "refs/heads/selected").returncode == 0
+        if mode == "other_scope":
+            assert scope.read_bytes() == original_scope
+        if mode == "interrupted":
+            assert scope.exists()
+            assert result["record"]["pending_work_scope"] == str(scope)
+
+
+@pytest.mark.parametrize("wait_status", ["ready", "timed_out", "failed"])
+def test_dependency_preflight_collects_evidence_after_rebase_wait(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, wait_status: str,
+) -> None:
+    queue = load_pr_workflow_module(monkeypatch, "dependency_queue")
+    common = load_pr_workflow_module(monkeypatch, "dependency_common")
+    order = []
+    old = {
+        "title": "Bump demo from 1.0.0 to 1.0.1",
+        "head_oid": "a" * 40, "files": [{"path": "old.txt"}],
+    }
+    new = {
+        **old, "head_oid": "b" * 40, "files": [{"path": "package.json"}],
+        "rebase_wait": {"status": wait_status},
+    }
+    pr = {"repo": "owner/repo", "number": 1, "title": old["title"]}
+    snapshot = {
+        "outcome": {"blocked": False}, "summary": {"org": "owner"},
+        "open_dependabot_prs": [pr], "open_dependabot_alerts": [],
+    }
+    monkeypatch.setattr(
+        queue, "refresh_snapshot",
+        lambda *_: (snapshot, subprocess.CompletedProcess([], 0, "", "")),
+    )
+    monkeypatch.setattr(queue, "fetch_pr_batch", lambda *_: ({("owner/repo", 1): old}, []))
+
+    def wait(details: dict[Any, Any]):
+        assert details[("owner/repo", 1)]["head_oid"] == "a" * 40
+        order.append("wait")
+        return {("owner/repo", 1): new}, (
+            [{"repo": "owner/repo", "pr": 1, "check": "branch_freshness", "message": "unavailable"}]
+            if wait_status == "failed" else []
+        )
+
+    monkeypatch.setattr(queue, "wait_for_dependabot_rebases", wait)
+    monkeypatch.setattr(queue, "queued_repositories", lambda _: [{"repo": "owner/repo", "name": "repo"}])
+    monkeypatch.setattr(
+        common, "run_command",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 0, "https://github.com/owner/repo.git" if "remote" in command else str(tmp_path), ""
+        ),
+    )
+
+    def ci(_: pathlib.Path):
+        assert order == ["wait"]
+        order.append("ci")
+        return {"status": "ok"}
+
+    monkeypatch.setattr(queue, "exact_ci_evidence", ci)
+    monkeypatch.setattr(queue, "registry_evidence", lambda _: {"status": "ok"})
+
+    def tree(checkout: pathlib.Path, update: dict[str, Any], files: list[Any], alerts: list[Any]):
+        assert files == new["files"]
+        assert order == ["wait", "ci"]
+        order.append("tree")
+        return {"status": "ok"}
+
+    monkeypatch.setattr(queue, "dependency_tree_evidence", tree)
+    monkeypatch.setattr(queue, "emit_result", lambda *_: None)
+    output = tmp_path / "preflight.json"
+    args = queue.build_parser().parse_args([
+        "preflight", "--org", "owner",
+        "--snapshot-helper", str(tmp_path / "snapshot.py"),
+        "--snapshot", str(tmp_path / "snapshot.json"), "--output", str(output),
+        "--workspace-root", str(tmp_path),
+        "--checkout", f"owner/repo={tmp_path}",
+    ])
+    assert queue.preflight(args) == 0
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    repository = payload["repositories"][0]
+    assert repository["checkout"]["explicit"] is True
+    result_pr = repository["pull_requests"][0]
+    assert result_pr["live"]["head_oid"] == "b" * 40
+    assert result_pr["decision_gates"]["rebase_repair_required"] == (wait_status == "timed_out")
+    assert payload["outcome"]["blocked"] == (wait_status == "failed")
+    assert order == ["wait", "ci", "tree"]
+
+
+def test_dependency_merge_runs_absolute_entrypoint_from_target_checkout(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    finalization = load_pr_workflow_module(monkeypatch, "dependency_finalization")
+    calls = []
+
+    def run(command: list[str], **kwargs: Any):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, '{"status":"merged"}', "")
+
+    monkeypatch.setattr(finalization, "run_command", run)
+    result, error = finalization.merge_pr(
+        "owner/repo", 1, tmp_path, "merge",
+        expected_head="a" * 40, admin=False, wait_seconds=0, interval_seconds=1,
+    )
+    assert error is None and result["status"] == "merged"
+    assert pathlib.Path(calls[0][0][1]) == PR_WORKFLOW_ENTRYPOINT
+    assert calls[0][1]["cwd"] == tmp_path
+    assert "--expected-head" in calls[0][0]
 
 
 @pytest.mark.parametrize("enabled", [True, False])

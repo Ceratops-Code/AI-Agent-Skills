@@ -10,7 +10,7 @@
   ],
   "properties": {
     "version": {
-      "const": 2
+      "const": 3
     },
     "kind": {
       "const": "ceratops-sdlc"
@@ -49,7 +49,13 @@
         "bootstrap": {
           "$ref": "#/$defs/operations"
         },
+        "test-selection": {
+          "$ref": "#/$defs/test-selection-operations"
+        },
         "validate": {
+          "$ref": "#/$defs/operations"
+        },
+        "tests": {
           "$ref": "#/$defs/operations"
         }
       }
@@ -74,8 +80,14 @@
           "items": {
             "$ref": "#/$defs/artifact"
           }
+        },
+        "tests": {
+          "$ref": "#/$defs/operations"
         }
-      }
+      },
+      "required": [
+        "tests"
+      ]
     },
     "prerequisite": {
       "description": "Annotation-only setup requirements for the calling agent; never commands inferred from executable names, channels, or included tools.",
@@ -136,6 +148,28 @@
         }
       }
     },
+    "test-selection-operations": {
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/name"},
+      "additionalProperties": {
+        "allOf": [
+          {"$ref": "#/$defs/operation"},
+          {
+            "required": ["parameters", "steps"],
+            "properties": {
+              "parameters": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "uniqueItems": true,
+                "items": {"enum": ["base", "head"]}
+              }
+            },
+            "not": {"required": ["handoff"]}
+          }
+        ]
+      }
+    },
     "operations": {
       "type": "object",
       "propertyNames": {
@@ -143,23 +177,12 @@
       },
       "additionalProperties": {
         "$ref": "#/$defs/operation"
-      }
+      },
+      "minProperties": 1
     },
     "operation": {
       "type": "object",
       "additionalProperties": false,
-      "anyOf": [
-        {
-          "required": [
-            "steps"
-          ]
-        },
-        {
-          "required": [
-            "handoff"
-          ]
-        }
-      ],
       "properties": {
         "prerequisites": {
           "type": "array",
@@ -184,12 +207,35 @@
           }
         },
         "handoff": {
-          "description": "Advisory routing to a skill/action or workflow. Not executable instructions, a receipt protocol, or proof of completion.",
+          "description": "Skill/action route executed only by a skill caller; CI records it as deferred without executing it. An unresolved handoff is not evidence of completion.",
           "type": "string",
           "minLength": 1,
           "maxLength": 500
+        },
+        "no-op": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "Explicit reason this operation has no applicable work; never inferred from an absent declaration."
         }
-      }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "steps"
+          ]
+        },
+        {
+          "required": [
+            "handoff"
+          ]
+        },
+        {
+          "required": [
+            "no-op"
+          ]
+        }
+      ]
     },
     "step": {
       "type": "object",

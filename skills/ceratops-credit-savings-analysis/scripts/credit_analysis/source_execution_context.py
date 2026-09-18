@@ -7,10 +7,15 @@ the live checkout's ``origin`` identify the same repository. The mapping is
 retained in controller evidence and revalidated before any model child starts.
 Arbitrary missing paths, repository scans, and unverified fallbacks are never
 allowed.
+
+Effective instruction files are read once during planning. Their exact text and
+hashes remain the analysis context for every later task; resume validates that
+retained snapshot internally and does not reopen live instruction files.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import pathlib
 import subprocess
@@ -20,7 +25,6 @@ from typing import Any
 from .single_thread_analysis import (
     CreditAnalysisError,
     _content_hash,
-    _file_hash,
 )
 
 
@@ -83,14 +87,23 @@ def _instruction_chain(cwd: pathlib.Path) -> dict[str, Any]:
             resolved_file = local_file.resolve(strict=True)
             if resolved_file not in files:
                 files.append(resolved_file)
-    records: list[dict[str, Any]] = [
-        {
-            "path": str(path),
-            "sha256": _file_hash(path),
-            "bytes": path.stat().st_size,
-        }
-        for path in files
-    ]
+    records: list[dict[str, Any]] = []
+    for path in files:
+        try:
+            payload = path.read_bytes()
+            text = payload.decode("utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise CreditAnalysisError(
+                f"could not snapshot source instruction file: {path}"
+            ) from exc
+        records.append(
+            {
+                "path": str(path),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "bytes": len(payload),
+                "text": text,
+            }
+        )
     return {
         "cwd": str(resolved),
         "project_root": str(project_root),
@@ -309,21 +322,65 @@ def _source_execution_context(rows: Sequence[Mapping[str, Any]]) -> dict[str, An
 
 
 def _validate_execution_context(value: Mapping[str, Any]) -> None:
-    """Reject cwd, repository identity, substitution, or AGENTS drift."""
+    """Validate frozen rule evidence and current execution locations."""
 
     chains = value.get("instruction_chains")
     if not isinstance(chains, list) or not chains:
         raise CreditAnalysisError("frozen instruction context is missing")
     chain_cwds: set[str] = set()
     for frozen in chains:
-        if not isinstance(frozen, Mapping):
+        if not isinstance(frozen, Mapping) or set(frozen) != {
+            "cwd",
+            "project_root",
+            "codex_home",
+            "files",
+            "chain_sha256",
+            "total_bytes",
+        }:
             raise CreditAnalysisError("frozen instruction chain is invalid")
-        current_chain = _instruction_chain(pathlib.Path(str(frozen.get("cwd"))))
-        if current_chain != frozen:
-            raise CreditAnalysisError(
-                f"source instruction chain changed after planning: {frozen.get('cwd')}"
-            )
-        chain_cwds.add(str(frozen.get("cwd")))
+        cwd = str(frozen["cwd"])
+        cwd_path = pathlib.Path(cwd)
+        if cwd_path.is_symlink() or not cwd_path.is_dir():
+            raise CreditAnalysisError(f"source execution cwd is unavailable: {cwd}")
+        if cwd in chain_cwds:
+            raise CreditAnalysisError(f"duplicate frozen instruction cwd: {cwd}")
+        files = frozen["files"]
+        if not isinstance(files, list):
+            raise CreditAnalysisError("frozen instruction files are invalid")
+        seen_paths: set[str] = set()
+        total_bytes = 0
+        for item in files:
+            if not isinstance(item, Mapping) or set(item) != {
+                "path",
+                "sha256",
+                "bytes",
+                "text",
+            }:
+                raise CreditAnalysisError("frozen instruction file is invalid")
+            path = item["path"]
+            text = item["text"]
+            byte_count = item["bytes"]
+            digest = item["sha256"]
+            if not isinstance(path, str) or not path or path in seen_paths:
+                raise CreditAnalysisError("frozen instruction file path is invalid")
+            if not isinstance(text, str):
+                raise CreditAnalysisError("frozen instruction file text is invalid")
+            payload = text.encode("utf-8")
+            if (
+                not isinstance(byte_count, int)
+                or isinstance(byte_count, bool)
+                or byte_count != len(payload)
+                or digest != hashlib.sha256(payload).hexdigest()
+            ):
+                raise CreditAnalysisError("frozen instruction file identity changed")
+            seen_paths.add(path)
+            total_bytes += byte_count
+        if (
+            frozen["total_bytes"] != total_bytes
+            or frozen["chain_sha256"] != _content_hash(files)
+        ):
+            raise CreditAnalysisError("frozen instruction chain identity changed")
+        chain_cwds.add(cwd)
     substitutions = value.get("cwd_substitutions")
     if not isinstance(substitutions, list):
         raise CreditAnalysisError("frozen cwd substitutions are invalid")
@@ -367,7 +424,7 @@ def _instruction_chain_for_cwd(
 def _execution_rule_handoff(
     state: Mapping[str, Any], task: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """Retain rule hashes and text needed when Sol spans differing source cwds."""
+    """Return frozen hashes and text needed across differing source cwds."""
 
     context = state["execution_context"]
     primary_cwd = str(context["primary_cwd"])
@@ -384,13 +441,12 @@ def _execution_rule_handoff(
             identity = (str(item["path"]), str(item["sha256"]))
             if identity in primary_files:
                 continue
-            path = pathlib.Path(identity[0])
             differing_files.append(
                 {
-                    "path": str(path),
+                    "path": identity[0],
                     "sha256": identity[1],
                     "bytes": int(item["bytes"]),
-                    "text": path.read_text(encoding="utf-8"),
+                    "text": str(item["text"]),
                 }
             )
         chains.append(

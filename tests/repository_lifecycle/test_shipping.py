@@ -4,6 +4,7 @@ import argparse
 import json
 import pathlib
 import runpy
+import subprocess
 import sys
 from typing import Any
 
@@ -11,6 +12,7 @@ import pytest
 
 from tests.repository_lifecycle.support import (
     OPERATION_RUNNER,
+    PR_WORKFLOW_ENTRYPOINT,
     SHIP_REPOSITORY,
     load_pr_workflow_module,
 )
@@ -97,6 +99,7 @@ def _setup(tmp_path: pathlib.Path, *, contract: bool = True) -> tuple[Any, ...]:
     }
 
     def run_json(command: list[str], **kwargs: Any) -> tuple[int, dict[str, Any]]:
+        assert kwargs.get("cwd") == repo
         commands.append(command)
         if len(command) > 1 and pathlib.Path(command[1]) == OPERATION_RUNNER:
             return original(command, **kwargs)
@@ -107,7 +110,7 @@ def _setup(tmp_path: pathlib.Path, *, contract: bool = True) -> tuple[Any, ...]:
             "pending_work_scope": str(scope) if state["scope"] else "",
             "target_commit": head,
         }
-        if "github_pr_workflow" in command:
+        if str(PR_WORKFLOW_ENTRYPOINT) in command:
             if state["remote_error"]:
                 return 1, state["remote_error"]
             assert not log.exists() or log.read_text().splitlines()[-1] == "check"
@@ -183,7 +186,14 @@ def test_repository_ship_metadata_reaches_shared_pr_producer(
         ["--repo-root", str(tmp_path), "--head-branch", "release/local", *metadata]
     )
     command = loaded["_ship_command"](args, tmp_path, None, "a" * 40)
-    parsed = ship.build_parser().parse_args(command[4:])
+    assert command[1] == str(PR_WORKFLOW_ENTRYPOINT)
+    parsed = ship.build_parser().parse_args(command[3:])
+    if not metadata:
+        smoke = subprocess.run(
+            [*command[:3], "--help"], cwd=tmp_path, capture_output=True,
+            text=True, check=False,
+        )
+        assert smoke.returncode == 0, smoke.stderr
     events: list[str] = []
     monkeypatch.setattr(ship.merge, "restore_unfinished_checkpoints", lambda root: None)
     monkeypatch.setattr(ship, "_repository_name", lambda *args: "example/repository")
@@ -236,7 +246,7 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
     assert log.read_text().splitlines() == (
         ["remote", "finalize"] if scope_present else ["remote"]
     )
-    remote = next(command for command in commands if "github_pr_workflow" in command)
+    remote = next(command for command in commands if str(PR_WORKFLOW_ENTRYPOINT) in command)
     assert ("--pending-work-check" in remote) is scope_present
     assert ("--no-pending-work-check" in remote) is not scope_present
     args.review_replies_request = tmp_path / "review-replies.json"
@@ -279,15 +289,26 @@ def test_repository_ship_prevalidates_and_executes_ordered_phase_selections(
     )
 
 
+@pytest.mark.parametrize("gate", ["validate", "tests"])
 def test_failed_checks_prevent_remote_work_and_succeed_after_committed_repair(
-    tmp_path: pathlib.Path,
+    tmp_path: pathlib.Path, gate: str,
 ) -> None:
     repo, loaded, args, log, state, _ = _setup(tmp_path)
+    if gate == "tests":
+        import yaml
+        path = repo / "sdlc/sdlc.yml"
+        document = yaml.safe_load(path.read_text())
+        document["version"] = 3
+        document["repository"]["tests"] = document["repository"].pop("validate")
+        document["repository"]["validate"] = {"none": {"no-op": "Fixture has no validation command."}}
+        for deliverable in document["deliverables"].values():
+            deliverable["tests"] = {"none": {"no-op": "Shared repository test covers this deliverable."}}
+        path.write_text(yaml.safe_dump(document))
     (repo / "code.txt").write_text("broken", encoding="utf-8")
     broken = _commit(repo)
     with pytest.raises(loaded["RepositoryShipError"]) as failure:
         loaded["ship_repository"](args)
-    assert failure.value.payload["status"] == "validation_failed"
+    assert failure.value.payload["status"] == ("validation_failed" if gate == "validate" else "tests_failed")
     assert failure.value.payload["phase"] == "before_remote"
     assert failure.value.payload["commit"] == broken
     assert failure.value.payload["diagnostic"]["stderr_tail"] == [
@@ -395,7 +416,7 @@ def test_repository_ship_checkpoints_each_operation_before_the_next(
     category: str,
     capture_receipt: bool,
 ) -> None:
-    repo, loaded, args, log, state, _ = _setup(tmp_path)
+    repo, loaded, args, log, _state, _ = _setup(tmp_path)
     phase = "release_publication" if category == "publish" else "deployment"
     label = "publish" if category == "publish" else "deploy"
     receipt = {"schema": "test.operation-receipt.v1", "status": "OK", "kind": label}
@@ -552,7 +573,10 @@ def test_repository_ship_blocks_selected_worktree_caller_before_remote_process(
         assert branch == "selected"
         return selected_path["value"]
 
-    def run_json(command: list[str]) -> tuple[int, dict[str, Any]]:
+    def run_json(
+        command: list[str], *, cwd: pathlib.Path
+    ) -> tuple[int, dict[str, Any]]:
+        assert cwd == repo
         child_calls.append(command)
         return 0, {
             "status": "ready",
@@ -612,6 +636,89 @@ def test_repository_ship_blocks_selected_worktree_caller_before_remote_process(
                 "reason": "resolved parent chain has no 'worktrees' directory",
             }
         ],
+    )
+
+
+@pytest.mark.parametrize("caller_suffix", ["", "scripts", "scripts/nested"])
+def test_repository_ship_rejects_runtime_directory_caller(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caller_suffix: str,
+) -> None:
+    loaded = runpy.run_path(str(SHIP_REPOSITORY))
+    repo = tmp_path / "repo"
+    runtime = tmp_path / "installed-skill"
+    caller = runtime / caller_suffix
+    repo.mkdir()
+    caller.mkdir(parents=True)
+    ship_repository = loaded["ship_repository"]
+    monkeypatch.setitem(ship_repository.__globals__, "SCRIPT_ROOT", runtime / "scripts")
+
+    def unexpected_run(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("An unsafe caller must be rejected before any lifecycle child")
+
+    monkeypatch.setitem(ship_repository.__globals__, "_run_json", unexpected_run)
+    monkeypatch.chdir(caller)
+    args = loaded["build_parser"]().parse_args(
+        ["--repo-root", str(repo), "--head-branch", "release/local"]
+    )
+    with pytest.raises(
+        loaded["RepositoryShipError"], match="from the target repository directory"
+    ) as captured:
+        ship_repository(args)
+    assert str(repo) in str(captured.value)
+    assert list(repo.iterdir()) == []
+
+
+def test_repository_ship_child_runs_from_repository(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loaded = runpy.run_path(str(SHIP_REPOSITORY))
+    repo = tmp_path / "repo with spaces"
+    caller = tmp_path / "caller"
+    repo.mkdir()
+    caller.mkdir()
+    monkeypatch.chdir(caller)
+    code, payload = loaded["_run_json"](
+        [
+            sys.executable,
+            "-c",
+            "import json, pathlib; print(json.dumps({'cwd': str(pathlib.Path.cwd())}))",
+        ],
+        cwd=repo,
+    )
+    assert code == 0
+    assert payload == {"cwd": str(repo.resolve())}
+    assert pathlib.Path.cwd() == caller
+
+    with pytest.raises(loaded["RepositoryShipError"]) as failure:
+        loaded["_run_json"](
+            [
+                sys.executable, "-c",
+                (
+                    "import sys; print('not json'); "
+                    "print('x' * 2500 + ' child import failed', file=sys.stderr); "
+                    "raise SystemExit(7)"
+                ),
+                "--body", "private PR body",
+            ],
+            cwd=repo,
+        )
+    diagnostic = failure.value.payload["diagnostic"]
+    assert "invalid JSON (exit code 7)" in failure.value.payload["message"]
+    assert diagnostic["command"][-2:] == ["--body", "<redacted>"]
+    assert diagnostic["exit_code"] == 7
+    assert diagnostic["stderr_tail"][-1].endswith("child import failed")
+    assert sum(map(len, diagnostic["stderr_tail"])) <= 2048
+    assert diagnostic["stdout_tail"] == ["not json"]
+    assert "line 1, column 1" in diagnostic["output_error"]
+
+    with pytest.raises(loaded["RepositoryShipError"]) as non_object:
+        loaded["_run_json"]([sys.executable, "-c", "print('[1]')"], cwd=repo)
+    assert "non-object" in non_object.value.payload["message"]
+    assert non_object.value.payload["diagnostic"]["output_error"] == (
+        "expected an object, received list"
     )
 
 
@@ -919,3 +1026,154 @@ def test_publish_pr_preparation_flags_are_opt_in(
         module.ensure_pr(args)
     assert run_git(repo, "branch", "--show-current").stdout.strip() == "main"
     assert state["creates"] == 0
+
+@pytest.mark.parametrize("case", ["passed", "selection-failed", "fetch-failed", "missing-argument", "source-changed"])
+def test_repository_ship_checks_declared_test_selection_before_remote_work(
+    tmp_path: pathlib.Path, case: str,
+) -> None:
+    repo, loaded, args, _log, state, commands = _setup(tmp_path)
+    remote = tmp_path / "remote.git"
+    assert run_git(tmp_path, "init", "--bare", str(remote)).returncode == 0
+    args.remote_name = "ci-test"
+    args.base_branch = "target"
+    assert run_git(repo, "remote", "add", args.remote_name, str(remote)).returncode == 0
+    stale_base = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    assert run_git(repo, "push", args.remote_name, "HEAD:refs/heads/target").returncode == 0
+    (repo / "base-advance.txt").write_text("fresh base", encoding="utf-8")
+    base = _commit(repo)
+    assert run_git(repo, "push", args.remote_name, "HEAD:refs/heads/target").returncode == 0
+    assert run_git(repo, "update-ref", "refs/remotes/ci-test/target", stale_base).returncode == 0
+    selection_log = tmp_path / "selection.json"
+    script = repo / "selection.py"
+    script.write_text(
+        "import json, pathlib, sys\n"
+        f"pathlib.Path({str(selection_log)!r}).write_text(json.dumps(sys.argv[1:]))\n"
+        + ("pathlib.Path('code.txt').write_text('dirty')\n" if case == "source-changed" else "")
+        + "print(json.dumps({'schema':'selection.fixture.v1','status':'"
+        + ("mapping-gap" if case == "selection-failed" else "selection-valid") + "'}))\n"
+        + ("raise SystemExit(3)\n" if case == "selection-failed" else ""),
+        encoding="utf-8",
+    )
+    contract = loaded["read_repository_contract"](repo, None)
+    command = [sys.executable, "selection.py", "{base}", "{head}"]
+    if case == "missing-argument":
+        command.pop()
+    contract["repository"]["test-selection"] = {
+        "ci": {"parameters": ["base", "head"], "steps": [{"run": command}]},
+    }
+    write_sdlc_contract(repo, repository=contract["repository"], deliverables=contract["deliverables"])
+    head = _commit(repo)
+    if case == "fetch-failed":
+        assert run_git(repo, "remote", "set-url", args.remote_name, str(tmp_path / "absent")).returncode == 0
+    original = loaded["ship_repository"].__globals__["_run_json"]
+
+    def checked_remote(command: list[str], **kwargs: Any) -> tuple[int, dict[str, Any]]:
+        if str(PR_WORKFLOW_ENTRYPOINT) in command:
+            assert json.loads(selection_log.read_text()) == [base, head]
+        return original(command, **kwargs)
+
+    loaded["ship_repository"].__globals__["_run_json"] = checked_remote
+    if case == "passed":
+        result = loaded["ship_repository"](args)
+        assert result["status"] == "shipped"
+        assert result["test_selection"]["base"] == base
+        assert result["test_selection"]["head"] == head
+        assert result["test_selection"]["status"] == "completed"
+        assert state["calls"] == 1
+    else:
+        with pytest.raises(loaded["RepositoryShipError"]) as failure:
+            loaded["ship_repository"](args)
+        assert failure.value.payload["phase"] == "before_remote"
+        assert failure.value.payload["remote_mutation"] is False
+        assert state["calls"] == 0
+        assert not any(str(PR_WORKFLOW_ENTRYPOINT) in command for command in commands)
+        if case == "selection-failed":
+            assert failure.value.payload["diagnostic"]["exit_code"] == 3
+            assert failure.value.payload["base"] == base
+            assert failure.value.payload["head"] == head
+
+
+def _saved_stage_fixture(root: pathlib.Path) -> tuple[pathlib.Path, str]:
+    """Use real subprocesses and Git identities without any remote or app effects."""
+    repo = root / "stage repository"
+    (repo / "sdlc").mkdir(parents=True)
+    (repo / ".gitignore").write_text(".build/\n", encoding="utf-8")
+    (repo / "probe.py").write_text(
+        "import pathlib,sys\n"
+        "root=pathlib.Path('.build'); root.mkdir(exist_ok=True)\n"
+        "with (root/'events').open('a') as stream: stream.write(sys.argv[1]+'\\n')\n"
+        "raise SystemExit(7 if sys.argv[1]=='tests' and (root/'fail').exists() else 0)\n",
+        encoding="utf-8",
+    )
+
+    def command(phase: str) -> dict[str, object]:
+        return {"steps": [{"run": [sys.executable, "probe.py", phase]}]}
+
+    # Deliberately put tests before validation in the data: execution must order
+    # the phases by their responsibility, while preserving each phase's order.
+    contract = {"version": 3, "kind": "ceratops-sdlc", "repository": {
+        "tests": {"behavior": command("tests")}, "validate": {"source": command("validation")},
+    }, "deliverables": {"fixture": {
+        "tests": {"covered": {"no-op": "Repository tests cover this deliverable."}},
+        "deploy-local": {"install": command("deploy")},
+    }}}
+    (repo / "sdlc/sdlc.yml").write_text(json.dumps(contract), encoding="utf-8")
+    assert run_git(repo, "init", "--quiet").returncode == 0
+    assert run_git(repo, "add", ".").returncode == 0
+    assert run_git(repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@invalid",
+                   "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+                   "commit", "--quiet", "-m", "stage fixture").returncode == 0
+    return repo, "deliverables.fixture.deploy-local.install"
+
+
+@pytest.mark.parametrize("repository_ignores_build", [False, True])
+def test_delivery_uses_saved_stages_without_running_checks(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str],
+    repository_ignores_build: bool,
+) -> None:
+    """Repository scripts may reuse results; the lifecycle still invokes them."""
+    import importlib
+    runner = importlib.import_module("repository_operation")
+    repo, deploy = _saved_stage_fixture(tmp_path)
+    if not repository_ignores_build:
+        (repo / ".gitignore").write_text(".build/events\n.build/fail\n")
+        assert run_git(repo, "add", "-u").returncode == 0
+        assert run_git(repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@invalid",
+                       "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+                       "commit", "--quiet", "-m", "only repository-owned exclusions").returncode == 0
+    base = ["--repo-root", str(repo)]
+    assert runner.main([*base, "--validate"]) == 0
+    assert runner.main([*base, "--tests"]) == 0
+    assert runner.main([*base, "--tests"]) == 0
+    assert (repo / ".build/events").read_text().splitlines() == ["validation", "tests", "tests"]
+    assert runner.main([*base, "--operation", deploy]) == 0
+    assert (repo / ".build/events").read_text().splitlines() == ["validation", "tests", "tests", "validation", "tests", "deploy"]
+    assert not (repo / ".build/sdlc").exists()
+    assert run_git(repo, "status", "--porcelain").stdout == ""
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize("change", ["missing", "failed", "corrupt", "running", "source", "commit", "environment"])
+def test_delivery_rejects_inapplicable_latest_stage_without_retesting(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, change: str,
+) -> None:
+    """The repository owns stale-result policy; its nonzero exit stops delivery."""
+    import importlib
+    runner = importlib.import_module("repository_operation")
+    repo, deploy = _saved_stage_fixture(tmp_path)
+    base = ["--repo-root", str(repo)]
+    assert runner.main([*base, "--validate", "--tests"]) == 0
+    if change == "source":
+        (repo / "probe.py").write_text("changed source")
+        assert runner.main([*base, "--operation", deploy]) == 1
+        assert (repo / ".build/events").read_text().splitlines() == ["validation", "tests"]
+        return
+    # Model the repository deciding that its saved result is unusable. Generic
+    # orchestration receives only the exit code, never the result schema.
+    (repo / ".build/fail").write_text(change)
+    assert runner.main([*base, "--operation", deploy]) == 1
+    assert (repo / ".build/events").read_text().splitlines() == ["validation", "tests", "validation", "tests"]
+    (repo / ".build/fail").unlink()
+    assert runner.main([*base, "--operation", deploy]) == 0
+    assert (repo / ".build/events").read_text().splitlines()[-3:] == ["validation", "tests", "deploy"]
+    assert not (repo / ".build/sdlc").exists()

@@ -11,18 +11,21 @@ partial updates; this helper cleans only its own staging directory and lock.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import pathlib
 import re
 import shutil
 import stat
+import subprocess
 import sys
+import tempfile
 import uuid
 from collections.abc import Mapping, Sequence
 from typing import cast
 
-INSTALLER_VERSION = 13
+INSTALLER_VERSION = 16
 MANIFEST_NAME = ".runtime-manifest.json"
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
 START = "<!-- CERATOPS_SHARED_SECTIONS_START -->"
@@ -96,6 +99,93 @@ def validate_tree(root: pathlib.Path) -> None:
             raise ValueError(f"unsafe staged tree entry: {path}")
 
 
+def prepare_python_runtime(repo_root: pathlib.Path, install_root: pathlib.Path) -> pathlib.Path | None:
+    """Build a new locked venv version without changing one used by a helper.
+
+    Source declarations stay in the repository. A valid existing version is
+    checked without synchronization; a damaged version gets a fresh path.
+    Failed new environments and atomic-index scratch files belong to this call.
+    """
+
+    project = repo_root / "skills/sections/python"
+    declaration = project / "pyproject.toml"
+    lock = project / "uv.lock"
+    if not declaration.exists() and not lock.exists():
+        return None
+    if not declaration.is_file() or not lock.is_file() or unsafe_link(project) or unsafe_link(declaration) or unsafe_link(lock):
+        raise ValueError("source skill runtime requires regular pyproject.toml and uv.lock")
+    uv = shutil.which("uv")
+    if uv is None:
+        raise ValueError("uv is required to prepare the shared skill Python runtime")
+    digest = hashlib.sha256(declaration.read_bytes() + b"\0" + lock.read_bytes()).hexdigest()
+    root = install_root.parent / "runtimes/ceratops"
+    versions = root / "versions"
+    if any(path.is_symlink() or (path.exists() and unsafe_link(path)) for path in (root, versions)):
+        raise ValueError("shared skill runtime path cannot be a link")
+    versions.mkdir(parents=True, exist_ok=True)
+    index = root / "current.json"
+    if index.is_symlink() or index.is_junction() or (index.exists() and unsafe_link(index)):
+        raise ValueError("shared skill runtime index cannot be a link")
+    current: dict[str, object] = {}
+    if index.is_file():
+        current = json.loads(index.read_text(encoding="utf-8"))
+        if not isinstance(current, dict):
+            raise ValueError("shared skill runtime index is invalid")
+    # A 96-bit directory key keeps nested Windows test and task paths below
+    # CreateProcess path limits; current.json retains the full lock digest.
+    version = digest[:24]
+    if current.get("digest") == digest:
+        recorded = current.get("version")
+        if isinstance(recorded, str) and re.fullmatch(r"[0-9a-f]{24}(?:-[0-9a-f]{8})?", recorded):
+            version = recorded
+    environment = os.environ.copy()
+    for key in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "UV_PROJECT", "UV_PROJECT_ENVIRONMENT", "UV_WORKING_DIRECTORY", "UV_NO_SYNC", "UV_FROZEN", "UV_PYTHON"):
+        environment.pop(key, None)
+    environment["PYTHONNOUSERSITE"] = "1"
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    scripts = "Scripts" if os.name == "nt" else "bin"
+    executable = "python.exe" if os.name == "nt" else "python"
+
+    def interpreter(name: str) -> pathlib.Path:
+        return versions / name / ".venv" / scripts / executable
+
+    selected = versions / version
+    environment["UV_PROJECT_ENVIRONMENT"] = str(selected / ".venv")
+    if selected.is_symlink() or selected.is_junction():
+        raise ValueError("shared skill runtime version cannot be a link")
+    if selected.exists():
+        if unsafe_link(selected):
+            raise ValueError("shared skill runtime version cannot be a link")
+        checked = subprocess.run(
+            [uv, "sync", "--quiet", "--project", str(project), "--locked", "--check", "--no-active"],
+            env=environment, capture_output=True, text=True, check=False,
+        )
+        if checked.returncode or not interpreter(version).is_file():
+            version = digest[:24] + "-" + uuid.uuid4().hex[:8]
+            selected = versions / version
+            environment["UV_PROJECT_ENVIRONMENT"] = str(selected / ".venv")
+    created = not selected.exists()
+    if created:
+        result = subprocess.run(
+            [uv, "sync", "--quiet", "--project", str(project), "--locked", "--no-active"],
+            env=environment, capture_output=True, text=True, check=False,
+        )
+        if result.returncode or not interpreter(version).is_file():
+            if selected.exists():
+                shutil.rmtree(selected)
+            raise ValueError("shared skill runtime setup failed: " + (result.stderr or result.stdout).strip()[-1000:])
+    temporary: pathlib.Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=root, prefix=".current-", suffix=".tmp", delete=False) as handle:
+            temporary = pathlib.Path(handle.name)
+            json.dump({"digest": digest, "version": version}, handle, sort_keys=True)
+        os.replace(temporary, index)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return interpreter(version)
+
+
 def read_manifest(repo_root: pathlib.Path) -> dict[str, object]:
     """Read and validate the declarations required to render every skill."""
 
@@ -142,6 +232,29 @@ def declared_skills(
         if name not in assignments:
             raise ValueError(f"undeclared skill: {name}")
     return names
+
+
+def declared_python_skills(
+    repo_root: pathlib.Path, manifest: Mapping[str, object], selected: Sequence[str],
+) -> set[str]:
+    """Select only skills declared to use the shared locked Python project.
+
+    An older manifest without this field retains its prior behavior when it
+    already has the source project; compatibility application writes the field.
+    """
+
+    declared = manifest.get("python_runtime_skills")
+    if declared is None:
+        project = repo_root / "skills/sections/python"
+        return set(selected) if (project / "pyproject.toml").is_file() else set()
+    assignments = cast(Mapping[str, object], manifest["skills"])
+    if (
+        not isinstance(declared, list)
+        or len(declared) != len({item for item in declared if isinstance(item, str)})
+        or not all(isinstance(item, str) and item in assignments for item in declared)
+    ):
+        raise ValueError("python_runtime_skills must list unique declared skills")
+    return set(selected).intersection(declared)
 
 
 def action_assignments(
@@ -394,6 +507,7 @@ def build_skill(
     staging: pathlib.Path,
     manifest: Mapping[str, object],
     skill: str,
+    python_runtime: pathlib.Path | None,
 ) -> None:
     """Fully resolve and stage one skill without touching its destination."""
 
@@ -437,6 +551,8 @@ def build_skill(
         "generated_from": "skills/skill-sections.json",
         "payload_patterns": declarations,
     }
+    if python_runtime is not None:
+        metadata["python_runtime"] = str(python_runtime)
     (target / MANIFEST_NAME).write_text(
         json.dumps(metadata, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -456,11 +572,36 @@ def remove_stage(staging: pathlib.Path, install_root: pathlib.Path) -> None:
         shutil.rmtree(staging)
 
 
+def remove_legacy_skill_runtime(skill_root: pathlib.Path) -> None:
+    """Retire only the known per-skill launcher and declaration pair."""
+
+    launcher = skill_root / "scripts/run-skill.py"
+    project = skill_root / "scripts/python-runtime"
+    if any(path.is_symlink() or path.is_junction() or (path.exists() and unsafe_link(path)) for path in (launcher, project)):
+        raise ValueError("legacy skill runtime cannot be a link")
+    if launcher.exists():
+        if not launcher.is_file():
+            raise ValueError("legacy skill launcher is not a file")
+        launcher.unlink()
+    if project.exists():
+        if not project.is_dir() or {item.name for item in project.iterdir()} - {"pyproject.toml", "uv.lock"}:
+            raise ValueError("legacy skill runtime contains unexpected files")
+        for name in ("pyproject.toml", "uv.lock"):
+            path = project / name
+            if path.exists() and (not path.is_file() or unsafe_link(path)):
+                raise ValueError("legacy skill runtime declaration is not a regular file")
+        for name in ("pyproject.toml", "uv.lock"):
+            (project / name).unlink(missing_ok=True)
+        project.rmdir()
+
+
 def install_batch(
     repo_root: pathlib.Path,
     install_root: pathlib.Path,
     skills: Sequence[str],
     manifest: Mapping[str, object],
+    python_runtime: pathlib.Path | None,
+    python_skills: set[str],
 ) -> None:
     """Render and overlay selected skills, preserving all destination-only data."""
 
@@ -474,7 +615,10 @@ def install_batch(
         lock_created = True
         staging.mkdir()
         for skill in skills:
-            build_skill(repo_root, staging, manifest, skill)
+            build_skill(
+                repo_root, staging, manifest, skill,
+                python_runtime if skill in python_skills else None,
+            )
         # Inspect only paths being written; retained files are not audited.
         for source in staging.rglob("*"):
             target = install_root / source.relative_to(staging)
@@ -483,6 +627,7 @@ def install_batch(
                 raise ValueError(f"bootstrap destination cannot be a link: {target}")
         for skill in skills:
             shutil.copytree(staging / skill, install_root / skill, dirs_exist_ok=True)
+            remove_legacy_skill_runtime(install_root / skill)
     finally:
         if lock_created:
             try:
@@ -533,7 +678,15 @@ def main() -> int:
         skills = declared_skills(manifest, args.skill)
         action_assignments(repo_root, manifest, set(skills) if args.skill else None)
         if skills:
-            install_batch(repo_root, destination, skills, manifest)
+            python_skills = declared_python_skills(repo_root, manifest, skills)
+            python_runtime = (
+                prepare_python_runtime(repo_root, destination) if python_skills else None
+            )
+            if python_skills and python_runtime is None:
+                raise ValueError("declared Python skills require the source locked project")
+            install_batch(
+                repo_root, destination, skills, manifest, python_runtime, python_skills,
+            )
     except (
         OSError,
         UnicodeError,

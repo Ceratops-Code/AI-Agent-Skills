@@ -17,6 +17,9 @@ import subprocess
 import sys
 from typing import Any
 
+from ceratops_repo_compatibility_engine.sdlc_contract_validation import (
+    operation_entries,
+)
 from github_pr_workflow import ship as github_ship
 from repository_operation import (
     FAILED_STATUSES,
@@ -26,6 +29,7 @@ from repository_operation import (
     execute_prepared_operations,
     operation_category,
     prepare_operations,
+    read_repository_contract,
     repository_commit,
     require_clean_commit,
 )
@@ -36,6 +40,7 @@ from repository_operation import (
 SCRIPT_ROOT = pathlib.Path(__file__).resolve().parent
 OPERATION_RUNNER = SCRIPT_ROOT / "repository_operation.py"
 PENDING_MANAGER = SCRIPT_ROOT / "manage-pending-work.py"
+PR_WORKFLOW_ENTRYPOINT = SCRIPT_ROOT / "github_pr_workflow" / "__main__.py"
 DEFAULT_SDLC_CONTRACT = pathlib.Path("sdlc/sdlc.yml")
 RELEASE_BRANCH = "release/local"
 
@@ -112,8 +117,10 @@ def _operation_command(
 
 
 def _run_json(
-    command: list[str], *, cwd: pathlib.Path = SCRIPT_ROOT
+    command: list[str], *, cwd: pathlib.Path
 ) -> tuple[int, dict[str, Any]]:
+    """Run a lifecycle child and retain bounded diagnostics for invalid output."""
+
     result = subprocess.run(
         command,
         cwd=cwd,
@@ -125,10 +132,30 @@ def _run_json(
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise RepositoryShipError("Lifecycle helper returned invalid JSON.") from exc
-    if not isinstance(payload, dict):
-        raise RepositoryShipError("Lifecycle helper returned a non-object result.")
-    return result.returncode, payload
+        problem = "invalid JSON"
+        output_error = f"{exc.msg} at line {exc.lineno}, column {exc.colno}"
+    else:
+        if isinstance(payload, dict):
+            return result.returncode, payload
+        problem = "a non-object result"
+        output_error = f"expected an object, received {type(payload).__name__}"
+    diagnostic = {
+        # The PR body may contain user-supplied private text; keep the other
+        # arguments useful for reproducing the failing child invocation.
+        "command": [
+            "<redacted>" if index and command[index - 1] == "--body"
+            else argument[:512]
+            for index, argument in enumerate(command)
+        ],
+        "exit_code": result.returncode,
+        "stderr_tail": result.stderr[-2048:].splitlines()[-20:],
+        "stdout_tail": result.stdout[-2048:].splitlines()[-20:],
+        "output_error": output_error,
+    }
+    raise RepositoryShipError(
+        f"Lifecycle helper returned {problem} (exit code {result.returncode}).",
+        {"diagnostic": diagnostic},
+    )
 
 
 def _prepare_operation_batch(
@@ -148,7 +175,7 @@ def _prepare_operation_batch(
     )
     for operation in validation_operations or []:
         command.extend(("--validation-operation", operation))
-    code, result = _run_json(command)
+    code, result = _run_json(command, cwd=repo_root)
     if code:
         raise RepositoryShipError(
             str(result.get("message", "Operation preparation failed.")),
@@ -546,8 +573,8 @@ def _ship_command(
 ) -> list[str]:
     command = [
         sys.executable,
-        "-m",
-        "github_pr_workflow",
+        # The child runs from repo_root, where this module is not importable by name.
+        str(PR_WORKFLOW_ENTRYPOINT),
         "ship",
         "--repo-root",
         str(repo_root),
@@ -883,21 +910,21 @@ def _validate_phase(
 ) -> dict[str, Any]:
     """Recheck the current committed checkout at each safe lifecycle boundary.
 
-    No validation checkpoint is reusable across boundaries or repaired commits.
-    The calling agent repairs ordinary failures and restarts the lifecycle.
+    Validation runs before tests; matching test outcomes can be reused. The
+    calling agent repairs ordinary failures and restarts the lifecycle.
     """
 
     command = _operation_command(
         repo_root=repo_root, contract=args.sdlc_contract,
         operations=operations,
     )
-    command.append("--validate")
+    command.extend(("--validate", "--tests"))
     commit = repository_commit(repo_root)
     if commit:
         command.extend(("--commit", commit))
     for operation in args.validation_operation or []:
         command.extend(("--validation-operation", operation))
-    code, result = _run_json(command)
+    code, result = _run_json(command, cwd=repo_root)
     if code:
         raise RepositoryShipError(
             str(result.get("message", "Repository validation failed.")),
@@ -908,12 +935,79 @@ def _validate_phase(
     return result
 
 
+def _test_selection_phase(
+    args: argparse.Namespace, repo_root: pathlib.Path, expected_head: str | None,
+) -> dict[str, Any] | None:
+    """Check the repository's CI diff selection immediately before GitHub work.
+
+    The optional capability uses the existing operation executor, never a
+    hard-coded test runner. Fetch changes only local Git metadata; no remote
+    write occurs here. No configured capability means no fetch or extra command.
+    """
+    entries = operation_entries(read_repository_contract(repo_root, args.sdlc_contract))
+    selected = [name for name in entries if operation_category(name) == "test-selection"]
+    if not selected:
+        return None
+    try:
+        head = repository_commit(repo_root)
+        if head is None:
+            raise OperationError("Test selection requires a committed repository.")
+        require_clean_commit(repo_root, expected_head or head)
+
+        def git_value(*arguments: str) -> str:
+            result = subprocess.run(
+                ["git", *arguments], cwd=repo_root, capture_output=True,
+                text=True, encoding="utf-8", errors="replace", check=False,
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            )
+            if result.returncode:
+                raise OperationError(result.stderr.strip() or "Git comparison resolution failed.")
+            return result.stdout.strip()
+
+        git_value("check-ref-format", f"refs/heads/{args.base_branch}")
+        if not args.remote_name or args.remote_name.startswith("-"):
+            raise OperationError("Test selection requires a valid remote name.")
+        branch_head = git_value("rev-parse", "--verify", f"refs/heads/{args.head_branch}^{{commit}}")
+        if branch_head != head:
+            raise OperationError("Test selection must run from the exact staged release checkout.")
+        for name in selected:
+            placeholders = {argument for step in entries[name]["steps"] for argument in step["run"]}
+            if not {"{base}", "{head}"}.issubset(placeholders):
+                raise OperationError(f"Test selection must consume both base and head: {name}")
+        git_value("fetch", "--no-tags", "--", args.remote_name, f"refs/heads/{args.base_branch}")
+        base = git_value("rev-parse", "--verify", "FETCH_HEAD^{commit}")
+        prepared = prepare_operations(repo_root, [
+            OperationRequest(name, parameters={"base": base, "head": head}) for name in selected
+        ], args.sdlc_contract)
+        require_clean_commit(repo_root, head)
+        result = execute_prepared_operations(prepared)
+        if result["status"] in FAILED_STATUSES:
+            raise RepositoryShipError(
+                str(result.get("message", "CI test selection failed.")),
+                {**result, "base": base, "head": head,
+                 "phase": "before_remote", "remote_mutation": False},
+            )
+        require_clean_commit(repo_root, head)
+        return {**result, "base": base, "head": head}
+    except (OperationError, OSError) as exc:
+        raise RepositoryShipError(str(exc), {
+            "phase": "before_remote", "remote_mutation": False,
+        }) from exc
+
+
 def ship_repository(args: argparse.Namespace) -> dict[str, object]:
     """Run complete shipping, release publication, deployment, and cleanup."""
 
     if args.head_branch != RELEASE_BRANCH:
         raise RepositoryShipError(f"Head branch must be {RELEASE_BRANCH}.")
     repo_root = args.repo_root.expanduser().resolve(strict=True)
+    # Moving this process cannot release its parent shell's directory handle.
+    # Reject the unsafe caller before any shipping or deployment phase starts.
+    if pathlib.Path.cwd().resolve().is_relative_to(SCRIPT_ROOT.parent):
+        raise RepositoryShipError(
+            "Run ship-repository.py from the target repository directory "
+            f"{repo_root} so deployment can replace the installed skill."
+        )
     _operation_ids(args.validation_operation, "validate")
     release_operations = _operation_ids(args.publish_operation, "publish")
     deploy_operations = _operation_ids(args.deploy_operation, "deploy-local")
@@ -934,7 +1028,8 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
             repo_root=repo_root,
             target_branch=args.head_branch,
             target_commit=args.commit,
-        )
+        ),
+        cwd=repo_root,
     )
     if prepare_code == 2:
         return prepared
@@ -959,13 +1054,15 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
         args, repo_root, [*release_operations, *deploy_operations],
         phase="before_remote", remote_mutation=False,
     )
+    test_selection = _test_selection_phase(args, repo_root, prepared_target_commit)
     ship_code, shipped = _run_json(
         _ship_command(
             args,
             repo_root,
             pending_scope,
             prepared_target_commit,
-        )
+        ),
+        cwd=repo_root,
     )
     if ship_code == 2:
         return _with_preserved_worktrees(shipped, preserved_worktrees)
@@ -996,7 +1093,8 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
                 scope=pending_scope,
                 target_branch=args.head_branch,
                 target_commit=target_commit,
-            )
+            ),
+            cwd=repo_root,
         )
         if check_code == 2:
             return _with_preserved_worktrees({
@@ -1174,7 +1272,9 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
         "deployment": deployment,
         "finalization": finalized,
     }
-    validation_handoffs = [item for item in validation["results"] if item.get("handoff")]
+    if test_selection is not None:
+        result["test_selection"] = test_selection
+    validation_handoffs = [item for item in validation["results"] if item.get("handoff") and not item.get("handoff_completed")]
     if validation_handoffs:
         result["validation_handoffs"] = validation_handoffs
     return _with_preserved_worktrees(result, preserved_worktrees)

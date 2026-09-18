@@ -1,0 +1,25 @@
+name: Ceratops repository checks
+description: Run declared validation and tests through the lifecycle skill.
+inputs:
+  repo-root:
+    description: Repository root containing sdlc/sdlc.yml.
+    required: true
+  evidence-file:
+    description: Failure evidence path owned by the caller.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Run SDLC validation and tests
+      shell: bash
+      env:
+        CERATOPS_ACTION_ROOT: ${{ github.action_path }}
+        CERATOPS_REPOSITORY: ${{ inputs.repo-root }}
+        CERATOPS_EVIDENCE: ${{ inputs.evidence-file }}
+      run: |
+        uv run --quiet --locked \
+          --project "$CERATOPS_ACTION_ROOT/../../sections/python" \
+          python "$CERATOPS_ACTION_ROOT/repository_operation.py" \
+          --repo-root "${CERATOPS_REPOSITORY:?repo-root input is required}" \
+          --validate --tests --ci \
+          --evidence-file "${CERATOPS_EVIDENCE:?evidence-file input is required}"

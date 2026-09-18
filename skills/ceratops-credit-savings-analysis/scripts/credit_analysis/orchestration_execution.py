@@ -12,7 +12,13 @@ import pathlib
 from typing import Any, Mapping
 
 from . import luna_sol_analysis as analysis
-from .model_response_contract import validate_response_correction
+from .model_response_contract import (
+    apply_response_correction,
+    correction_response_schema,
+    normalize_sol_transport_mechanics,
+    project_response_correction,
+    response_correction_scope,
+)
 from .single_thread_analysis import CreditAnalysisError
 
 
@@ -26,6 +32,71 @@ def _checkpoint_state(state: dict[str, Any]) -> None:
     _order_omissions(state)
     analysis._holistic_sync_child_lineage(state)
     analysis._holistic_save_state(state)
+
+
+def _stop_without_accepted_reviewers(state: dict[str, Any]) -> None:
+    """Publish a terminal incomplete state without spending a final Sol call."""
+
+    for task in state["manifest"]["sol_tasks"]:
+        if task["phase"] != "sol-final":
+            continue
+        execution = state["execution"][task["task_id"]]
+        if execution["status"] == "pending":
+            execution["status"] = "skipped"
+    state["phase"] = "incomplete"
+    _checkpoint_state(state)
+
+
+def _schema_rejection(attempt: Mapping[str, Any]) -> str | None:
+    """Read permanent API schema failures from retained, integrity-bound events.
+
+    CLI startup diagnostics may hide the actual API error. Only error events with
+    the provider's exact code stop the batch; ordinary model failures retain their
+    existing handling. Reusing this check on resume prevents a paid retry against
+    the same rejected request. Already running siblings still finish and checkpoint.
+    """
+    artifact = attempt.get("artifacts", {}).get("events")
+    if not isinstance(artifact, Mapping):
+        return None
+    path = pathlib.Path(str(artifact["path"]))
+    if path.is_symlink() or not path.is_file() or analysis._file_hash(path) != artifact["sha256"]:
+        raise CreditAnalysisError("failed attempt events changed")
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, Mapping) or event.get("type") not in {"error", "turn.failed"}:
+                continue
+            detail = event.get("error", event)
+            if not isinstance(detail, Mapping):
+                continue
+            message = detail.get("message")
+            if isinstance(message, str):
+                try:
+                    decoded = json.loads(message)
+                except json.JSONDecodeError:
+                    decoded = None
+                if isinstance(decoded, Mapping):
+                    detail = decoded
+            detail = detail.get("error", detail)
+            if isinstance(detail, Mapping) and detail.get("code") == "invalid_json_schema":
+                return (
+                    "API rejected response schema (invalid_json_schema): "
+                    + str(detail.get("message") or "schema is unsupported")
+                    + "; repair the schema and start a new analysis"
+                )
+    return None
+
+
+def _sol_timeout_count(execution: Mapping[str, Any]) -> int:
+    """Count recorded no-result Sol timeouts across controller resumes."""
+
+    return sum(
+        attempt.get("outcome") == "runner-error" and attempt.get("timed_out") is True
+        for attempt in execution["attempts"]
+    )
 
 
 def _prior_rejection(
@@ -52,7 +123,13 @@ def _prior_rejection(
 def _current_response_schema(
     state: Mapping[str, Any], task: Mapping[str, Any], digest: str,
 ) -> dict[str, Any]:
-    """Bind today's structural enforcement to the run's frozen contract and aliases."""
+    """Bind current enforcement while preserving a prepared task's transport shape.
+
+    Final category output became controller-owned after some resumable analyses
+    had frozen their schemas. Their retained responses must remain structurally
+    valid long enough for current semantic validation to rebuild that category
+    section from accepted reviewer records.
+    """
     contract = analysis._read_json(
         pathlib.Path(state["immutable_artifacts"]["surface_contract"]["path"]),
         "frozen response contract",
@@ -62,11 +139,25 @@ def _current_response_schema(
             state=state, task=task, input_sha256=digest, contract=contract,
         )
     aliases = analysis._holistic_read_sol_aliases(task, digest)
-    return analysis._holistic_sol_schema(
+    schema = analysis._holistic_sol_schema(
         state=state, task=task, input_sha256=digest, contract=contract,
         luna_candidate_ids=list(aliases["aliases"]["luna_candidates"].values()),
         alias_record=aliases,
     )
+    frozen_path = pathlib.Path(str(task["artifacts"]["schema"]))
+    if task["phase"] == "sol-final" and frozen_path.is_file():
+        frozen = analysis._read_json(frozen_path, "frozen response schema")
+        frozen_categories = frozen.get("properties", {}).get(
+            "helper_category_reviews"
+        )
+        if (
+            isinstance(frozen_categories, Mapping)
+            and frozen_categories.get("maxItems") != 0
+        ):
+            schema["properties"]["helper_category_reviews"] = copy.deepcopy(
+                frozen_categories
+            )
+    return schema
 
 
 def _corrective_prompt(
@@ -79,7 +170,7 @@ def _corrective_prompt(
     the caller removes the analysis root, including across interrupted runs.
     A request that cannot fit the proven byte envelope stops before child launch.
     """
-    rejected = _prior_rejection(state, task, input_sha)
+    rejected = _prior_rejection(state, task, input_sha, oldest=True)
     if rejected is None:
         return prompt_path, schema_path
     attempt, prior = rejected
@@ -88,20 +179,41 @@ def _corrective_prompt(
         "validation errors. Preserve the complete admitted call/candidate coverage, "
         "evidence references, accepted sibling results, and every unaffected judgment. "
         "Keep valid identifiers unchanged; repair an invalid finding identifier and all "
-        "its references consistently without changing the finding. Do not change a "
-        "classification or other semantic judgment merely to satisfy validation. "
-        "Return the complete corrected response."
+        "its references consistently without changing the finding. Only the diagnosed "
+        "invalid_recurrence_finding_ids may have recurrence inputs and assumptions "
+        "reconsidered against the same supplied evidence. For diagnosed "
+        "conflicting_call_finding_ids, reconsider only their conflicting call "
+        "judgments against that evidence or withdraw the inconsistent finding; "
+        "preserve calls supported by unaffected findings. Correct a supported estimate "
+        "or withdraw the unsupported finding, remove its dependent links, and explain "
+        "the withdrawal in its retained candidate decision. Keep linked existing risks. "
+        "For diagnosed invalid_temporary_control_review_ids, dismiss only those "
+        "subclaims with an explicit no_finding_reason while retaining their independent "
+        "findings; update only their merge membership. Retain reviews for withdrawn "
+        "findings with a null finding_id and explicit no_finding_reason. Leave affected "
+        "calls unassessed when no retained finding supports their avoidability. "
+        "Preserve every other finding, estimate and call judgment. Do not invent "
+        "savings to pass validation. Return only the permitted edits in the correction "
+        "schema; the controller copies every protected field from the retained response. "
+        "A withdrawal reason is copied to its dependent decisions and reviews; the "
+        "controller removes its links and marks unsupported orphan calls unassessed."
     )
     if task["phase"] == "luna-discovery":
         task["output_byte_limit"] = max(1_000, int(task["output_byte_limit"]) * 9 // 10)
         instructions += f" Keep the complete result within {task['output_byte_limit']} UTF-8 bytes."
+    response_schema = _current_response_schema(state, task, input_sha)
+    schema = correction_response_schema(prior, response_schema, len(state["manifest"]["call_ids"]))
     feedback = {"instructions": instructions, "prior_attempt": attempt["attempt_number"],
-                "validation_errors": [attempt["error"]], "prior_response": prior}
+                "validation_errors": [attempt["error"]], "prior_response": prior,
+                "correction_scope": response_correction_scope(prior, response_schema, len(state["manifest"]["call_ids"]))}
+    latest = _prior_rejection(state, task, input_sha)
+    if latest is not None and latest[0]["attempt_number"] != attempt["attempt_number"]:
+        feedback["rejected_response"] = latest[1]
+        feedback["validation_errors"] = [latest[0]["error"]]
     prompt = prompt_path.read_text(encoding="utf-8") + "\nCorrection request:\n" + json.dumps(
         feedback, ensure_ascii=False, separators=(",", ":"),
     ) + "\n"
     role = analysis._holistic_role(task)
-    schema = _current_response_schema(state, task, input_sha)
     size = len(prompt.encode("utf-8")) + analysis._json_bytes(schema)
     if size > int(state["model_specs"][role]["input_byte_budget"]):
         raise CreditAnalysisError("corrective retry exceeds its proven UTF-8 byte envelope; retained response was not truncated")
@@ -113,17 +225,61 @@ def _corrective_prompt(
     return target, schema_path
 
 
-def _preserve_correction_judgments(
+def _corrected_response(
     state: Mapping[str, Any], task: Mapping[str, Any], digest: str,
-    raw: Mapping[str, Any],
-) -> None:
-    """Reject a schema repair that changes previously stated call judgments."""
-    rejected = _prior_rejection(state, task, digest, oldest=True)
-    if rejected is None:
-        return
-    _, prior = rejected
+    raw: Mapping[str, Any], attempt: Mapping[str, Any], *, retained: bool = False,
+) -> Mapping[str, Any]:
+    """Reconstruct edits before validation or size checks, without changing evidence.
 
-    validate_response_correction(prior, raw, _current_response_schema(state, task, digest))
+    A frozen full-response retry can be projected only during retained recovery,
+    after checking its original schema and output artifacts. Newly invoked retries
+    must use the edit contract. The first rejection always owns protected values.
+    """
+    rejected = _prior_rejection(state, task, digest, oldest=True)
+    result = raw
+    if rejected is not None and attempt["attempt_number"] != rejected[0]["attempt_number"]:
+        _, prior = rejected
+        response_schema = _current_response_schema(state, task, digest)
+        if retained:
+            values = {}
+            for name in ("schema", "raw_output"):
+                artifact = attempt["artifacts"][name]
+                path = pathlib.Path(artifact["path"])
+                if path.is_symlink() or not path.is_file() or analysis._file_hash(path) != artifact["sha256"]:
+                    raise CreditAnalysisError(f"retained corrective {name} changed")
+                values[name] = analysis._read_json(path, f"retained corrective {name}")
+            if values["raw_output"] != raw:
+                raise CreditAnalysisError("retained corrective response does not match its attempt")
+            if "baseline_sha256" not in values["schema"].get("properties", {}):
+                result = project_response_correction(prior, raw, correction_response_schema(prior, response_schema, len(state["manifest"]["call_ids"])))
+        if isinstance(result.get("edits"), list):
+            result = copy.deepcopy(dict(result))
+            existing = {
+                edit.get("dismiss_temporary_review")
+                for edit in result["edits"]
+                if isinstance(edit, Mapping)
+            }
+            for review_id in response_correction_scope(
+                prior, response_schema, len(state["manifest"]["call_ids"])
+            ).get("invalid_temporary_control_review_ids", []):
+                if review_id not in existing:
+                    result["edits"].append(
+                        {
+                            "dismiss_temporary_review": review_id,
+                            "reason": (
+                                "The retained temporary-control subclaim does not "
+                                "show positive recurring model-call savings beyond "
+                                "maintenance."
+                            ),
+                        }
+                    )
+        result = apply_response_correction(prior, result, response_schema, len(state["manifest"]["call_ids"]))
+    if task["phase"] in {"sol-adjudication", "sol-final"}:
+        result = normalize_sol_transport_mechanics(result)
+    if (task["phase"] == "luna-discovery" and analysis._json_bytes(result)
+            > int(attempt.get("output_byte_limit") or task["output_byte_limit"])):
+        raise CreditAnalysisError("Luna result exceeds its output byte target")
+    return result
 
 
 def _diagnosed_luna_retry(error: CreditAnalysisError) -> bool:
@@ -189,6 +345,7 @@ def _holistic_model_attempt(
             schema_path=schema_path,
             attempt_dir=attempt_dir,
             execution_cwd=pathlib.Path(str(task["execution_cwd"])),
+            timeout_seconds=600 if task["phase"].startswith("sol-") else 1200,
         )
     else:
         raw, attempt = analysis._invoke_injected_runner(
@@ -343,9 +500,21 @@ def _consume_attempt(
         state["model_attempts"][role] += 1
     execution = state["execution"][task["task_id"]]
     if raw is None:
+        schema_error = _schema_rejection(attempt)
+        if schema_error is not None:
+            attempt["error"] = schema_error
         execution["attempts"].append(
             {**attempt, "outcome": "runner-error"}
         )
+        if schema_error is not None:
+            raise CreditAnalysisError(schema_error)
+        if (
+            task["phase"].startswith("sol-")
+            and attempt.get("timed_out") is True
+            and _sol_timeout_count(execution) == 1
+            and analysis._sol_attempt_capacity(state, contract, task) > 0
+        ):
+            return 0
         if task["phase"] == "luna-discovery":
             _omit_luna_task(
                 state,
@@ -363,18 +532,7 @@ def _consume_attempt(
                 )
         )
     try:
-        if (
-            task["phase"] == "luna-discovery"
-            and analysis._json_bytes(raw)
-            > int(
-                attempt.get("output_byte_limit")
-                or task["output_byte_limit"]
-            )
-        ):
-            raise CreditAnalysisError(
-                "Luna result exceeds its output byte target"
-            )
-        _preserve_correction_judgments(state, task, digest, raw)
+        raw = _corrected_response(state, task, digest, raw, attempt)
         validated = analysis._validate_holistic_task_result(
             raw,
             state=state,
@@ -445,6 +603,7 @@ def command_execute_orchestration(
     available_models: set[str] | Mapping[str, Mapping[str, Any]] | None = None,
     task_limit: int | None = None,
     expected_request_path: pathlib.Path | None = None,
+    stop_on_validation_error: bool = False,
 ) -> dict[str, Any]:
     """Execute run parts and independent Sol stages with bounded concurrency."""
 
@@ -458,7 +617,13 @@ def command_execute_orchestration(
             raise CreditAnalysisError(
                 "request does not own the existing orchestration state"
             )
-    if state["phase"] == "complete":
+    for execution in state["execution"].values():
+        for attempt in execution["attempts"]:
+            if attempt.get("outcome") == "runner-error":
+                schema_error = _schema_rejection(attempt)
+                if schema_error is not None:
+                    raise CreditAnalysisError(schema_error)
+    if state["phase"] in {"complete", "incomplete"}:
         return analysis._holistic_public_status(state)
     catalog = (
         available_models
@@ -488,6 +653,8 @@ def command_execute_orchestration(
         or task_limit < 0
     ):
         raise CreditAnalysisError("task_limit must be a nonnegative integer")
+    if not isinstance(stop_on_validation_error, bool):
+        raise CreditAnalysisError("stop_on_validation_error must be boolean")
 
     tasks = analysis._holistic_task_map(state["manifest"])
     task_budget = task_limit
@@ -570,11 +737,22 @@ def command_execute_orchestration(
                 continue
             if base_task["phase"].startswith("sol-") and state.get("routing") is None:
                 continue
+            if base_task["phase"].startswith("sol-") and _sol_timeout_count(execution) > 1:
+                raise CreditAnalysisError(
+                    f"{task_id} timed out twice; stopped before another model call"
+                )
             ready.append(analysis._holistic_runtime_task(state, base_task))
 
         if not ready:
             break
         phase = ready[0]["phase"]
+        if (
+            phase == "sol-final"
+            and state["manifest"]["call_ids"]
+            and not analysis._routed_call_ids(state)
+        ):
+            _stop_without_accepted_reviewers(state)
+            return analysis._holistic_public_status(state)
         if phase == "luna-discovery":
             ready = [task for task in ready if task["phase"] == phase]
             concurrency = int(
@@ -590,6 +768,9 @@ def command_execute_orchestration(
             concurrency = len(ready)
         else:
             ready = [ready[0]]
+            concurrency = 1
+        if stop_on_validation_error:
+            ready = ready[:1]
             concurrency = 1
         if task_budget is not None:
             remaining_tasks = task_budget - progressed
@@ -638,10 +819,11 @@ def command_execute_orchestration(
                 )
                 progressed += 1
                 continue
-            recoverable = analysis._holistic_recoverable_raw(state, task, digest)
-            if recoverable is not None:
+            recoverable_attempt = _prior_rejection(state, task, digest)
+            recovery_error: CreditAnalysisError | None = None
+            if recoverable_attempt is not None:
                 try:
-                    _preserve_correction_judgments(state, task, digest, recoverable)
+                    recoverable = _corrected_response(state, task, digest, recoverable_attempt[1], recoverable_attempt[0], retained=True)
                     validated = analysis._validate_holistic_task_result(
                         recoverable,
                         state=state,
@@ -651,8 +833,8 @@ def command_execute_orchestration(
                         compact=compact,
                         luna_candidate_ids=candidate_ids,
                     )
-                except CreditAnalysisError:
-                    pass
+                except CreditAnalysisError as error:
+                    recovery_error = error
                 else:
                     analysis._holistic_accept_result(
                         state=state,
@@ -666,10 +848,16 @@ def command_execute_orchestration(
                     )
                     progressed += 1
                     continue
+            if stop_on_validation_error and any(
+                attempt.get("outcome") == "validation-error"
+                for attempt in state["execution"][task["task_id"]]["attempts"]
+            ):
+                raise CreditAnalysisError(f"{task['task_id']} needs a retry; stopped before another model call")
             if task["phase"] == "sol-final":
                 if analysis._sol_validation_error_count(state["execution"][task["task_id"]]) > sol_retry_limit:
                     raise CreditAnalysisError(
                         "final Sol failed validation after its automatic retry"
+                        + (f"; retained response revalidation: {recovery_error}" if recovery_error else "")
                     )
                 if analysis._sol_attempt_capacity(state, contract, task) == 0:
                     raise CreditAnalysisError(
@@ -689,18 +877,7 @@ def command_execute_orchestration(
                 state["model_attempts"][role] += 1
                 execution = state["execution"][task["task_id"]]
                 try:
-                    _preserve_correction_judgments(state, task, digest, raw)
-                    if (
-                        task["phase"] == "luna-discovery"
-                        and analysis._json_bytes(raw)
-                        > int(
-                            attempt.get("output_byte_limit")
-                            or task["output_byte_limit"]
-                        )
-                    ):
-                        raise CreditAnalysisError(
-                            "Luna result exceeds its output byte target"
-                        )
+                    raw = _corrected_response(state, task, digest, raw, attempt, retained=True)
                     validated = analysis._validate_holistic_task_result(
                         raw,
                         state=state,
@@ -718,6 +895,10 @@ def command_execute_orchestration(
                             "error": str(error),
                         }
                     )
+                    if stop_on_validation_error:
+                        analysis._holistic_sync_child_lineage(state)
+                        analysis._holistic_save_state(state)
+                        raise CreditAnalysisError(f"{task['task_id']} failed validation; stopped before another model call: {error}")
                     can_retry_luna = (
                         task["phase"] == "luna-discovery"
                         and _diagnosed_luna_retry(error)
@@ -836,6 +1017,8 @@ def command_execute_orchestration(
                                 future, completed_item, state=state, contract=contract,
                                 compact=compact, luna_attempt_limit=luna_attempt_limit,
                             )
+                            if stop_on_validation_error and state["execution"][task["task_id"]]["attempts"][-1]["outcome"] == "validation-error":
+                                raise CreditAnalysisError(f"{task['task_id']} failed validation; stopped before another model call: {state['execution'][task['task_id']]['attempts'][-1]['error']}")
                         except BaseException as error:
                             # Drain paid-for siblings even after a failure or interruption.
                             # Incomplete artifacts remain owned and block unsafe replay.
@@ -854,7 +1037,10 @@ def command_execute_orchestration(
         in {"complete", "skipped", "omitted"}
         for task_id in state["task_order"]
     ):
-        analysis._finalize_holistic(state, evidence, compact)
+        if state["manifest"]["call_ids"] and not analysis._routed_call_ids(state):
+            _stop_without_accepted_reviewers(state)
+        else:
+            analysis._finalize_holistic(state, evidence, compact)
     else:
         analysis._holistic_save_state(state)
     return analysis._holistic_public_status(state)

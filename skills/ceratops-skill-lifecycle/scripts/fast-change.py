@@ -22,8 +22,6 @@ import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
-
 
 REQUEST_VERSION = 2
 REQUIRED_ROOT_FIELDS = {
@@ -61,6 +59,8 @@ EXECUTABLE_SUFFIXES = {
 class FastChangeError(RuntimeError):
     """One compact orchestration or compensation failure."""
 
+    runtime_activated: bool = False
+
 
 class DecisionRequired(FastChangeError):
     """The complete request is outside deterministic fast-change scope."""
@@ -94,7 +94,7 @@ class ChangeSpec:
     selected_skills: tuple[str, ...]
     classification: str
     tests: tuple[str, ...]
-    run_markdown_lint: bool
+    markdown_lint_directory: pathlib.Path | None
     commit_message: str
     install_root: pathlib.Path | None
     paths: tuple[str, ...]
@@ -437,16 +437,18 @@ def _inside_skill(path: pathlib.PurePosixPath, skill: str) -> bool:
 
 def _declares_markdown_lint(
     repo_root: pathlib.Path, paths: Sequence[str]
-) -> bool:
+) -> pathlib.Path | None:
     """Select the repository-owned Markdown check only for Markdown patches."""
 
     if not any(
         pathlib.PurePosixPath(path).suffix.lower() == ".md" for path in paths
     ):
-        return False
+        return None
     package_path = repo_root / "package.json"
+    if not package_path.exists():
+        package_path = repo_root / "scripts/package.json"
     if not package_path.is_file():
-        return False
+        return None
     try:
         package = json.loads(package_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -455,15 +457,15 @@ def _declares_markdown_lint(
         raise DecisionRequired("package.json must contain an object")
     scripts = package.get("scripts")
     if scripts is None:
-        return False
+        return None
     if not isinstance(scripts, Mapping):
         raise DecisionRequired("package.json scripts must contain an object")
     command = scripts.get("lint:markdown")
     if command is None:
-        return False
+        return None
     if not isinstance(command, str) or not command.strip():
         raise DecisionRequired("package.json lint:markdown must be nonempty text")
-    return True
+    return package_path.parent
 
 
 def _working_paths(repo_root: pathlib.Path) -> set[str]:
@@ -642,7 +644,7 @@ def classify_request(path: pathlib.Path) -> ChangeSpec:
             if test_file.is_symlink() or not test_file.is_file():
                 raise DecisionRequired(f"pytest node file does not exist: {test}")
     _runtime_installer(repo_root)
-    run_markdown_lint = _declares_markdown_lint(repo_root, paths)
+    markdown_lint_directory = _declares_markdown_lint(repo_root, paths)
     return ChangeSpec(
         request_path=request_path,
         task_temp_root=task_temp_root,
@@ -652,7 +654,7 @@ def classify_request(path: pathlib.Path) -> ChangeSpec:
         selected_skills=selected,
         classification=classification,
         tests=tests,
-        run_markdown_lint=run_markdown_lint,
+        markdown_lint_directory=markdown_lint_directory,
         commit_message=commit_message.strip(),
         install_root=(
             pathlib.Path(install_value).expanduser().resolve()
@@ -731,7 +733,7 @@ def _run_installer(spec: ChangeSpec) -> bool:
         if raw
         else "targeted installation failed"
     )
-    setattr(error, "runtime_activated", activated)
+    error.runtime_activated = activated
     raise error
 
 
@@ -783,7 +785,7 @@ def execute(spec: ChangeSpec) -> dict[str, object]:
             "--check",
             failure="git diff --check failed",
         )
-        if spec.run_markdown_lint:
+        if spec.markdown_lint_directory is not None:
             phase = "markdown_lint"
             _checked(
                 [
@@ -791,7 +793,7 @@ def execute(spec: ChangeSpec) -> dict[str, object]:
                     "run",
                     "lint:markdown",
                 ],
-                cwd=spec.repo_root,
+                cwd=spec.markdown_lint_directory,
                 failure="repository Markdown lint failed",
             )
         if spec.classification == "helper":

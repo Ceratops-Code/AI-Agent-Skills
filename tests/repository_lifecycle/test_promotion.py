@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import copy
+import hashlib
 import json
+import os
 import pathlib
 import runpy
 import subprocess
@@ -13,6 +16,7 @@ import pytest
 from tests.repository_lifecycle.support import (
     MANAGE_PENDING_WORK,
     OPERATION_RUNNER,
+    PR_WORKFLOW_ENTRYPOINT,
     PROMOTE_REPOSITORY,
     SHIP_REPOSITORY,
     prepare_divergent_promotion_repo,
@@ -80,6 +84,21 @@ from tests.support.repositories import (
             "ceratops-skill-lifecycle/deploy",
             False,
         ),
+        (
+            ["--run-operation", "deploy.operations.deploy"],
+            False,
+            True,
+            "ceratops-skill-lifecycle/deploy",
+            {
+                "status": "completed",
+                "operation": "deploy.operations.deploy",
+                "steps": ["install-python-requirements"],
+                "handoff": "ceratops-skill-lifecycle/deploy",
+            },
+            True,
+            "ceratops-skill-lifecycle/deploy",
+            False,
+        ),
     ],
 )
 def test_promote_repository_requires_an_explicit_deployment_choice(
@@ -99,12 +118,40 @@ def test_promote_repository_requires_an_explicit_deployment_choice(
         managed_skills=managed_skills,
         handoff=declared_handoff,
     )
+    if expected_operation and expected_operation["operation"] == "deploy.operations.deploy":
+        # Match the supported v1 pip deployment: ordinary stdout, a named
+        # completed step and an advisory managed-skill handoff, without JSON.
+        (repo / "sdlc/sdlc.yml").write_text(json.dumps({
+            "version": 1, "kind": "ceratops-sdlc", "deploy": {"operations": {
+                "deploy": {
+                    "steps": [{"id": "install-python-requirements", "run": [
+                        sys.executable, "deploy-probe.py",
+                    ]}],
+                    "handoff": declared_handoff,
+                },
+            }},
+        }), encoding="utf-8")
+        (repo / "deploy-probe.py").write_text(
+            "import os, pathlib\n"
+            "with pathlib.Path(os.environ['DEPLOY_TEST_LOG']).open('a', encoding='utf-8') as stream:\n"
+            "    stream.write('no-base\\n')\n"
+            "print('Requirement already satisfied')\n",
+            encoding="utf-8",
+        )
+        assert run_git(repo, "add", ".").returncode == 0
+        assert run_git(repo, "commit", "-m", "declare v1 deployment").returncode == 0
+        approved_head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
     release_start = run_git(repo, "rev-parse", "main").stdout.strip()
+    task_temp = repo.parent / "tmp" / repo.name / "non-json-deployment"
+    task_temp.mkdir(parents=True)
+    result_file = task_temp / "result.json"
 
     promoted = subprocess.run(
         [
             sys.executable,
             str(PROMOTE_REPOSITORY),
+            "--result-file",
+            str(result_file),
             "--repo-root",
             str(repo),
             "--source-branch",
@@ -129,7 +176,7 @@ def test_promote_repository_requires_an_explicit_deployment_choice(
     else:
         assert result["operations"] == {
             "status": "completed",
-            "completed_operations": ["deliverables.sample.deploy-local.deploy"],
+            "completed_operations": [expected_operation["operation"]],
             "pending_operations": [],
             "results": [
                 {
@@ -139,10 +186,11 @@ def test_promote_repository_requires_an_explicit_deployment_choice(
             ],
         }
     assert "managed_skills" not in result
-    assert result.get("handoffs", []) == (
-        [] if expected_handoff is None
-        else [{"operation": "deliverables.sample.deploy-local.deploy", "handoff": expected_handoff}]
-    )
+    expected_handoffs = []
+    if expected_handoff is not None:
+        assert expected_operation is not None
+        expected_handoffs = [{"operation": expected_operation["operation"], "handoff": expected_handoff}]
+    assert result.get("handoffs", []) == expected_handoffs
     scope_path = pathlib.Path(result["pending_work_scope"])
     assert json.loads(scope_path.read_text(encoding="utf-8")) == {
         "sources": [
@@ -165,42 +213,118 @@ def test_promote_repository_requires_an_explicit_deployment_choice(
     else:
         assert log.read_text(encoding="utf-8") == "no-base\n"
 
+    # The caller validated command completion and the saved envelope above.
+    # Finalization must not require output the producer never emitted.
+    data = result_file.read_bytes()
+    assert json.loads(data) == result
+    scope_before = scope_path.read_bytes()
+    finalized = subprocess.run(
+        [sys.executable, str(PROMOTE_REPOSITORY), "--repo-root", str(repo),
+         "--finalize-result", "--result-file", str(result_file),
+         "--task-temp-root", str(task_temp), "--expected-commit", approved_head,
+         "--verified-result-sha256", hashlib.sha256(data).hexdigest(),
+         *(["--promotion-only"] if expected_operation is None else [])],
+        capture_output=True, text=True, check=False, env=environment,
+    )
+    if expected_operation is None:
+        assert finalized.returncode == 0, finalized.stderr
+        assert finalized.stdout == "OK\n"
+        assert not result_file.exists()
+        assert not log.exists()
+    elif expected_handoff is not None:
+        assert finalized.returncode == 1
+        assert "lacks bound completion evidence" in json.loads(finalized.stderr)["message"]
+        assert result_file.read_bytes() == data
+        assert log.read_text(encoding="utf-8") == "no-base\n"
+    else:
+        assert "step_results" not in result["operations"]["results"][0]
+        assert finalized.returncode == 0, finalized.stderr
+        assert finalized.stdout == "OK\n"
+        assert not result_file.exists()
+        assert log.read_text(encoding="utf-8") == "no-base\n"
+    assert scope_path.read_bytes() == scope_before
+    assert run_git(repo, "rev-parse", "HEAD").stdout.strip() == approved_head
 
+
+@pytest.mark.parametrize(
+    "validation_mode", ["absent", "discovered", "explicit", "invalid-selection", "parameter"]
+)
 def test_promote_repository_runs_explicit_operation_ids_in_order(
     tmp_path: pathlib.Path,
+    validation_mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     repo, _, _, environment = prepare_repository_lifecycle_repo(tmp_path)
     log = tmp_path / "operation-order.txt"
     (repo / "ordered-operation.py").write_text(
         "import json, pathlib, sys\n"
         "with pathlib.Path(sys.argv[2]).open('a', encoding='utf-8') as stream:\n"
-        "    stream.write(sys.argv[1] + '\\n')\n"
+        "    stream.write(sys.argv[1] + (':' + sys.argv[3] if len(sys.argv) > 3 else '') + '\\n')\n"
         "print(json.dumps({'schema': 'test.deploy-receipt.v1', 'status': 'OK', 'name': sys.argv[1]}))\n",
         encoding="utf-8",
         newline="\n",
     )
-    write_sdlc_contract(
-        repo,
-        deliverables={"sample": {"deploy-local": {
-            operation: {
-                "steps": [
-                    {
-                        "run": [
-                            sys.executable,
-                            "ordered-operation.py",
-                            operation,
-                            str(log),
-                        ],
-                    }
-                ]
-            }
-            for operation in ("promotion-check", "custom-deploy")
-        }}},
-    )
+
+    def operation(name: str, *, needs_generation: bool = False) -> dict[str, Any]:
+        selected: dict[str, Any] = {"steps": [{"run": [
+            sys.executable, "ordered-operation.py", name, str(log),
+            *(["{generation_id}"] if needs_generation else []),
+        ]}]}
+        if needs_generation:
+            selected["parameters"] = ["generation_id"]
+        return selected
+
+    deliverable: dict[str, Any] = {"deploy-local": {
+        name: operation(name, needs_generation=validation_mode == "parameter")
+        for name in ("promotion-check", "custom-deploy")
+    }}
+    repository: dict[str, Any] = {}
+    selection: list[str] = []
+    checks: list[str] = []
+    if validation_mode != "absent":
+        repository["validate"] = {"repository-check": operation("repository-check")}
+        deliverable["validate"] = {
+            "deliverable-check": operation("deliverable-check"),
+            "advisory": {"handoff": "ceratops-skill-lifecycle/source-validate"},
+        }
+        checks = ["repository-check", "deliverable-check"]
+    if validation_mode == "explicit":
+        selection = [
+            "--validation-operation", "repository.validate.repository-check",
+            "--validation-operation", "deliverables.sample.validate.advisory",
+        ]
+        checks = ["repository-check"]
+    elif validation_mode == "invalid-selection":
+        selection = ["--run-operation", "deliverables.sample.deploy-local.missing"]
+    elif validation_mode == "parameter":
+        selection = ["--parameter", "generation_id=generation-123"]
+    write_sdlc_contract(repo, repository=repository, deliverables={"sample": deliverable})
     assert run_git(repo, "add", ".").returncode == 0
     assert run_git(repo, "commit", "-m", "add ordered operations").returncode == 0
 
-    result_file = tmp_path / "promotion-result.json"
+    task_temp = repo.parent / "tmp" / repo.name / "promotion-results"
+    task_temp.mkdir(parents=True)
+    result_file = task_temp / "promotion-result.json"
+    if validation_mode == "parameter":
+        rejected_without_deployment = subprocess.run(
+            [sys.executable, str(PROMOTE_REPOSITORY), "--repo-root", str(repo),
+             "--source-branch", "approved", "--no-run-operation",
+             "--parameter", "generation_id=generation-123"],
+            capture_output=True, text=True, check=False, env=environment,
+        )
+        assert rejected_without_deployment.returncode == 1
+        assert "--parameter requires --run-operation" in json.loads(rejected_without_deployment.stderr)["message"]
+        malformed_parameter = subprocess.run(
+            [sys.executable, str(PROMOTE_REPOSITORY), "--repo-root", str(repo),
+             "--source-branch", "approved", "--run-operation",
+             "deliverables.sample.deploy-local.custom-deploy",
+             "--parameter", "generation_id"],
+            capture_output=True, text=True, check=False, env=environment,
+        )
+        assert malformed_parameter.returncode == 1
+        assert "SDLC parameters must use name=value" in json.loads(malformed_parameter.stderr)["message"]
+        assert not log.exists()
     promoted = subprocess.run(
         [
             sys.executable,
@@ -215,6 +339,7 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
             "deliverables.sample.deploy-local.promotion-check",
             "--run-operation",
             "deliverables.sample.deploy-local.custom-deploy",
+            *selection,
         ],
         capture_output=True,
         text=True,
@@ -222,6 +347,13 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
         env=environment,
     )
 
+    if validation_mode == "invalid-selection":
+        assert promoted.returncode == 1
+        failure = json.loads(promoted.stderr)
+        assert failure["phase"] == "promotion_validation"
+        assert "deliverables.sample.deploy-local.missing" in failure["message"]
+        assert not log.exists()
+        return
     assert promoted.returncode == 0, promoted.stderr
     result = json.loads(promoted.stdout)
     assert json.loads(result_file.read_text(encoding="utf-8")) == result
@@ -233,16 +365,223 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
         "deliverables.sample.deploy-local.promotion-check",
         "deliverables.sample.deploy-local.custom-deploy",
     ]
-    assert log.read_text(encoding="utf-8") == "promotion-check\ncustom-deploy\n"
+    suffix = ":generation-123" if validation_mode == "parameter" else ""
+    assert log.read_text(encoding="utf-8").splitlines() == [
+        *checks, "promotion-check" + suffix, "custom-deploy" + suffix,
+    ]
     assert result["operations"]["status"] == "completed"
-    for operation, name in zip(
+    if validation_mode != "absent":
+        # Older SDLC versions retain advisory routing without claiming the
+        # handed-off action completed. Version 3 enforces executable gates.
+        expected_handoffs = [{
+            "operation": "deliverables.sample.validate.advisory",
+            "commit": result["head"],
+            "steps": [],
+            "status": "advisory",
+            "handoff": "ceratops-skill-lifecycle/source-validate",
+        }]
+        assert result["validation_handoffs"] == expected_handoffs
+        assert result["operations"]["validation_handoffs"] == expected_handoffs
+    else:
+        assert "validation_handoffs" not in result
+        assert "validation_handoffs" not in result["operations"]
+    for operation_result, name in zip(
         result["operations"]["results"], ("promotion-check", "custom-deploy"), strict=True
     ):
-        assert operation["status"] == "completed"
-        assert operation["step_results"] == [{
+        assert operation_result["status"] == "completed"
+        assert operation_result["step_results"] == [{
             "step": 1,
             "result": {"schema": "test.deploy-receipt.v1", "status": "OK", "name": name},
         }]
+
+    # Above, the caller checked the producer schema, success status and all
+    # required fields. Finalization binds that validation to these saved bytes.
+    data = result_file.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    assert digest.upper() != digest
+    operation_log = log.read_text(encoding="utf-8")
+    arguments = [
+        "--repo-root", str(repo), "--finalize-result",
+        "--result-file", str(result_file), "--task-temp-root", str(task_temp),
+        "--expected-commit", result["head"], "--verified-result-sha256", digest.upper(),
+    ]
+
+    def finalize(extra: list[str] | None = None) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(PROMOTE_REPOSITORY), *arguments, *(extra or [])],
+            capture_output=True, text=True, check=False, env=environment,
+        )
+
+    def rejected(extra: list[str], message: str, path: pathlib.Path = result_file) -> None:
+        before = path.read_bytes()
+        completed = finalize(extra)
+        assert completed.returncode == 1, (extra, completed.stdout, completed.stderr)
+        failure = json.loads(completed.stderr)
+        assert failure["status"] == "result_cleanup_failed"
+        assert failure["replay_required"] is False
+        assert message.casefold() in failure["message"].casefold(), failure
+        assert path.read_bytes() == before
+        assert log.read_text(encoding="utf-8") == operation_log
+
+    rejected(["--expected-commit", "0" * 40], "expected-commit")
+    rejected(["--expected-commit", "HEAD"], "full expected-commit")
+    rejected(["--verified-result-sha256", "0" * 64], "changed since")
+    rejected(["--verified-result-sha256", ""], "validating every producer receipt")
+    rejected(["--promotion-only"], "Promotion-only result is incomplete")
+    rejected(["--run-operation", "deliverables.sample.deploy-local.custom-deploy"], "execution options")
+    rejected(["--task-temp-root", str(tmp_path)], "one existing task directory")
+
+    # Even an acknowledged file must describe a complete deployment. These
+    # variations supply its new digest, so rejection exercises result semantics.
+    variations: list[tuple[list[str | int], object, str]] = [
+        (["status"], "error", "successful promote-and-deploy"),
+        (["operations"], None, "missing or incomplete"),
+        (["operations", "status"], "operation_failed", "missing or incomplete"),
+        (["operations", "pending_operations"], ["pending"], "missing or incomplete"),
+        (["operations", "completed_operations"], ["duplicate", "duplicate"], "ambiguous"),
+        (["operations", "results"], [], "ambiguous"),
+        (["operations", "results", 0, "commit"], "0" * 40, "different commit"),
+        (["operations", "results", 0, "status"], "failed", "incomplete"),
+        (["operations", "results", 0, "steps"], [True], "Completed step evidence"),
+        (["operations", "results", 0, "steps"], [], "Completed step evidence"),
+        (["operations", "results", 0, "steps"], [1, 1], "Completed step evidence"),
+        (["operations", "results", 0, "steps"], None, "Completed step evidence"),
+        (["operations", "results", 0, "step_results"], None, "must be a list"),
+        (["operations", "results", 0, "step_results"], {}, "must be a list"),
+        (["operations", "results", 0, "step_results"], [None], "Step receipt"),
+        (["operations", "results", 0, "step_results"], [
+            {"step": 1, "result_omitted": "stdout_limit"},
+        ], "Step receipt"),
+        (["operations", "results", 0, "step_results"],
+         result["operations"]["results"][0]["step_results"] * 2, "Step receipt"),
+        (["operations", "results", 0, "step_results", 0, "step"], 2, "Step receipt"),
+        (["operations", "results", 0, "step_results", 0, "step"], True, "Step receipt"),
+        (["operations", "results", 0, "step_results", 0, "step"], "1", "Step receipt"),
+        (["operations", "results", 0, "step_results", 0, "result"], {}, "schema/status"),
+    ]
+    for field_path, value, message in variations:
+        modified = copy.deepcopy(result)
+        target: Any = modified
+        for field in field_path[:-1]:
+            target = target[field]
+        target[field_path[-1]] = value
+        case_file = task_temp / "invalid-result.json"
+        case_file.write_text(json.dumps(modified), encoding="utf-8")
+        rejected(["--result-file", str(case_file), "--verified-result-sha256",
+                  hashlib.sha256(case_file.read_bytes()).hexdigest()], message, case_file)
+
+    # Structured output can be an ordered subset of numbered or named steps.
+    # Every retained receipt still has to be well formed, even after gaps.
+    receipt = result["operations"]["results"][0]["step_results"][0]["result"]
+    for steps in ([1, 2, 3, 4, 5], ["prepare", "install", "check", "finish", "cleanup"]):
+        for selected in ([], [1], [1, 3], [3, 1]):
+            mixed = copy.deepcopy(result)
+            outcome = mixed["operations"]["results"][0]
+            outcome["steps"] = steps
+            outcome["step_results"] = [
+                {"step": steps[index], "result": receipt} for index in selected
+            ]
+            mixed_file = task_temp / "mixed-result.json"
+            mixed_file.write_text(json.dumps(mixed), encoding="utf-8")
+            extra = ["--result-file", str(mixed_file), "--verified-result-sha256",
+                     hashlib.sha256(mixed_file.read_bytes()).hexdigest()]
+            if selected == [3, 1]:
+                rejected(extra, "Step receipt", mixed_file)
+                continue
+            finalized = finalize(extra)
+            assert finalized.returncode == 0, finalized.stderr
+            assert finalized.stdout == "OK\n"
+            assert not mixed_file.exists()
+            assert log.read_text(encoding="utf-8") == operation_log
+
+            outcome["status"] = "state_changed"
+            outcome.pop("step_results")
+            mixed_file.write_text(json.dumps(mixed), encoding="utf-8")
+            rejected(["--result-file", str(mixed_file), "--verified-result-sha256",
+                      hashlib.sha256(mixed_file.read_bytes()).hexdigest()], "incomplete", mixed_file)
+
+    duplicate = task_temp / "duplicate-result.json"
+    duplicate.write_bytes(data.replace(b'"status": "ready"', b'"status": "ready", "status": "ready"', 1))
+    rejected(["--result-file", str(duplicate), "--verified-result-sha256",
+              hashlib.sha256(duplicate.read_bytes()).hexdigest()], "Duplicate", duplicate)
+    changed = task_temp / "changed-result.json"
+    changed.write_bytes(data + b"\n")
+    rejected(["--result-file", str(changed)], "changed since", changed)
+    outside = tmp_path / "outside-result.json"
+    outside.write_bytes(data)
+    rejected(["--result-file", str(outside)], "inside task-temp-root", outside)
+    nested_repo = task_temp / "nested-repository"
+    nested_repo.mkdir()
+    assert run_git(nested_repo, "init").returncode == 0
+    nested_file = nested_repo / "result.json"
+    nested_file.write_bytes(data)
+    rejected(["--result-file", str(nested_file)], "outside Git worktrees", nested_file)
+
+    hardlink = task_temp / "hardlink-result.json"
+    os.link(outside, hardlink)
+    rejected(["--result-file", str(hardlink)], "without hard links", hardlink)
+    link = task_temp / "linked-directory"
+    if os.name == "nt":
+        linked = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(tmp_path)],
+                                capture_output=True, text=True, check=False)
+        assert linked.returncode == 0, linked.stderr
+    else:
+        link.symlink_to(tmp_path, target_is_directory=True)
+    try:
+        rejected(["--result-file", str(link / outside.name)], "symlinks and junctions", outside)
+    finally:
+        if os.name == "nt":
+            link.rmdir()
+        else:
+            link.unlink()
+
+    # Filesystem failure is separate from deployment and must preserve its
+    # receipt. This entry point cannot call promote, even on a failed cleanup.
+    loaded = runpy.run_path(str(PROMOTE_REPOSITORY))
+    original_unlink = pathlib.Path.unlink
+
+    def deny_receipt_unlink(path: pathlib.Path, *args: Any, **kwargs: Any) -> None:
+        if path == result_file:
+            raise PermissionError("receipt is locked")
+        original_unlink(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(pathlib.Path, "unlink", deny_receipt_unlink)
+        patch.setitem(loaded["main"].__globals__, "promote", lambda *args, **kwargs: pytest.fail("deployment replayed"))
+        assert loaded["main"](arguments) == 1
+    cleanup_failure = json.loads(capsys.readouterr().err)
+    assert cleanup_failure["status"] == "result_cleanup_failed"
+    assert cleanup_failure["replay_required"] is False
+    assert result_file.read_bytes() == data
+
+    validate_completed = loaded["_completed_deployment"]
+
+    def change_during_validation(value: object, commit: str, **kwargs: Any) -> None:
+        validate_completed(value, commit, **kwargs)
+        result_file.write_bytes(data + b"\n")
+
+    with monkeypatch.context() as patch:
+        patch.setitem(loaded["main"].__globals__, "_completed_deployment", change_during_validation)
+        assert loaded["main"](arguments) == 1
+    changed_failure = json.loads(capsys.readouterr().err)
+    assert "changed during cleanup" in changed_failure["message"]
+    assert changed_failure["replay_required"] is False
+    assert result_file.read_bytes() == data + b"\n"
+    result_file.write_bytes(data)
+
+    kept = task_temp / "other-task-evidence.txt"
+    kept.write_text("keep", encoding="utf-8")
+    scope = pathlib.Path(result["pending_work_scope"])
+    scope_before = scope.read_bytes()
+    finalized = finalize()
+    assert finalized.returncode == 0, finalized.stderr
+    assert finalized.stdout == "OK\n"
+    assert not result_file.exists()
+    assert kept.read_text(encoding="utf-8") == "keep"
+    assert scope.read_bytes() == scope_before
+    assert run_git(repo, "rev-parse", "HEAD").stdout.strip() == result["head"]
+    assert run_git(repo, "show-ref", "--verify", "refs/heads/approved").returncode == 0
+    assert log.read_text(encoding="utf-8") == operation_log
 
 
 @pytest.mark.parametrize(
@@ -925,9 +1264,25 @@ def test_promote_preserves_structured_operation_failure_evidence(
     assert result["failed_step"] == 1
     assert result["diagnostic"] == {
         "exit_code": 6,
+        "message": "\n".join(f"failure-{index}" for index in range(4, 12)),
         "stdout_tail": [],
         "stderr_tail": [f"failure-{index}" for index in range(4, 12)],
     }
+
+    task_temp = repo.parent / "tmp" / repo.name / "failed-promotion"
+    task_temp.mkdir(parents=True)
+    saved = task_temp / result_file.name
+    saved.write_bytes(result_file.read_bytes())
+    finalized = subprocess.run(
+        [sys.executable, str(PROMOTE_REPOSITORY), "--repo-root", str(repo),
+         "--finalize-result", "--result-file", str(saved),
+         "--task-temp-root", str(task_temp), "--expected-commit", target_commit,
+         "--verified-result-sha256", hashlib.sha256(saved.read_bytes()).hexdigest()],
+        capture_output=True, text=True, check=False, env=environment,
+    )
+    assert finalized.returncode == 1
+    assert json.loads(finalized.stderr)["replay_required"] is False
+    assert json.loads(saved.read_text(encoding="utf-8")) == result
 
 
 def test_promote_and_deploy_rejects_operation_created_repository_work(
@@ -970,8 +1325,11 @@ def test_promote_and_deploy_rejects_operation_created_repository_work(
     assert (repo / "generated-by-deploy.txt").is_file()
 
 
+@pytest.mark.parametrize("gate", ["validate", "tests"])
+@pytest.mark.parametrize("mutation", ["none", "dirty", "head"])
 def test_promotion_repairs_and_revalidates_the_final_commit_before_deployment(
     tmp_path: pathlib.Path,
+    mutation: str, gate: str,
 ) -> None:
     repo, _, deployment_log, environment = prepare_repository_lifecycle_repo(tmp_path)
     checks = tmp_path / "checks.txt"
@@ -988,6 +1346,18 @@ def test_promotion_repairs_and_revalidates_the_final_commit_before_deployment(
     }})
     assert run_git(repo, "add", ".").returncode == 0
     assert run_git(repo, "commit", "-m", "failing validation").returncode == 0
+    if gate == "tests":
+        import yaml
+        path = repo / "sdlc/sdlc.yml"
+        document = yaml.safe_load(path.read_text())
+        document["version"] = 3
+        document["repository"]["tests"] = document["repository"].pop("validate")
+        document["repository"]["validate"] = {"none": {"no-op": "Fixture has no validation command."}}
+        for deliverable in document.get("deliverables", {}).values():
+            deliverable["tests"] = {"none": {"no-op": "Shared repository test covers this deliverable."}}
+        path.write_text(yaml.safe_dump(document))
+        assert run_git(repo, "add", ".").returncode == 0
+        assert run_git(repo, "commit", "-m", "separate test gate").returncode == 0
     broken = run_git(repo, "rev-parse", "HEAD").stdout.strip()
     command = [
         sys.executable, str(PROMOTE_REPOSITORY), "--repo-root", str(repo),
@@ -997,7 +1367,7 @@ def test_promotion_repairs_and_revalidates_the_final_commit_before_deployment(
     failed = subprocess.run(command, env=environment, capture_output=True, text=True, check=False)
     evidence = json.loads(failed.stderr)
     assert failed.returncode == 1
-    assert evidence["status"] == "validation_failed"
+    assert evidence["status"] == ("validation_failed" if gate == "validate" else "tests_failed")
     assert evidence["phase"] == "promotion_validation"
     assert evidence["commit"] == broken
     assert pathlib.Path(evidence["pending_work_scope"]).is_file()
@@ -1008,9 +1378,34 @@ def test_promotion_repairs_and_revalidates_the_final_commit_before_deployment(
     assert run_git(repo, "add", "quality.txt").returncode == 0
     assert run_git(repo, "commit", "-m", "repair").returncode == 0
     repaired = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    if mutation != "none":
+        promotion = runpy.run_path(str(PROMOTE_REPOSITORY))
+        original_run_json = promotion["_run_json"]
+
+        def change_after_validation(
+            argv: list[str], cwd: pathlib.Path,
+        ) -> tuple[int, dict[str, Any]]:
+            code, result = original_run_json(argv, cwd)
+            if "--validate" in argv and code == 0:
+                (repo / "quality.txt").write_text("changed", encoding="utf-8")
+                if mutation == "head":
+                    assert run_git(repo, "add", "quality.txt").returncode == 0
+                    assert run_git(repo, "commit", "-m", "concurrent change").returncode == 0
+            return code, result
+
+        promotion["promote"].__globals__["_run_json"] = change_after_validation
+        args = promotion["build_parser"]().parse_args(command[2:])
+        with pytest.raises(promotion["PromotionError"]) as caught:
+            promotion["promote"](args)
+        assert caught.value.payload["phase"] == "deployment"
+        assert caught.value.payload["status"] == "error"
+        assert ("HEAD changed" if mutation == "head" else "clean") in str(caught.value)
+        assert checks.read_text().splitlines() == [broken, repaired]
+        assert not deployment_log.exists()
+        return
     succeeded = subprocess.run(command, env=environment, capture_output=True, text=True, check=False)
     assert succeeded.returncode == 0, succeeded.stderr
-    assert checks.read_text().splitlines() == [broken, repaired, repaired]
+    assert checks.read_text().splitlines() == [broken, repaired]
     assert deployment_log.read_text() == "no-base\n"
 
 
@@ -1039,7 +1434,7 @@ def test_composed_promotion_and_shipping_each_run_their_validation_boundary(
             return original_shipping(command, **kwargs)
         if "prepare" in command:
             return 0, {"status": "ready", "pending_work_scope": "", "source_branches": []}
-        assert "github_pr_workflow" in command
+        assert pathlib.Path(command[1]) == PR_WORKFLOW_ENTRYPOINT
         assert log.read_text().splitlines() == ["checked", "checked"]
         return 0, {"status": "shipped", "commit": head, "synchronized_head": head}
 
@@ -1058,3 +1453,260 @@ def test_composed_promotion_and_shipping_each_run_their_validation_boundary(
     result = promotion["promote"](args)
     assert result["status"] == "shipped"
     assert log.read_text().splitlines() == ["checked", "checked"]
+
+
+
+@pytest.mark.parametrize("publication", ["inherited", "stale-tracking", "branch", "prefix", "tag", "other-remote", "query-failure", "unfetched-unrelated"])
+def test_automatic_rebase_checks_live_publication_of_the_task_range(
+    tmp_path: pathlib.Path, publication: str,
+) -> None:
+    repo, source, old_head, release, environment = prepare_divergent_promotion_repo(tmp_path / "case")
+    assert run_git(source, "branch", "--set-upstream-to=origin/main").returncode == 0
+    assert run_git(source, "config", "rebase.updateRefs", "true").returncode == 0
+    assert run_git(source, "branch", "preserve-sibling").returncode == 0
+    (source / "second.txt").write_text("second task commit\n")
+    assert run_git(source, "add", ".").returncode == 0
+    assert run_git(source, "commit", "-m", "second task commit").returncode == 0
+    head = run_git(source, "rev-parse", "HEAD").stdout.strip()
+    if publication == "branch":
+        assert run_git(source, "push", "origin", "main:refs/heads/approved").returncode == 0
+    elif publication == "prefix":
+        assert run_git(source, "push", "origin", f"{old_head}:refs/heads/another-name").returncode == 0
+    elif publication == "tag":
+        assert run_git(source, "tag", "-a", "published-task", old_head, "-m", "published prefix").returncode == 0
+        assert run_git(source, "push", "origin", "refs/tags/published-task").returncode == 0
+    elif publication in {"other-remote", "query-failure", "unfetched-unrelated"}:
+        remote = tmp_path / "other.git"
+        if publication != "query-failure":
+            assert run_git(tmp_path, "init", "--bare", str(remote)).returncode == 0
+        assert run_git(repo, "remote", "add", "other", str(remote)).returncode == 0
+        if publication == "other-remote":
+            assert run_git(source, "push", "other", f"{old_head}:refs/heads/different").returncode == 0
+        elif publication == "unfetched-unrelated":
+            foreign = tmp_path / "foreign"
+            foreign.mkdir()
+            for args in (("init", "-b", "unrelated"), ("config", "user.email", "test@example.invalid"),
+                         ("config", "user.name", "Test Agent")):
+                assert run_git(foreign, *args).returncode == 0
+            (foreign / "file.txt").write_text("unrelated published work")
+            assert run_git(foreign, "add", ".").returncode == 0
+            assert run_git(foreign, "commit", "-m", "foreign commit").returncode == 0
+            assert run_git(foreign, "push", str(remote), "unrelated").returncode == 0
+    elif publication == "stale-tracking":
+        assert run_git(repo, "update-ref", "refs/remotes/obsolete/approved", head).returncode == 0
+    result = subprocess.run([sys.executable, str(PROMOTE_REPOSITORY), "--repo-root", str(repo),
+                             "--source-branch", "approved", "--no-run-operation"],
+                            env=environment, capture_output=True, text=True)
+    if publication in {"inherited", "stale-tracking", "unfetched-unrelated"}:
+        assert result.returncode == 0, result.stderr
+        new_head = json.loads(result.stdout)["head"]
+        assert new_head != head
+        assert run_git(repo, "rev-list", "--count", f"{release}..{new_head}").stdout.strip() == "2"
+    else:
+        assert result.returncode != 0
+        assert "published" in result.stderr or "remote publication" in result.stderr
+        assert run_git(repo, "rev-parse", "release/local").stdout.strip() == release
+        assert run_git(source, "rev-parse", "HEAD").stdout.strip() == head
+    assert run_git(source, "status", "--porcelain").stdout == ""
+    assert run_git(repo, "rev-parse", "preserve-sibling").stdout.strip() == old_head
+    if publication == "unfetched-unrelated":
+        assert run_git(repo, "for-each-ref", "refs/remotes/other").stdout == ""
+
+
+@pytest.mark.parametrize("conflict", [False, True])
+def test_automatic_rebase_preserves_main_merges_outside_task_changes(
+    tmp_path: pathlib.Path, conflict: bool,
+) -> None:
+    repo, source, _, release, environment = prepare_divergent_promotion_repo(tmp_path / "case")
+    assert run_git(repo, "switch", "main").returncode == 0
+    assert run_git(repo, "switch", "-c", "dependency").returncode == 0
+    path = "release.txt" if conflict else "dependency.txt"
+    (repo / path).write_text("new dependency\n")
+    assert run_git(repo, "add", ".").returncode == 0
+    assert run_git(repo, "commit", "-m", "dependency update").returncode == 0
+    assert run_git(repo, "switch", "main").returncode == 0
+    assert run_git(repo, "merge", "--no-ff", "dependency", "-m", "dependency merge").returncode == 0
+    shared = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    assert run_git(repo, "push", "origin", "main").returncode == 0
+    # Give the task the shared dependency history, then a second ordinary commit.
+    assert run_git(source, "rebase", "main").returncode == 0
+    (source / "second.txt").write_text("second task commit\n")
+    assert run_git(source, "add", ".").returncode == 0
+    assert run_git(source, "commit", "-m", "second task commit").returncode == 0
+    old_head = run_git(source, "rev-parse", "HEAD").stdout.strip()
+    assert run_git(repo, "switch", "release/local").returncode == 0
+    result = subprocess.run([sys.executable, str(PROMOTE_REPOSITORY), "--repo-root", str(repo),
+                             "--source-branch", "approved", "--no-run-operation"],
+                            env=environment, capture_output=True, text=True)
+    if conflict:
+        assert result.returncode != 0 and "shared task history" in result.stderr
+        assert run_git(source, "rev-parse", "HEAD").stdout.strip() == old_head
+        assert run_git(repo, "rev-parse", "HEAD").stdout.strip() == release
+    else:
+        assert result.returncode == 0, result.stderr
+        evidence = json.loads(result.stdout)["rebased_branches"][0]
+        assert evidence["shared_base"] == shared
+        assert evidence["release_head"] == release
+        target = evidence["onto"]
+        assert run_git(repo, "show", "-s", "--format=%P", target).stdout.strip().split() == [release, shared]
+        assert run_git(repo, "rev-list", "--count", f"{target}..approved").stdout.strip() == "2"
+        assert run_git(repo, "rev-list", "--merges", f"{target}..approved").stdout.strip() == ""
+        for parent in (shared, release):
+            assert run_git(repo, "merge-base", "--is-ancestor", parent, "approved").returncode == 0
+        assert (source / "dependency.txt").read_text() == "new dependency\n"
+        assert (source / "release.txt").read_text() == "release\n"
+    assert run_git(source, "status", "--porcelain").stdout == ""
+
+
+@pytest.mark.parametrize("query", ["ambiguous-base", "history-failure", "ancestry-failure", "post-rebase-failure", "post-head-failure"])
+def test_automatic_rebase_refuses_uncertain_git_evidence(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, query: str,
+) -> None:
+    repo, source, head, release, _ = prepare_divergent_promotion_repo(tmp_path / "case")
+    monkeypatch.syspath_prepend(str(PROMOTE_REPOSITORY.parent))
+    loaded = runpy.run_path(str(PROMOTE_REPOSITORY))
+    run = loaded["run_command"]
+    rebased = False
+
+    def probe(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        nonlocal rebased
+        if "rebase" in argv and "--onto" in argv:
+            rebased = True
+        if query == "ambiguous-base" and "--all" in argv and "merge-base" in argv:
+            return subprocess.CompletedProcess(argv, 0, f"{head}\n{release}\n", "")
+        if ((query == "history-failure" and "rev-list" in argv)
+                or (query == "ancestry-failure" and "--is-ancestor" in argv)
+                or (query == "post-rebase-failure" and rebased and "diff" in argv and "--check" in argv)):
+            return subprocess.CompletedProcess(argv, 128, "", "injected Git query failure")
+        return run(argv, **kwargs)
+
+    original_head = loaded["_branch_head"]
+    failed_head_query = False
+
+    def branch_head(*args: Any) -> str:
+        nonlocal failed_head_query
+        if query == "post-head-failure" and rebased and not failed_head_query:
+            failed_head_query = True
+            raise loaded["PromotionError"]("post-rebase head query failed")
+        return original_head(*args)
+
+    monkeypatch.setitem(loaded["_prepare_source_for_fast_forward"].__globals__, "_branch_head", branch_head)
+    monkeypatch.setitem(loaded["_prepare_source_for_fast_forward"].__globals__, "run_command", probe)
+    with pytest.raises(loaded["PromotionError"]):
+        loaded["_prepare_source_for_fast_forward"](repo, release, "approved", loaded["SourceState"](head, source),
+                                                 run_git(repo, "rev-parse", "main").stdout.strip())
+    assert rebased == (query in {"post-rebase-failure", "post-head-failure"})
+    assert run_git(source, "rev-parse", "HEAD").stdout.strip() == head
+    assert run_git(source, "status", "--porcelain").stdout == ""
+
+
+@pytest.mark.parametrize("cleanup_failure", [False, True])
+@pytest.mark.parametrize("deployment_case", ["advisory", "v1-plain", "v2-plain", "v2-json"])
+def test_managed_installer_finalizes_only_its_bound_promotion_record(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], cleanup_failure: bool, deployment_case: str,
+) -> None:
+    from tests.skill_lifecycle.support import load_runtime_installer
+    from tests.support.repositories import create_compatible_repo
+
+    repo, _, _, environment = prepare_repository_lifecycle_repo(tmp_path)
+    create_compatible_repo(repo, "example/completion", ["alpha-tool", "beta-tool"])
+    operation = "deliverables.skills.deploy-local.managed"
+    structured = deployment_case == "v2-json"
+    if deployment_case != "advisory":
+        output = json.dumps({"schema": "test.install.v1", "status": "OK"}) if structured else "Requirement already satisfied"
+        step: dict[str, Any] = {"run": [sys.executable, "-c", f"print({output!r})"]}
+        deploy = {"steps": [step], "handoff": "ceratops-skill-lifecycle/deploy"}
+        if deployment_case == "v1-plain":
+            operation = "deploy.operations.deploy"
+            step["id"] = "install-python-requirements"
+            (repo / "sdlc/sdlc.yml").write_text(json.dumps({
+                "version": 1, "kind": "ceratops-sdlc", "deploy": {"operations": {"deploy": deploy}},
+            }), encoding="utf-8")
+        else:
+            write_sdlc_contract(repo, deliverables={"skills": {"deploy-local": {"managed": deploy}}})
+    assert run_git(repo, "add", ".").returncode == 0
+    assert run_git(repo, "commit", "-m", "managed deployment").returncode == 0
+    task = repo.parent / "tmp" / repo.name / "promotion-completion"
+    task.mkdir(parents=True)
+    record = task / "promotion.json"
+    promoted = subprocess.run([sys.executable, str(PROMOTE_REPOSITORY), "--repo-root", str(repo),
+                              "--source-branch", "approved", "--run-operation", operation,
+                              "--result-file", str(record)], env=environment, capture_output=True, text=True)
+    assert promoted.returncode == 0, promoted.stderr
+    original = record.read_bytes()
+    promotion = json.loads(original)
+    outcome = promotion["operations"]["results"][0]
+    assert outcome["status"] == ("advisory" if deployment_case == "advisory" else "completed")
+    assert bool(outcome.get("step_results")) is structured
+    scope = pathlib.Path(promotion["pending_work_scope"])
+    scope_bytes = scope.read_bytes()
+    retained = task / "caller-owned.txt"
+    retained.write_text("preserve")
+    destination = tmp_path / "installed"
+    monkeypatch.chdir(tmp_path)
+    loaded = load_runtime_installer()
+    process = subprocess.run
+    finalizations = 0
+
+    def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        nonlocal finalizations
+        if "--finalize-result" in argv:
+            finalizations += 1
+            if cleanup_failure:
+                return subprocess.CompletedProcess(argv, 1, "", "record is locked")
+        return process(argv, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(subprocess, "run", run)
+        code = loaded["main"](["--repo-root", str(repo), "--install-root", str(destination),
+                               "--promotion-result", str(record), "--operation", operation,
+                               "--task-temp-root", str(task), "--finalize-promotion-with", str(PROMOTE_REPOSITORY)])
+    captured = capsys.readouterr()
+    cleanup_blocked = cleanup_failure or structured
+    assert code == (2 if cleanup_blocked else 0), (captured.out, captured.err)
+    receipt = json.loads(captured.err if cleanup_blocked else captured.out)
+    assert finalizations == 1
+    assert receipt["commit"] == promotion["head"]
+    assert receipt["install_root"] == str(destination)
+    assert receipt["deployed"] == ["alpha-tool", "beta-tool"]
+    assert receipt["removed"] == [] and receipt["cleanup_debt"] == []
+    assert receipt["promotion"]["sha256"] == hashlib.sha256(original).hexdigest()
+    assert (destination / "alpha-tool/SKILL.md").is_file()
+    if cleanup_blocked:
+        assert record.read_bytes() == original
+        assert receipt["promotion_cleanup"]["replay_required"] is False
+        command = [sys.executable, str(PROMOTE_REPOSITORY), "--repo-root", str(repo), "--finalize-result",
+                   "--result-file", str(record), "--task-temp-root", str(task),
+                   "--expected-commit", promotion["head"], "--deployment-evidence", "-"]
+        if structured:
+            # Bound handoff evidence cannot validate an arbitrary producer's
+            # receipt. The caller checks that receipt before acknowledging it.
+            assert outcome["step_results"][0]["result"] == {"schema": "test.install.v1", "status": "OK"}
+            unverified = process(command, input=json.dumps(receipt), capture_output=True, text=True)
+            assert unverified.returncode == 1 and record.read_bytes() == original
+            assert "require caller validation" in unverified.stderr
+            command.extend(["--verified-result-sha256", hashlib.sha256(original).hexdigest()])
+        invalid = [
+            ("status", "failed"), ("cleanup_debt", ["retired-folder"]), ("commit", "a" * 40),
+            ("repo_root", str(tmp_path)), ("install_root", "relative"), ("producer", "another-skill/deploy"),
+            ("deployed", ["alpha-tool", "alpha-tool"]), ("removed", ["alpha-tool"]),
+            ("transaction_id", ""), ("promotion", {**receipt["promotion"], "sha256": "0" * 64}),
+            ("promotion", {**receipt["promotion"], "operation": "deliverables.other.deploy-local.other"}),
+        ]
+        for field, value in invalid:
+            wrong = {**receipt, field: value}
+            result = process(command, input=json.dumps(wrong), capture_output=True, text=True)
+            assert result.returncode == 1, (field, result.stdout, result.stderr)
+            assert json.loads(result.stderr)["replay_required"] is False
+            assert record.read_bytes() == original
+        wrong_identity = {**receipt, "promotion": {**receipt["promotion"], "identity": [0] * 6}}
+        result = process(command, input=json.dumps(wrong_identity), capture_output=True, text=True)
+        assert result.returncode == 1 and record.read_bytes() == original
+        installed_before = (destination / "alpha-tool/SKILL.md").stat().st_mtime_ns
+        result = process(command, input=json.dumps(receipt), capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        assert (destination / "alpha-tool/SKILL.md").stat().st_mtime_ns == installed_before
+    assert not record.exists()
+    assert scope.read_bytes() == scope_bytes
+    assert retained.read_text() == "preserve"

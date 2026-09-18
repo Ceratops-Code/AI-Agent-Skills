@@ -7,6 +7,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+from typing import Any
 
 import pytest
 
@@ -15,7 +16,13 @@ from tests.repository_lifecycle.support import (
     SDLC_CONTRACT_TEMPLATE,
     run_operation_cli,
 )
-from tests.support.repositories import ROOT, run_git, write_sdlc_contract
+from tests.support.repositories import (
+    ROOT,
+    prepare_script_environment,
+    run_ci_action,
+    run_git,
+    write_sdlc_contract,
+)
 
 runner = importlib.import_module("repository_operation")
 contracts = importlib.import_module(
@@ -38,6 +45,475 @@ RECEIPT = {
 }
 
 
+@pytest.mark.parametrize("mode", ["ci", "skill", "return"])
+def test_v3_tests_gate_mutations_and_ci_never_dispatches_handoffs(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, mode: str,
+) -> None:
+    """Real subprocess failure must stop the batch before a later mutation."""
+    declaration = {
+        "version": 3, "kind": "ceratops-sdlc",
+        "repository": {"validate": {"structure": {"no-op": "No extra structural checks."}}},
+        "deliverables": {"service": {
+            "tests": {"unit": {"steps": [{"run": [sys.executable, "-c", "raise SystemExit(7)"]}]}},
+            "validate": {"source": {"handoff": "example-skill/check"}},
+            "deploy-local": {"local": {"steps": [{"run": [sys.executable, "-c", "raise AssertionError('must not deploy')"]}]}},
+        }},
+    }
+    (tmp_path / "sdlc").mkdir()
+    (tmp_path / "sdlc/sdlc.yml").write_text(json.dumps(declaration))
+    location = "deliverables.service.deploy-local.local"
+    selected = runner.validation_operations(tmp_path, [location], ["repository.validate.structure"])
+    assert "deliverables.service.tests.unit" in selected
+    calls: list[str] = []
+
+    def record_handoff(route: str, root: pathlib.Path) -> dict[str, str]:
+        calls.append(route)
+        return {"status": "completed"}
+
+    monkeypatch.setattr(runner, "execute_handoff", record_handoff)
+    handoff = runner.prepare_operations(tmp_path, [runner.OperationRequest("deliverables.service.validate.source")], context=mode)[0]
+    result = runner.execute_prepared_operation(handoff)
+    assert calls == (["example-skill/check"] if mode == "skill" else [])
+    assert result["status"] == {"ci": "deferred_handoff", "skill": "completed", "return": "handoff_required"}[mode]
+    prepared = runner.prepare_operations(tmp_path, [runner.OperationRequest(item) for item in selected] + [runner.OperationRequest(location)], context=mode)
+    failed = runner.execute_prepared_operations(prepared)
+    assert failed["status"] == ("handoff_required" if mode == "return" else "tests_failed")
+    assert location in failed["pending_operations"]
+    assert location not in failed["completed_operations"]
+
+
+@pytest.mark.parametrize("failure", [None, "validation", "tests"])
+def test_ci_action_runs_skill_engine_without_repository_copies(
+    tmp_path: pathlib.Path, failure: str | None,
+) -> None:
+    repo = tmp_path / "repository with spaces"
+    (repo / "sdlc").mkdir(parents=True)
+    evidence = tmp_path / "failure evidence.json"
+    evidence.write_text("previous failure")
+
+    def command(name: str) -> dict[str, object]:
+        program = ("from pathlib import Path; p=Path('order.txt'); "
+                   f"p.write_text((p.read_text() if p.exists() else '') + {name!r} + chr(10)); "
+                   f"raise SystemExit({7 if failure == name else 0})")
+        return {"steps": [{"run": [sys.executable, "-c", program]}]}
+
+    declaration = {"version": 3, "kind": "ceratops-sdlc",
+                   "repository": {"validate": {"structure": command("validation")}},
+                   "deliverables": {"service": {
+                       "validate": {"source": {"handoff": "nonexistent-skill/check"}},
+                       "tests": {"unit": command("tests")},
+                   }}}
+    (repo / "sdlc/sdlc.yml").write_text(json.dumps(declaration))
+    result = run_ci_action(repo, evidence, tmp_path / "action checkout")
+    assert result.returncode == (1 if failure else 0), result.stderr
+    payload = json.loads(result.stderr if failure else result.stdout)
+    if failure:
+        assert json.loads(evidence.read_text()) == payload
+        assert payload["status"] == ("validation_failed" if failure == "validation" else "tests_failed")
+    else:
+        assert not evidence.exists()
+        assert payload["status"] == "completed"
+    expected = "validation\n" if failure == "validation" else "validation\ntests\n"
+    assert (repo / "order.txt").read_text() == expected
+    if failure != "validation":
+        handoff = next(item for item in payload["results"] if item.get("handoff"))
+        assert handoff["status"] == "deferred_handoff"
+    assert not (repo / "scripts/sdlc.py").exists()
+    assert not (repo / "scripts/runtime").exists()
+
+
+@pytest.mark.parametrize("tests", [None, {}, {"none": {"no-op": " "}}, {"unit": {"steps": [], "no-op": "ambiguous"}}])
+def test_v3_requires_explicit_unambiguous_test_declarations(tests: object) -> None:
+    deliverable = {} if tests is None else {"tests": tests}
+    assert contracts.validation_errors({"version": 3, "kind": "ceratops-sdlc", "deliverables": {"service": deliverable}})
+    assert not contracts.validation_errors({"version": 3, "kind": "ceratops-sdlc", "deliverables": {"service": {"tests": {"none": {"no-op": "No executable behavior."}}}}})
+
+
+def _v4_action(*steps: dict[str, object]) -> dict[str, object]:
+    return {"requires": {"capabilities": []}, "steps": list(steps)}
+
+
+def _v4_fixture() -> dict[str, Any]:
+    """Exercise package dependency records and separate lifecycle ownership."""
+
+    return {
+        "version": 4,
+        "kind": "ceratops-sdlc",
+        "repository": {
+            "capabilities": {"uv": {"executable": "uv"}},
+            "actions": {
+                "validate": _v4_action({"run": [sys.executable, "-c", "pass"]}),
+                "test": {"requires": {"capabilities": []}, "no-op": "No repository tests."},
+            },
+        },
+        "deliverables": {
+            "packages": {
+                "core": {
+                    "source": "packages/core", "project": "packages/core/pyproject.toml",
+                    "prerequisites": [],
+                    "artifact": {
+                        "type": "python-wheel", "distribution": "core-tool",
+                        "output-directory": "dist/core", "filename-pattern": "core_tool-*.whl",
+                    },
+                    "actions": {"build": _v4_action({"run": ["uv", "build", "packages/core"]})},
+                },
+                "claims": {
+                    "source": "packages/claims", "project": "packages/claims/pyproject.toml",
+                    "prerequisites": ["core"],
+                    "artifact": {
+                        "type": "python-wheel", "distribution": "claims-tool",
+                        "output-directory": "dist/claims", "filename-pattern": "claims_tool-*.whl",
+                    },
+                    "actions": {"build": _v4_action({"run": ["uv", "build", "packages/claims"]})},
+                },
+            },
+            "tools": {
+                "insurance-claims-tool": {
+                    "source": "packages/claims", "manifest": "packages/claims/tool.json",
+                    "prerequisites": ["claims"],
+                    "actions": {
+                        "validate": {"requires": {"capabilities": []}, "no-op": "Package tests cover the tool."},
+                        "install": _v4_action({"handoff": {
+                            "lifecycle": "ceratops-tool-lifecycle", "action": "install",
+                            "inputs": {"tool": "insurance-claims-tool"},
+                        }}),
+                    },
+                },
+            },
+            "skills": {
+                "claims-catalog-invoice": {
+                    "source": "skills/claims-catalog-invoice", "prerequisites": ["claims"],
+                    "actions": {
+                        "validate": _v4_action({"handoff": {
+                            "lifecycle": "ceratops-skill-lifecycle", "action": "source-validate",
+                            "inputs": {"skill": "claims-catalog-invoice"},
+                        }}),
+                        "install": _v4_action({"handoff": {
+                            "lifecycle": "ceratops-skill-lifecycle", "action": "deploy",
+                            "inputs": {"skill": "claims-catalog-invoice"},
+                        }}),
+                    },
+                },
+            },
+        },
+    }
+
+
+def test_v4_template_and_typed_operation_index(tmp_path: pathlib.Path) -> None:
+    template = (
+        ROOT / "skills/ceratops-repo-lifecycle/references/templates/sdlc.v4.yml.tmpl"
+    )
+    path = tmp_path / "sdlc.yml"
+    shutil.copyfile(template, path)
+    document = contracts.load_contract(path)
+    assert document["version"] == 4
+    assert list(contracts.operation_entries(document)) == [
+        "repository.actions.validate", "repository.actions.test",
+    ]
+
+    fixture = _v4_fixture()
+    assert contracts.validation_errors(fixture) == []
+    entries = contracts.operation_entries(fixture)
+    assert set(entries) == {
+        "repository.actions.validate", "repository.actions.test",
+        "deliverables.packages.core.actions.build",
+        "deliverables.packages.claims.actions.build",
+        "deliverables.tools.insurance-claims-tool.actions.validate",
+        "deliverables.tools.insurance-claims-tool.actions.install",
+        "deliverables.skills.claims-catalog-invoice.actions.validate",
+        "deliverables.skills.claims-catalog-invoice.actions.install",
+    }
+    assert runner.operation_category("deliverables.packages.claims.actions.build") == "build"
+    assert runner.operation_category("deliverables.tools.insurance-claims-tool.actions.install") == "deploy-local"
+    with pytest.raises(runner.OperationError, match="Invalid SDLC operation location"):
+        runner.operation_category("deliverables.skills.claims-catalog-invoice.actions.build")
+
+
+def test_v4_prerequisites_are_exposed_without_build_or_install(tmp_path: pathlib.Path) -> None:
+    fixture = _v4_fixture()
+    (tmp_path / "sdlc").mkdir()
+    (tmp_path / "sdlc/sdlc.yml").write_text(json.dumps(fixture))
+    _repository(tmp_path)
+    (tmp_path / "uncommitted.txt").write_text("inspection must remain read-only")
+    location = "deliverables.skills.claims-catalog-invoice.actions.install"
+    prepared = runner.prepare_operations(tmp_path, [runner.OperationRequest(location)])[0]
+    assert list(prepared.prerequisites["packages"]) == ["core", "claims"]
+    assert prepared.prerequisites["packages"]["claims"]["action-locations"] == {
+        "build": "deliverables.packages.claims.actions.build"
+    }
+    assert prepared.steps[0].handoff["action"] == "deploy"
+    assert runner.validation_operations(tmp_path, [location]) == [
+        "repository.actions.validate",
+        "deliverables.skills.claims-catalog-invoice.actions.validate",
+        "repository.actions.test",
+    ]
+    assert runner.validation_operations(tmp_path, [
+        "deliverables.tools.insurance-claims-tool.actions.install"
+    ]) == [
+        "repository.actions.validate",
+        "deliverables.tools.insurance-claims-tool.actions.validate",
+        "repository.actions.test",
+    ]
+    result = run_operation_cli(tmp_path, location, prepare_only=True)
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert list(payload["prerequisites"]["packages"]) == ["core", "claims"]
+
+
+def test_v4_source_installed_tool_needs_no_package_artifact(tmp_path: pathlib.Path) -> None:
+    fixture = _v4_fixture()
+    tool = fixture["deliverables"]["tools"]["insurance-claims-tool"]
+    tool["prerequisites"] = []
+    assert contracts.validation_errors(fixture) == []
+
+    (tmp_path / "sdlc").mkdir()
+    (tmp_path / "sdlc/sdlc.yml").write_text(json.dumps(fixture))
+    _repository(tmp_path)
+    location = "deliverables.tools.insurance-claims-tool.actions.install"
+    prepared = runner.prepare_operations(tmp_path, [runner.OperationRequest(location)])[0]
+    assert prepared.prerequisites["packages"] == {}
+    assert prepared.steps[0].handoff["action"] == "install"
+    assert not (tmp_path / "dist").exists()
+
+
+def test_v4_tool_install_can_run_standalone_script(tmp_path: pathlib.Path) -> None:
+    fixture = _v4_fixture()
+    tool = fixture["deliverables"]["tools"]["insurance-claims-tool"]
+    tool["actions"]["install"] = _v4_action({"run": [
+        sys.executable, "-c", "from pathlib import Path; Path('installed.txt').write_text('done')",
+    ]})
+    assert contracts.validation_errors(fixture) == []
+    (tmp_path / "sdlc").mkdir()
+    (tmp_path / "sdlc/sdlc.yml").write_text(json.dumps(fixture))
+    prepared = runner.prepare_operations(tmp_path, [runner.OperationRequest(
+        "deliverables.tools.insurance-claims-tool.actions.install",
+    )])[0]
+    result = runner.execute_prepared_operation(prepared)
+    assert result["status"] == "completed"
+    assert result["steps"] == [1]
+    assert (tmp_path / "installed.txt").read_text() == "done"
+
+
+@pytest.mark.parametrize("mode", ["skill", "ci", "return"])
+def test_v4_runs_commands_then_returns_structured_handoff(
+    tmp_path: pathlib.Path, mode: str,
+) -> None:
+    fixture = _v4_fixture()
+    action = fixture["deliverables"]["skills"]["claims-catalog-invoice"]["actions"]["install"]
+    action["steps"].insert(0, {"run": [
+        sys.executable, "-c", "from pathlib import Path; Path('ran.txt').write_text('done')",
+    ]})
+    (tmp_path / "sdlc").mkdir()
+    (tmp_path / "sdlc/sdlc.yml").write_text(json.dumps(fixture))
+    location = "deliverables.skills.claims-catalog-invoice.actions.install"
+    prepared = runner.prepare_operations(
+        tmp_path, [runner.OperationRequest(location)], context=mode,
+    )[0]
+    result = runner.execute_prepared_operation(prepared)
+    assert result["steps"] == [1]
+    assert result["status"] == ("deferred_handoff" if mode == "ci" else "handoff_required")
+    assert result["handoff"] == {
+        "lifecycle": "ceratops-skill-lifecycle", "action": "deploy",
+        "inputs": {"skill": "claims-catalog-invoice"},
+    }
+    assert (tmp_path / "ran.txt").read_text() == "done"
+
+
+def test_v4_package_build_waits_for_declared_test_gate(tmp_path: pathlib.Path) -> None:
+    fixture = _v4_fixture()
+    fixture["repository"]["actions"]["test"] = _v4_action({
+        "run": [sys.executable, "-c", "raise SystemExit(7)"],
+    })
+    fixture["deliverables"]["packages"]["claims"]["actions"]["build"] = _v4_action({
+        "run": [sys.executable, "-c", "from pathlib import Path; Path('built.txt').write_text('bad')"],
+    })
+    (tmp_path / "sdlc").mkdir()
+    (tmp_path / "sdlc/sdlc.yml").write_text(json.dumps(fixture))
+    result = run_operation_cli(tmp_path, "deliverables.packages.claims.actions.build")
+    assert result.returncode == 1
+    assert json.loads(result.stderr)["status"] == "tests_failed"
+    assert not (tmp_path / "built.txt").exists()
+
+
+@pytest.mark.parametrize("change, expected", [
+    (lambda x: x["deliverables"]["skills"]["claims-catalog-invoice"].update(
+        prerequisites=["missing"]), "unknown package missing"),
+    (lambda x: x["deliverables"]["packages"]["core"].update(
+        prerequisites=["claims"]), "package prerequisite cycle"),
+    (lambda x: x["deliverables"]["tools"]["insurance-claims-tool"]["actions"]["install"]["steps"][0]["handoff"].update(
+        lifecycle="ceratops-skill-lifecycle"), "must hand off to ceratops-tool-lifecycle"),
+    (lambda x: x["deliverables"]["tools"]["insurance-claims-tool"]["actions"].update(
+        install={"requires": {"capabilities": []}, "no-op": "Cannot install without lifecycle."}),
+     "must end with a handoff"),
+    (lambda x: x["deliverables"]["skills"]["claims-catalog-invoice"]["actions"]["install"].update(
+        steps=[{"handoff": {"lifecycle": "ceratops-skill-lifecycle", "action": "deploy", "inputs": {}}}, {"run": ["python"]}]),
+     "handoff must be the single final step"),
+    (lambda x: x["deliverables"]["packages"]["claims"]["artifact"].update(
+        **{"filename-pattern": "../wrong.whl"}), "filename-pattern must be a filename pattern"),
+    (lambda x: x["deliverables"]["tools"]["insurance-claims-tool"]["actions"]["install"]["steps"][0]["handoff"]["inputs"].update(
+        **{"prerequisite-packages": ["core"]}), "prerequisite-packages differ from prerequisites"),
+    (lambda x: x["repository"]["capabilities"]["uv"].update(
+        **{"version-from": {"file": "folder\\tool.toml", "key": "project.version"}}),
+     "capability uv version-from.file must be repository-relative"),
+    (lambda x: x["repository"]["capabilities"]["uv"].update(
+        version="1.0", channel="stable"), "multiple version authorities"),
+])
+def test_v4_rejects_invalid_dependency_or_lifecycle_boundary(change, expected: str) -> None:
+    fixture = _v4_fixture()
+    change(fixture)
+    assert any(expected in error for error in contracts.validation_errors(fixture))
+
+
+@pytest.mark.parametrize("change", [
+    lambda x: x["deliverables"]["tools"]["insurance-claims-tool"].update(package="claims"),
+    lambda x: x["deliverables"]["tools"]["insurance-claims-tool"].update(prerequisites=["core", "claims"]),
+    lambda x: x["deliverables"]["skills"]["claims-catalog-invoice"]["actions"]["install"].update(
+        **{"no-op": "nothing to install"}),
+    lambda x: x["deliverables"]["skills"]["claims-catalog-invoice"]["actions"]["install"]["steps"][0].update(
+        run=["python"]),
+    lambda x: x["deliverables"]["skills"]["claims-catalog-invoice"]["actions"].update(
+        build=_v4_action({"run": ["python"]})),
+])
+def test_v4_schema_rejects_ambiguous_steps_or_wrong_deliverable_actions(change) -> None:
+    fixture = _v4_fixture()
+    change(fixture)
+    assert contracts.validation_errors(fixture)
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required for installed Python actions")
+def test_registered_skill_executor_is_portable_and_failure_is_not_completion(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handoffs = runner
+    skill = tmp_path / "skills/example-skill"
+    (skill / "references").mkdir(parents=True)
+    (skill / "scripts").mkdir()
+    python = tmp_path / "runtimes/ceratops/versions/test/.venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    created = subprocess.run([sys.executable, "-m", "venv", "--copies", str(python.parent.parent)], capture_output=True, text=True)
+    assert created.returncode == 0, created.stderr
+    assert not python.is_symlink()
+    (skill / ".runtime-manifest.json").write_text(json.dumps({"python_runtime": str(python)}))
+    script = skill / "probe.py"
+    script.write_text("import pathlib, sys\npathlib.Path(sys.argv[1], 'called.txt').write_text('called')\nraise SystemExit(int(sys.argv[2]))\n")
+    binding = skill / "references/action-executors.json"
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    repo = tmp_path / "repository"
+    repo.mkdir()
+    for code, expected in ((0, "completed"), (9, "operation_failed")):
+        binding.write_text(json.dumps({"version": 1, "actions": {"check": {"run": ["{python}", "{skill_root}/probe.py", "{repo_root}", str(code)]}}}))
+        assert handoffs.execute_handoff("example-skill/check", repo)["status"] == expected
+        assert (repo / "called.txt").read_text() == "called"
+    assert handoffs.execute_handoff("example-skill/unknown", repo)["status"] == "handoff_required"
+    receipt = {"schema": "fixture.deployment.v1", "status": "deployed", "entities": ["one"]}
+    script.write_text("import json\nprint(json.dumps(" + repr(receipt) + "))\n")
+    binding.write_text(json.dumps({"version": 1, "actions": {"check": {"steps": [
+        {"run": ["{python}", "{skill_root}/probe.py"]},
+        {"run": [sys.executable, "-c", "raise SystemExit(7)"]},
+    ]}}}))
+    result = handoffs.execute_handoff("example-skill/check", repo)
+    assert result["status"] == "operation_failed"
+    assert result["steps"] == [1]
+    assert result["step_results"] == [{"step": 1, "result": receipt}]
+    (skill / ".runtime-manifest.json").unlink()
+    assert handoffs.execute_handoff("example-skill/check", repo)["status"] == "handoff_required"
+
+
+def test_registered_skill_executor_uses_installed_authorized_source_bundle(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handoffs = runner
+    codex_home = tmp_path / "codex"
+    installed = codex_home / "skills" / "example-skill"
+    source_repo = tmp_path / "repository"
+    source = source_repo / "skills" / "example-skill"
+    for root in (installed, source):
+        (root / "references").mkdir(parents=True)
+        (root / "scripts").mkdir()
+    binding = {
+        "version": 1,
+        "actions": {
+            "check": {
+                "run": ["{python}", "{skill_root}/scripts/probe.py"]
+            }
+        },
+    }
+    encoded = json.dumps(binding)
+    for root in (installed, source):
+        (root / "references" / "action-executors.json").write_text(encoded)
+        (root / "scripts" / "probe.py").write_text("print('OK')\n")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr(handoffs.shutil, "which", lambda name: "uv" if name == "uv" else None)
+    calls: list[list[str]] = []
+
+    def run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(handoffs.subprocess, "run", run)
+    assert handoffs.execute_handoff("example-skill/check", source_repo)["status"] == "completed"
+    assert pathlib.Path(calls[0][-1]).resolve() == (
+        source / "scripts" / "probe.py"
+    ).resolve()
+    assert calls[0][0] == sys.executable
+
+    changed_binding = json.loads(encoded)
+    changed_binding["actions"]["check"]["run"].append("changed")
+    (source / "references" / "action-executors.json").write_text(
+        json.dumps(changed_binding)
+    )
+    result = handoffs.execute_handoff("example-skill/check", source_repo)
+    assert result == {
+        "status": "handoff_required",
+        "handoff": "example-skill/check",
+        "message": "Source skill executor binding differs from the installed authorization.",
+    }
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("failure", [None, "candidate", "missing_manager"])
+def test_tool_install_binding_uses_checkout_metadata_and_propagates_failures(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, failure: str | None,
+) -> None:
+    handoffs = runner
+    skill = tmp_path / "skills/ceratops-tool-lifecycle/references"
+    skill.mkdir(parents=True)
+    shutil.copyfile(ROOT / "skills/ceratops-tool-lifecycle/references/action-executors.json", skill / "action-executors.json")
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    repo = tmp_path / "repo with spaces & punctuation"
+    repo.mkdir()
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if failure == "missing_manager":
+            raise FileNotFoundError("manager launcher missing")
+        return subprocess.CompletedProcess(argv, 7 if failure else 0, "OK\n", "candidate failed" if failure else "")
+
+    monkeypatch.setattr(handoffs.subprocess, "run", run)
+    result = handoffs.execute_handoff("ceratops-tool-lifecycle/install", repo)
+    assert result["status"] == ("operation_failed" if failure else "completed")
+    assert calls[0][0] == ["python", "-I", "-B",
+                           "C:/AI-Agents-Tools/ceratops_tool_manager/bin/ceratops_tool_manager.py",
+                           "install", "--source", str(repo)]
+    assert calls[0][1]["cwd"] == repo
+    assert not calls[0][1].get("shell", False)
+
+
+def test_live_sdlc_v3_selects_validation_and_tests_for_every_deploy() -> None:
+    document = contracts.load_contract(ROOT / "sdlc/sdlc.yml")
+    assert document["version"] == 3
+    for deliverable in ("skills", "hooks", "tools"):
+        locations = runner.validation_operations(ROOT, [f"deliverables.{deliverable}.deploy-local.standalone"])
+        assert "repository.validate.repository" in locations
+        assert "repository.tests.python" in locations
+        assert f"deliverables.{deliverable}.tests.repository" in locations
+    requests = [runner.OperationRequest("repository.validate.repository"),
+                runner.OperationRequest("repository.tests.python")]
+    operations = runner.prepare_operations(ROOT, requests, context="ci")
+    assert operations[0].steps[0].argv == ("uv", "run", "--locked", "scripts/validate-repository.py")
+    assert operations[1].steps[0].argv == ("uv", "run", "--locked", "scripts/testing/run-tests.py", "--auto")
+
+
 def _step(script: str, *arguments: str) -> dict[str, object]:
     return {"steps": [{"run": [sys.executable, script, *arguments]}]}
 
@@ -57,11 +533,13 @@ def test_sdlc_template_is_a_schema_valid_empty_skeleton(tmp_path: pathlib.Path) 
     contract = write_sdlc_contract(tmp_path)
     shutil.copy2(SDLC_CONTRACT_TEMPLATE, contract)
     document = contracts.load_contract(contract)
+    assert document["version"] == 3
     assert document["repository"]["validate"]["repository"]["steps"] == [
-        {"run": ["python", "scripts/validate-repository.py"]}
+        {"run": ["uv", "run", "--locked", "scripts/validate-repository.py"]}
     ]
     assert "deliverables" not in document
     live = contracts.load_contract(ROOT / "sdlc" / "sdlc.yml")
+    assert live["version"] == 3
     entries = contracts.operation_entries(live)
     expected = {
         "deliverables.skills.validate.ceratops-managed":
@@ -74,6 +552,30 @@ def test_sdlc_template_is_a_schema_valid_empty_skeleton(tmp_path: pathlib.Path) 
     for location, handoff in expected.items():
         assert entries[location] == {"handoff": handoff}
     assert set(live["deliverables"]["skills"]["validate"]) == {"ceratops-managed"}
+    selection = entries["repository.test-selection.ci"]
+    assert selection["parameters"] == ["base", "head"]
+    assert selection["steps"][0]["run"] == [
+        "uv", "run", "--locked", "scripts/testing/run-tests.py", "--select-only",
+        "--base", "{base}", "--head", "{head}",
+    ]
+    assert entries["repository.validate.repository"]["steps"] == [
+        {"run": ["uv", "run", "--locked", "scripts/validate-repository.py"]},
+    ]
+    assert entries["repository.tests.python"]["steps"] == [
+        {
+            "run": [
+                "uv", "run", "--locked", "scripts/testing/run-tests.py", "--auto",
+            ]
+        },
+    ]
+    assert runner.validation_operations(ROOT) == [
+        "repository.validate.repository",
+        "deliverables.skills.validate.ceratops-managed",
+        "repository.tests.python",
+        "deliverables.skills.tests.repository",
+        "deliverables.hooks.tests.repository",
+        "deliverables.tools.tests.repository",
+    ]
 
 
 def test_absent_sdlc_section_is_a_successful_no_op(tmp_path: pathlib.Path) -> None:
@@ -396,10 +898,26 @@ def test_operation_cli_prevalidates_and_runs_explicit_ids_in_order(
     assert json.loads(result.stdout)["completed_operations"] == list(names)
 
 
+@pytest.mark.parametrize("structured", [False, True])
 def test_execute_prepared_operations_stops_after_failure_with_a_ledger(
     tmp_path: pathlib.Path,
+    structured: bool,
 ) -> None:
+    failure_stdout = {
+        "noise": "x" * 10000, "check": "configuration", "exit_code": 7,
+        "evidence_file": str(tmp_path / "failure.log"),
+    }
+    failure_stderr = {
+        "schema": "example.failure.v1", "status": "error",
+        "message": "Required configuration is missing",
+    }
     (tmp_path / "check.py").write_text(
+        ("import pathlib, sys\n"
+         "if pathlib.Path('fixed').exists(): raise SystemExit(0)\n"
+         f"print({json.dumps(failure_stdout)!r})\n"
+         f"print({json.dumps(failure_stderr)!r}, file=sys.stderr)\n"
+         "raise SystemExit(7)\n")
+        if structured else
         "import pathlib, sys\n"
         "print('x' * 10000)\n"
         "for i in range(12): print(f'line-{i}', file=sys.stderr)\n"
@@ -423,7 +941,7 @@ def test_execute_prepared_operations_stops_after_failure_with_a_ledger(
         },
     )
     commit = _repository(tmp_path)
-    failure = run_operation_cli(tmp_path, DEPLOY + "local")
+    failure = run_operation_cli(tmp_path, (CHECK + "repository", DEPLOY + "local"))
     assert failure.returncode == 1
     evidence = json.loads(failure.stderr)
     assert evidence["status"] == "validation_failed"
@@ -432,15 +950,23 @@ def test_execute_prepared_operations_stops_after_failure_with_a_ledger(
     assert evidence["diagnostic"]["exit_code"] == 7
     assert evidence["steps"] == [1]
     assert evidence["step_results"] == [{"step": 1, "result": RECEIPT}]
-    assert evidence["diagnostic"]["stderr_tail"] == [f"line-{i}" for i in range(4, 12)]
+    if structured:
+        assert evidence["diagnostic"]["child_results"] == {
+            "stdout": {"result": failure_stdout}, "stderr": {"result": failure_stderr},
+        }
+        assert "Required configuration is missing" in evidence["diagnostic"]["message"]
+        assert "failure.log" in evidence["diagnostic"]["message"]
+    else:
+        assert evidence["diagnostic"]["stderr_tail"] == [f"line-{i}" for i in range(4, 12)]
+        assert "child_results" not in evidence["diagnostic"]
     assert len("".join(evidence["diagnostic"]["stdout_tail"])) <= 4096
     assert not (tmp_path / "deployed").exists()
     (tmp_path / "fixed").touch()
     assert run_git(tmp_path, "add", "fixed").returncode == 0
     assert run_git(tmp_path, "commit", "-m", "repair").returncode == 0
-    repaired = run_operation_cli(tmp_path, DEPLOY + "local")
+    repaired = run_operation_cli(tmp_path, (CHECK + "repository", DEPLOY + "local"))
     assert repaired.returncode == 0, repaired.stderr
-    assert len(repaired.stdout) < 600
+    assert len(repaired.stdout) < 2500
     assert "line-" not in repaired.stdout and "xxxx" not in repaired.stdout
     assert (tmp_path / "deployed").exists()
 
@@ -540,10 +1066,11 @@ def test_bootstrap_and_advisory_handoffs_need_no_skill_runtime(
         payload = json.loads(result.stdout)
         assert payload["results"][0]["status"] == "advisory"
         assert payload["results"][0]["handoff"]
-        assert payload["validation_handoffs"] == [{
+        expected_handoffs: list[dict[str, object]] = [{
             "operation": check, "commit": None, "steps": [],
             "status": "advisory", "handoff": handoff,
         }]
+        assert payload.get("validation_handoffs", []) == (expected_handoffs if ".publish." in name else [])
     result = run_operation_cli(tmp_path, source_check)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["results"][0]["status"] == "advisory"
@@ -714,9 +1241,9 @@ def test_repository_bootstrap_resolves_platform_npm_and_preserves_failure(
 
     executable = tmp_path / ("npm.cmd" if os.name == "nt" else "npm")
     executable.write_text(
-        f"@echo SDLC-npm-%1\n@exit /b {exit_code}\n"
+        f"@echo SDLC-npm-%*\n@exit /b {exit_code}\n"
         if os.name == "nt"
-        else f"#!/bin/sh\nprintf 'SDLC-npm-%s\\n' \"$1\"\nexit {exit_code}\n",
+        else f"#!/bin/sh\nprintf 'SDLC-npm-%s\\n' \"$*\"\nexit {exit_code}\n",
         encoding="utf-8",
     )
     executable.chmod(0o755)
@@ -724,6 +1251,7 @@ def test_repository_bootstrap_resolves_platform_npm_and_preserves_failure(
         OPERATION_RUNNER.parents[3] / "sdlc" / "sdlc.yml"
     )
     argv = contract["repository"]["bootstrap"]["development"]["steps"][-1]["run"]
+    prepare_script_environment(tmp_path)
     result = subprocess.run(
         argv,
         cwd=tmp_path,
@@ -733,9 +1261,28 @@ def test_repository_bootstrap_resolves_platform_npm_and_preserves_failure(
         check=False,
     )
     assert (result.returncode == 0) is (exit_code == 0)
-    assert "SDLC-npm-ci" in result.stdout
+    assert result.stdout.strip() == "SDLC-npm---prefix scripts ci"
     if exit_code:
         assert str(exit_code) in result.stderr
+    command = importlib.import_module("github_pr_workflow.command")
+    if exit_code:
+        payload = json.dumps({
+            "noise": "x" * 10000, "status": "error",
+            "message": "Required configuration is missing", "evidence_file": "failure.log",
+        })
+        argv = [sys.executable, "-c", f"import sys; print({payload!r}); sys.exit(9)"]
+        with pytest.raises(command.CommandError) as failed:
+            command.require_output(argv, cwd=tmp_path)
+        assert "Required configuration is missing" in str(failed.value)
+        assert "failure.log" in str(failed.value) and len(str(failed.value)) <= 2400
+        assert failed.value.completed.stdout == payload + "\n"
+        assert failed.value.completed.returncode == 9
+    else:
+        assert command.require_output(
+            [sys.executable, "-c", "print('OK')"], cwd=tmp_path,
+        ) == "OK"
+    with pytest.raises(command.CommandError, match="could not start"):
+        command.require_output([str(tmp_path / "missing-command")], cwd=tmp_path)
 
 
 # Version 1 is the historical f49e575/f671d9b SDLC schema, not a guessed
@@ -939,7 +1486,7 @@ def test_v1_absent_section_and_optional_operation_remain_no_ops(tmp_path: pathli
         runner.prepare_operations(tmp_path, [runner.OperationRequest("deploy.operations.absent")])
 
 
-@pytest.mark.parametrize("version", [None, True, 1.0, "1", 0, 3, [], {}])
+@pytest.mark.parametrize("version", [None, True, 1.0, "1", 0, 5, [], {}])
 def test_loader_rejects_unsupported_or_unversioned_contracts(
     tmp_path: pathlib.Path, version: object,
 ) -> None:
@@ -1020,9 +1567,10 @@ def test_supported_v1_compatibility_is_independent_of_installer_release(
         "      - run: python scripts/validate-repository.py --evidence-file evidence.log\n",
         encoding="utf-8",
     )
-    assert checker.validate_ceratops_compatibility(tmp_path) == {
-        "applicable": True, "valid": True, "errors": [],
-    }
+    result = checker.validate_ceratops_compatibility(tmp_path)
+    assert result["valid"] is False
+    assert "current Ceratops compatibility requires SDLC version 3" in result["errors"]
+    assert all("INSTALLER_VERSION" not in error for error in result["errors"])
 
 
 def test_materialization_preserves_supported_v1_without_migration(tmp_path: pathlib.Path) -> None:
@@ -1030,9 +1578,10 @@ def test_materialization_preserves_supported_v1_without_migration(tmp_path: path
     path = _write_v1(tmp_path, deploy={"deploy": {"handoff": "ceratops-skill-lifecycle/deploy"}})
     original = path.read_bytes()
     for has_skills in (True, False):
-        assert materializer.build_sdlc_contract_candidate(
-            tmp_path, has_skills=has_skills, apply_contract=True,
-        ) is None
+        with pytest.raises(RuntimeError, match="operation ownership must be mapped"):
+            materializer.build_sdlc_contract_candidate(
+                tmp_path, has_skills=has_skills, apply_contract=True,
+            )
     assert path.read_bytes() == original
 
 
@@ -1066,7 +1615,7 @@ def test_health_migration_proposal_is_advisory_and_reaches_automation_summary(
         path.write_text("version: 3\nkind: ceratops-sdlc\n", encoding="utf-8")
     original = path.read_bytes()
     facts = collector._sdlc_contract_facts({"available": True, "root": str(tmp_path)})
-    assert facts["valid"] is (version in (1, 2))
+    assert facts["valid"] is True
     desired = {
         "parameters": {"owner": "owner", "repo": "sample"}, "contract_paths": {},
         "selected_ids": {"repo": ["content.sdlc_contract"]},
@@ -1077,15 +1626,315 @@ def test_health_migration_proposal_is_advisory_and_reaches_automation_summary(
     # These are the exact levels requested by Global Repo Health Consistency.
     summary = reports.build_summary_report(report, ["ERROR", "WARN", "NEEDS_AI_AGENT_REVIEW"])
     proposals = [f for f in summary["findings"] if f["check_id"] == "content.sdlc_migration"]
-    assert len(proposals) == (1 if version == 1 else 0)
+    assert len(proposals) == (1 if version in (1, 2) else 0)
     if proposals:
         assert proposals[0]["actual"] == {
-            "repository": "owner/sample", "current_version": 1, "recommended_version": 2,
+            "repository": "owner/sample", "current_version": version, "recommended_version": 3,
             "reason": facts["migration_proposal"]["reason"],
         }
         assert "owner/sample" in proposals[0]["message"]
-        assert "version 1 to 2" in proposals[0]["message"]
+        assert f"version {version} to 3" in proposals[0]["message"]
         assert "do not automatically migrate" in proposals[0]["message"]
         assert not levels.has_blocking_findings(proposals)
     assert comparison == {"findings": [], "approved_drift": []}
     assert path.read_bytes() == original
+
+
+
+def test_nested_uv_projects_keep_independent_pip_manifests() -> None:
+    collector = importlib.import_module("github_contract_engine.collectors.local_repository")
+    assert collector._dependabot_ecosystems([
+        "pyproject.toml", "requirements-dev.txt", "scripts/pyproject.toml",
+        "scripts/uv.lock", "apps/api/pyproject.toml", "apps/api/requirements.txt",
+    ]) == {
+        "pip": ["apps/api/pyproject.toml", "apps/api/requirements.txt", "pyproject.toml", "requirements-dev.txt"],
+        "uv": ["scripts/pyproject.toml", "scripts/uv.lock"],
+    }
+
+
+def test_tests_only_cli_preserves_declared_parameters(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
+    import yaml
+    document = {"version": 3, "kind": "ceratops-sdlc", "repository": {
+        "tests": {"unit": {"parameters": ["suite"], "steps": [{"run": [
+            sys.executable, "-c", "import sys; assert sys.argv[1] == 'selected'", "{suite}",
+        ]}]}},
+    }}
+    path = tmp_path / "sdlc/sdlc.yml"
+    path.parent.mkdir()
+    path.write_text(yaml.safe_dump(document))
+    assert runner.main(["--repo-root", str(tmp_path), "--tests", "--parameter", "suite=selected"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["completed_operations"] == ["repository.tests.unit"]
+
+
+def test_completed_validation_binding_is_not_returned_as_pending_handoff(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    import yaml
+    document = {"version": 3, "kind": "ceratops-sdlc", "deliverables": {"service": {
+        "validate": {"source": {"handoff": "example-skill/check"}},
+        "tests": {"none": {"no-op": "No tests in this fixture."}},
+        "deploy-local": {"local": {"steps": [{"run": [sys.executable, "-c", "pass"]}]}},
+    }}}
+    path = tmp_path / "sdlc/sdlc.yml"
+    path.parent.mkdir()
+    path.write_text(yaml.safe_dump(document))
+    monkeypatch.setattr(runner, "execute_handoff", lambda route, root: {"status": "completed", "handoff": route})
+    assert runner.main(["--repo-root", str(tmp_path), "--operation", "deliverables.service.deploy-local.local"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert "validation_handoffs" not in result
+
+
+
+@pytest.mark.skipif(shutil.which("npm") is None, reason="npm is not installed")
+def test_sdlc_launches_native_package_manager_test_command(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
+    import yaml
+    (tmp_path / "package.json").write_text(json.dumps({
+        "name": "sdlc-command-probe", "private": True, "scripts": {"test": "node --version"},
+    }))
+    path = tmp_path / "sdlc/sdlc.yml"
+    path.parent.mkdir()
+    path.write_text(yaml.safe_dump({"version": 3, "kind": "ceratops-sdlc", "repository": {
+        "tests": {"package": {"steps": [{"run": ["npm", "test"]}]}},
+    }}))
+    assert runner.main(["--repo-root", str(tmp_path), "--tests", "--ci"]) == 0
+    assert json.loads(capsys.readouterr().out)["completed_operations"] == ["repository.tests.package"]
+
+
+@pytest.mark.parametrize("mode", ["explicit", "staged", "committed"])
+def test_repository_path_rename_updates_exact_references_and_preserves_index(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str], mode: str,
+) -> None:
+    import runpy
+
+    module = runpy.run_path(str(OPERATION_RUNNER.with_name("rename-repository-path.py")))
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "docs").mkdir()
+    source = b"print('preserve quotation marks')\r\n"
+    (repo / "src/old-name.py").write_bytes(source)
+    (repo / "README.md").write_bytes(b'Run "src/old-name.py"; keep old-name.pyc.\r\n')
+    (repo / "docs/guide.md").write_bytes(b"[run](../src/old-name.py#entry)\r\n")
+    (repo / "references.json").write_bytes(b'{"command": "src\\\\old-name.py"}\r\n')
+    base = _repository(repo)
+    index = run_git(repo, "diff", "--cached", "--binary").stdout
+    arguments = ["--rename", "src/old-name.py", "lib/new-name.py"]
+    if mode != "explicit":
+        (repo / "lib").mkdir()
+        assert run_git(repo, "mv", "src/old-name.py", "lib/new-name.py").returncode == 0
+        arguments = ["--from-git"]
+        if mode == "committed":
+            assert run_git(repo, "commit", "-m", "rename only").returncode == 0
+            head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+            arguments += ["--base", base, "--head", head]
+        index = run_git(repo, "diff", "--cached", "--binary").stdout
+    report = tmp_path / "rename-report.json"
+    assert module["main"](["--repo-root", str(repo), *arguments, "--report", str(report)]) == 0
+    assert json.loads(report.read_text(encoding="utf-8"))["status"] == "ready"
+    assert (repo / "README.md").read_bytes().startswith(b'Run "src/old-name.py"')
+    report.unlink()
+    assert module["main"](["--repo-root", str(repo), *arguments, "--apply", "--report", str(report)]) == 0
+    assert capsys.readouterr().out.splitlines() == ["OK", "OK"]
+    assert (repo / "lib/new-name.py").read_bytes() == source
+    assert not (repo / "src/old-name.py").exists()
+    assert (repo / "README.md").read_bytes() == b'Run "lib/new-name.py"; keep old-name.pyc.\r\n'
+    assert (repo / "docs/guide.md").read_bytes() == b"[run](../lib/new-name.py#entry)\r\n"
+    assert json.loads((repo / "references.json").read_bytes()) == {"command": "lib\\new-name.py"}
+    assert run_git(repo, "diff", "--cached", "--binary").stdout == index
+    assert json.loads(report.read_text(encoding="utf-8"))["status"] == "applied"
+
+
+@pytest.mark.parametrize("case", ["ambiguous", "escape", "overwrite", "case-only", "binary", "report", "report-parent"])
+def test_repository_path_rename_rejects_unsafe_or_ambiguous_plans_before_writes(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str], case: str,
+) -> None:
+    import runpy
+
+    module = runpy.run_path(str(OPERATION_RUNNER.with_name("rename-repository-path.py")))
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src/old.py").write_bytes(b"original\r\n")
+    reference = repo / "references.txt"
+    reference.write_bytes(b'parts = ["src", "old.py"]\r\n' if case == "ambiguous" else b"src/old.py\r\n")
+    if case == "overwrite":
+        (repo / "new.py").write_bytes(b"keep")
+    if case == "binary":
+        (repo / "binary.dat").write_bytes(b"\0src/old.py")
+    _repository(repo)
+    before = {p: p.read_bytes() for p in (repo / "src/old.py", reference)}
+    destination = {"escape": "../outside.py", "case-only": "src/OLD.py"}.get(case, "new.py")
+    argv = ["--repo-root", str(repo), "--rename", "src/old.py", destination, "--apply"]
+    if case == "report":
+        argv += ["--report", str(repo / "report.json")]
+    if case == "report-parent":
+        argv += ["--report", str(tmp_path / "absent/report.json")]
+    code = module["main"](argv)
+    assert code in {1, 2}
+    assert {p: p.read_bytes() for p in before} == before
+    assert not run_git(repo, "status", "--porcelain").stdout
+    if case == "ambiguous":
+        assert code == 2
+        assert module["main"]([*argv, "--reference", '"src", "old.py"', '"new.py"']) == 0
+        assert reference.read_bytes() == b'parts = ["new.py"]\r\n'
+        assert not (repo / "src/old.py").exists()
+    if case == "binary":
+        assert module["main"]([*argv, "--exclude", "binary.dat"]) == 0
+        assert (repo / "binary.dat").read_bytes() == b"\0src/old.py"
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize("failure", ["write", "move", "drift"])
+def test_repository_path_rename_compensates_file_errors_and_detects_source_drift(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    import runpy
+
+    module = runpy.run_path(str(OPERATION_RUNNER.with_name("rename-repository-path.py")))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "old.py").write_bytes(b"source\r\n")
+    (repo / "one.txt").write_bytes(b"old.py\r\n")
+    (repo / "two.txt").write_bytes(b"old.py\r\n")
+    _repository(repo)
+    report, originals, changes, moves = module["build_plan"](
+        repo, [("old.py", "nested/new.py")], [], set(),
+    )
+    assert not report["unresolved"]
+    if failure == "drift":
+        (repo / "one.txt").write_bytes(b"someone else's edit")
+        with pytest.raises(module["RenameError"], match="changed after planning"):
+            module["apply_plan"](originals, changes, moves, root=repo)
+        assert (repo / "one.txt").read_bytes() == b"someone else's edit"
+    else:
+        method = "write_bytes" if failure == "write" else "rename"
+        original = getattr(pathlib.Path, method)
+        calls = 0
+
+        def fail_once(path: pathlib.Path, *args: object, **kwargs: object) -> object:
+            nonlocal calls
+            calls += 1
+            if calls == (2 if failure == "write" else 1):
+                raise OSError("simulated file failure")
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, method, fail_once)
+        with pytest.raises(module["RenameError"], match="rolled back"):
+            module["apply_plan"](originals, changes, moves, root=repo)
+        assert all(path.read_bytes() == content for path, content in originals.items())
+    assert (repo / "old.py").exists()
+    assert not (repo / "nested").exists()
+
+
+def test_repository_path_rename_relocates_markdown_links_with_their_document(
+    tmp_path: pathlib.Path,
+) -> None:
+    import runpy
+
+    module = runpy.run_path(str(OPERATION_RUNNER.with_name("rename-repository-path.py")))
+    repo = tmp_path / "repo"
+    (repo / "docs").mkdir(parents=True)
+    (repo / "asset.txt").write_bytes(b"asset")
+    (repo / "docs/old.md").write_bytes(b"[asset](../asset.txt)\r\n")
+    _repository(repo)
+    assert module["main"]([
+        "--repo-root", str(repo), "--rename", "docs/old.md", "docs/deeper/new.md", "--apply",
+    ]) == 0
+    assert (repo / "docs/deeper/new.md").read_bytes() == b"[asset](../../asset.txt)\r\n"
+
+
+def test_repository_path_rename_requires_explicit_pairs_when_git_has_no_rename(
+    tmp_path: pathlib.Path,
+) -> None:
+    import runpy
+
+    module = runpy.run_path(str(OPERATION_RUNNER.with_name("rename-repository-path.py")))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "old.py").write_bytes(b"unchanged")
+    _repository(repo)
+    assert module["main"](["--repo-root", str(repo), "--from-git", "--apply"]) == 1
+    assert (repo / "old.py").read_bytes() == b"unchanged"
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        {"parameters": ["base"], "steps": [{"run": ["check"]}]},
+        {"parameters": ["base", "head"], "handoff": "run tests"},
+        {"parameters": ["base", "head"], "steps": [{"run": ["check"]}], "handoff": "run tests"},
+        {"parameters": ["base", "head", "extra"], "steps": [{"run": ["check"]}]},
+    ],
+)
+def test_sdlc_test_selection_requires_executable_commit_context(operation: dict[str, object]) -> None:
+    document = {"version": 2, "kind": "ceratops-sdlc", "repository": {"test-selection": {"ci": operation}}}
+    assert contracts.validation_errors(document)
+
+
+def test_repository_path_rename_handles_spaces_same_names_and_multiple_pairs(tmp_path: pathlib.Path) -> None:
+    import runpy
+
+    module = runpy.run_path(str(OPERATION_RUNNER.with_name("rename-repository-path.py")))
+    repo = tmp_path / "repo with spaces"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src/old name.py").write_bytes(b"first")
+    (repo / "src/same.py").write_bytes(b"second")
+    (repo / "README.md").write_bytes(
+        b'"src/old name.py" "src/same.py"\r\n[run](src/old%20name.py)\r\n',
+    )
+    _repository(repo)
+    assert module["main"]([
+        "--repo-root", str(repo), "--rename", "src/old name.py", "nested/new name.py",
+        "--rename", "src/same.py", "nested/same.py", "--apply",
+    ]) == 0
+    assert (repo / "README.md").read_bytes() == (
+        b'"nested/new name.py" "nested/same.py"\r\n[run](nested/new%20name.py)\r\n'
+    )
+    assert (repo / "nested/new name.py").read_bytes() == b"first"
+    assert (repo / "nested/same.py").read_bytes() == b"second"
+
+
+def test_repository_path_rename_rechecks_links_before_apply(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import runpy
+
+    module = runpy.run_path(str(OPERATION_RUNNER.with_name("rename-repository-path.py")))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "old.py").write_bytes(b"source")
+    _repository(repo)
+    _, originals, changes, moves = module["build_plan"](repo, [("old.py", "nested/new.py")], [], set())
+    original = pathlib.Path.is_symlink
+    monkeypatch.setattr(pathlib.Path, "is_symlink", lambda path: path == repo / "nested" or original(path))
+    with pytest.raises(module["RenameError"], match="Links and junctions"):
+        module["apply_plan"](originals, changes, moves, root=repo)
+    assert (repo / "old.py").read_bytes() == b"source"
+    assert not (repo / "nested").exists()
+
+
+def test_repository_path_rename_saves_a_failure_report_before_returning(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import runpy
+
+    module = runpy.run_path(str(OPERATION_RUNNER.with_name("rename-repository-path.py")))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "old.py").write_bytes(b"source")
+    _repository(repo)
+    report = tmp_path / "report.json"
+
+    def interrupted(*args: object, **kwargs: object) -> None:
+        assert json.loads(report.read_text(encoding="utf-8"))["status"] == "ready"
+        raise OSError("simulated write failure")
+
+    monkeypatch.setitem(module["main"].__globals__, "apply_plan", interrupted)
+    assert module["main"]([
+        "--repo-root", str(repo), "--rename", "old.py", "new.py",
+        "--apply", "--report", str(report),
+    ]) == 1
+    retained = json.loads(report.read_text(encoding="utf-8"))
+    assert retained["status"] == "failed"
+    assert retained["message"] == "simulated write failure"
+    assert (repo / "old.py").read_bytes() == b"source"
+    assert not (repo / "new.py").exists()

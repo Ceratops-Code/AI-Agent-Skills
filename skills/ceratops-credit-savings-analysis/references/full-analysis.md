@@ -3,7 +3,7 @@
 ## Goal
 
 Run the all-run controller plan. Treat every completed run as one semantic unit,
-use Luna for high-recall discovery across all five surfaces together, then use
+use Luna for prioritized discovery across all five surfaces together, then use
 capacity-sized Sol review, direct-evidence inspection, and final synthesis.
 Preserve every confirmed finding and report every capacity omission.
 
@@ -21,6 +21,8 @@ Preserve every confirmed finding and report every capacity omission.
   exact project name, absolute path, or repository URL. Freeze an exact UTC
   `as_of` boundary. Date selection uses thread-index `updated_at`; every
   selected thread is then analyzed over all of its completed runs.
+- Include unfinished and archived tasks in the requested selection. Report
+  still-running runs as not yet assessed.
 - Use the controller-owned batch request schema with action `full-analysis`,
   mode `per-thread-batch`, selector, `as_of`, caller-selected task root and
   retained manifest output inside that root, optional pricing profile, both
@@ -56,18 +58,17 @@ Preserve every confirmed finding and report every capacity omission.
    reserves, report framing, and exact inventory bytes from its proven input
    capacity; divide the remainder among its assigned Lunas and cap each
    allowance
-   at 64,000 bytes. Freeze the assignments and allowances only after proving
-   each
-   reviewer's planned maximum fits.
-3. Reject a Luna result only when it violates the frozen schema or output-byte
-   allowance, not because it found many supported candidates. Rerun that exact
-   task once with a smaller allowance; if it still fails, report that run part
-   as
-   unreviewed and continue within the seventy-attempt cap. Record every
-   unlaunched
-   or unaccepted run part with its run and part identity, record count, input
-   bytes, candidate count when known, output bytes when produced, and reason.
-   Never truncate a result.
+   at 64,000 bytes. Also divide a conservative candidate count budget among
+   each reviewer's assigned Lunas before launch. Freeze the assignments and
+   both allowances only after proving each reviewer's planned maximum fits.
+3. Require Luna to rank plausible findings, risks, and temporary controls by
+   evidence strength and likely recurring credit savings, consolidate the same
+   producer/control issue, and return at most its frozen candidate limit.
+   Validate both that count and its output-byte allowance; retry one invalid
+   result within the existing Luna cap, then mark the part unreviewed if it
+   still fails. When a result reaches its candidate limit, disclose restricted
+   discovery in final accounting. Preserve every admitted call and returned
+   candidate; never truncate a result.
 4. A temporary-control review governs only its described owner/control subclaim
    and does not veto an independent finding carried by the same candidate. Route
    every retained candidate exactly once to its preassigned Luna-output reviewer
@@ -89,39 +90,52 @@ Preserve every confirmed finding and report every capacity omission.
    earlier classifications with its validated result. After the parallel
    reviewers and any recovery or direct-evidence review finish, run one
    dependent
-   final Sol. It merges compact judgments, temporary-control reviews,
-   classifications, risks, and ROI inputs; deduplicates likely owner/control
-   identity; and deeply verifies and expands the top three findings without
-   suppressing other confirmed findings. Each rejected Sol task receives one
-   automatic corrective retry when the sixteen-attempt ceiling permits. After a
-   non-final task fails validation twice, mark its exact candidate, call, and
-   byte
-   inventory unreviewed and continue to the final merger. A revalidated retained
-   result completes its task without a new model call; an invalid retained
-   result
-   follows the same automatic retry and omission policy. Plan at most eight
-   Sol calls, excluding retries and corrective attempts; allow at most sixteen
-   actual Sol invocations including initial calls, retries, and corrective
-   attempts.
+   final Sol. It judges only new direct-evidence candidates and proposes
+   evidence-backed revisions to the supplied top three findings. The controller
+   carries accepted earlier judgments, reviews, classifications, risks, and ROI
+   inputs into the final result and merges identical owner/control findings
+   without suppressing material variants or prior confirmed findings.
+   Its helper-category review array stays
+   empty; the controller copies exact accepted reviewer records and assembles
+   their final summaries. Before validation, code assigns canonical IDs to
+   Sol-owned outcomes and rewrites their internal references. It bounds only
+   explanatory classification rationale while retaining the raw response and
+   preserving classification and reason code. Each rejected Sol task receives
+   one automatic corrective retry for any remaining diagnosed field when the
+   sixteen-attempt ceiling permits. After a non-final task fails validation
+   twice, mark its exact candidate, call, and byte inventory unreviewed and
+   continue to the final merger. If eligible calls exist but no Sol reviewer
+   result was accepted, stop with phase `incomplete`; do not run the final
+   merger
+   or publish a complete result. A revalidated retained result completes its
+   task without a new model call; an invalid retained result follows the same
+   automatic retry and omission policy. Plan at most eight Sol calls, excluding
+   retries and corrective attempts; allow at most sixteen actual Sol invocations
+   including initial calls, retries, and corrective attempts.
 6. Persist immutable identities, prompts, results, attempts, latency, and usage.
    Before surfacing one parallel sibling failure, record every already-completed
    sibling attempt. On resume, revalidate complete task-owned attempt artifacts
    against the frozen prompt, schema, identity, input hash, and result contract
    before launching; block incomplete or conflicting artifacts. Wait without
-   model polling, terminate the complete child process tree on interruption or
-   timeout, and resume accepted phases idempotently. Run no model bookkeeping
-   calls.
+   model polling and terminate the complete child process tree on interruption
+   or timeout. Set the Sol child timeout to 600 seconds. When a Sol child times
+   out without a result, checkpoint it and retry that frozen task once within
+   the existing Sol attempt cap; stop if it times out again. Resume accepted
+   phases idempotently. Run no model bookkeeping calls.
 
 Every child Codex execution uses an explicit model, a read-only sandbox, no
 approvals, a self-contained no-tools prompt, and controller-owned schema, event,
 and result files. Launch Luna from the verified source cwd for its run with
 retained native state. Launch Sol from the source's primary cwd with retained
-native state, and include retained effective-rule hashes plus the text of any differing
-run-local rules in its handoff. Bind the applicable rule-chain hash to every task
-and attempt. The controller waits internally and emits periodic
-non-model progress. Resume the exact request. Alternatively use
-`execute --state STATE`; never recollect prepared evidence or overwrite an
-accepted result. Use `plan` only for planning-only inspection.
+native state, and include retained effective-rule hashes plus the frozen text of
+any differing run-local rules in its handoff. Bind the applicable frozen
+rule-chain hash to every task and attempt. Validate each retained rule snapshot
+from its stored text and hashes without rereading live `AGENTS.md`; later live
+instruction changes do not invalidate accepted or pending tasks. The controller
+waits internally and emits periodic non-model progress. Resume the exact
+request. Alternatively use `execute --state STATE`; never recollect prepared
+evidence or overwrite an accepted result. Use `plan` only for planning-only
+inspection.
 
 For a batch, run `prepare-batch` once; it freezes selection and plans one
 ordinary holistic child per selected thread. For the pending child returned by
@@ -146,6 +160,12 @@ For a batch, every selected child must also be finalized and indexed exactly
 once before batch finalization succeeds.
 
 ## Output Contract
+
+Begin the chat report with selected and reviewed task counts. Then give total
+model calls, confirmed avoidable calls, and unassessed calls from retained
+results. Report confirmed context/output waste even when it saves no calls.
+If analysis is incomplete or blocked, report that state and the exact
+unassessed scope.
 
 Use the parent Output Contract for chat selection and presentation. Preserve
 all accounting and review evidence required by the Completion Gate in the

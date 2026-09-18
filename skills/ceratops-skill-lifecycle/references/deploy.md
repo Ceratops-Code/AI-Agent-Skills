@@ -37,6 +37,10 @@ deployment operations or the independent bootstrap installer.
   repository `deploy` operation first when declared.
 - Never invoke `sdlc/sdlc.yml` or `scripts/deploy-skills.py` from
   this action.
+- For SDLC v4, inspect the named skill's returned package prerequisites and
+  verify the exact required artifact before installation. A package build
+  action is separate from this managed skill transaction and is never inferred
+  from the handoff alone.
 - Do not pass bootstrap version metadata into the runtime transaction. Runtime
   ownership compatibility is governed by `RUNTIME_MANIFEST_SCHEMA`.
 - Stage and validate the complete selected runtime batch in hidden transaction
@@ -46,10 +50,21 @@ deployment operations or the independent bootstrap installer.
 
 1. Follow `source-validate` in `full` mode for the exact source checkout.
    Reuse its passing result only while those source inputs remain unchanged.
+   The default SDLC action binding owns both full source validation and managed
+   installation; it stops before installation if source validation fails.
 2. Select exactly one runtime mode: all-managed by default, explicit selected
    and removed skills, or affected-set deployment from one full base revision.
-3. Run the managed runtime installer once and treat cleanup-blocked output as a
-   deployed result with retained cleanup debt.
+3. Before invoking the installer for a saved promotion handoff, select
+   `--promotion-result PATH --operation LOCATION --task-temp-root ROOT
+   --finalize-promotion-with HELPER`, where HELPER is the promotion helper
+   selected by repository lifecycle.
+4. Run the installer once. Its JSON receipt identifies the source commit,
+   installation destination, exact changed skills, and cleanup debt.
+   Cleanup-blocked output means deployment completed with retained debt. For a
+   saved handoff, it binds the receipt to the original record before deployment
+   and invokes the selected finalizer once after debt-free completion. If
+   cleanup fails, retain the returned receipt and retry finalization with it;
+   never reinstall solely to recover evidence or delete the record.
 
 ## Done When
 

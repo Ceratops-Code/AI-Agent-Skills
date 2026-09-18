@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Install the first tool manager using existing global Python and uv.
+"""Install this checkout's tool manager using existing global Python and uv.
 
 Prerequisite probes happen before filesystem changes. Locked Python libraries
 are provisioned only in owned temporary storage, then the manager's packaging
-and deployment implementations perform the first installation. This command
+and deployment implementations install its declared name and version. This command
 never installs global prerequisites, edits Codex settings, or restarts apps.
 """
 
@@ -16,10 +16,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-# First installation imports the manager's authoritative source without a
+# Source installation imports the manager's authoritative source without a
 # preinstalled manager or any skill-private helper.
 SOURCE = Path(__file__).resolve().parents[1] / "tools" / "ceratops_tool_manager"
 sys.path.insert(0, str(SOURCE.parent))
+from ceratops_tool_manager import TOOL_NAME  # noqa: E402
 from ceratops_tool_manager.contracts import DeploymentError  # noqa: E402
 from ceratops_tool_manager.engine import (  # noqa: E402
     Engine,
@@ -47,7 +48,7 @@ def package_manager(engine: Engine, runtime: Runtime) -> dict:
     """Use the manager's source implementation without preinstalled libraries.
 
     uv installs only hash-locked wheels into disposable bootstrap storage.
-    The first-install script owns its cleanup on every return path; the manager
+    This script owns temporary-library cleanup on every return path; the manager
     owns the resulting immutable package and its ordinary build scratch.
     """
     with tempfile.TemporaryDirectory(prefix="bootstrap_", dir=engine.layout.directory("staging")) as work:
@@ -69,11 +70,11 @@ def main() -> int:
     try:
         runtime = global_runtime()
         engine = Engine()
-        if engine.selected("ceratops_tool_manager") is not None:
-            raise DeploymentError("manager is already installed; use its install or update command")
         result = package_manager(engine, runtime)
+        if result["tool_name"] != TOOL_NAME:
+            raise DeploymentError("source project.name must identify the tool manager")
         ensure_launchers(engine.layout)
-        outcome = engine.install("ceratops_tool_manager", result["version"])
+        outcome = engine.install(result["tool_name"], result["version"])
         print(json.dumps(outcome, sort_keys=True))
         return 0
     except (DeploymentError, OSError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:

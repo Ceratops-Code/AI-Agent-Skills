@@ -155,19 +155,29 @@ def matching_paths(paths: list[str], patterns: list[str]) -> list[str]:
 def _dependabot_ecosystems(paths: list[str]) -> dict[str, list[str]]:
     """Infer Dependabot ecosystems without double-counting uv projects as pip."""
 
+    # Dependency manifests may live under a tooling or application directory.
+    # Keep workflow patterns anchored, while basename patterns cover any depth.
+    patterns_by_ecosystem = {
+        name: [item for pattern in patterns for item in
+               ([pattern, "**/" + pattern] if "/" not in pattern else [pattern])]
+        for name, patterns in DEPENDABOT_PATTERNS.items()
+    }
     ecosystems = {
         name: matching_paths(paths, patterns)
-        for name, patterns in DEPENDABOT_PATTERNS.items()
+        for name, patterns in patterns_by_ecosystem.items()
         if path_matches(paths, patterns)
     }
     if "uv" not in ecosystems:
         return ecosystems
 
-    if "pyproject.toml" in paths:
-        ecosystems["uv"] = sorted({*ecosystems["uv"], "pyproject.toml"})
+    uv_manifests = {
+        (pathlib.PurePosixPath(lock).parent / "pyproject.toml").as_posix()
+        for lock in ecosystems["uv"]
+    } & set(paths)
+    ecosystems["uv"] = sorted({*ecosystems["uv"], *uv_manifests})
 
     pip_paths = [
-        path for path in ecosystems.get("pip", []) if path != "pyproject.toml"
+        path for path in ecosystems.get("pip", []) if path not in uv_manifests
     ]
     if pip_paths:
         ecosystems["pip"] = pip_paths
@@ -863,7 +873,13 @@ def _repository_validation_facts(
     rules: list[dict[str, Any]],
     evidence_file: str | None,
 ) -> dict[str, Any]:
-    """Run the selected target-owned aggregate once and retain bounded facts."""
+    """Run SDLC validation and tests once, retaining the separate gate results.
+
+    Targets use this skill bundle's engine. Without a validation-capable SDLC,
+    retain the repository validator.
+    The selected health action may execute deterministic skill bindings. CI has
+    its own --ci boundary and never dispatches them.
+    """
 
     selected = any(rule.get("id") == "content.repository_validation" for rule in rules)
     if not selected or not local["available"] or not local["root"]:
@@ -896,27 +912,48 @@ def _repository_validation_facts(
         }
 
     assert resolved_evidence is not None
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(validator),
-            "--evidence-file",
-            str(resolved_evidence),
-        ],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    command = [sys.executable, str(validator)]
+    contract_path = root / "sdlc/sdlc.yml"
+    uses_sdlc = False
+    if contract_path.exists() or contract_path.is_symlink():
+        contract, contract_errors = read_contract(contract_path)
+        if contract_path.is_symlink() or contract_errors:
+            return {"applicable": True, "validator_present": True, "workflow_present": True,
+                    "valid": False, "errors": contract_errors or ["SDLC must be a regular repository file"]}
+        if contract and contract["version"] >= 2:
+            uses_sdlc = True
+            command = [
+                sys.executable, str(pathlib.Path(__file__).resolve().parents[2] / "repository_operation.py"),
+                "--repo-root", str(root), "--validate", "--tests",
+            ]
+    command.extend(("--evidence-file", str(resolved_evidence)))
+    gate_results: dict[str, Any] = {}
+    try:
+        result = subprocess.run(command, cwd=root, capture_output=True, text=True, check=False)
+    except OSError as exc:
+        return {"applicable": True, "validator_present": True, "workflow_present": True,
+                "valid": False, "errors": [str(exc)]}
     if result.returncode:
         message = (result.stdout or result.stderr).strip()
-        errors = [message or f"repository validator exited {result.returncode}"]
+        errors = [message[-4096:] or f"repository checks exited {result.returncode}"]
+    if uses_sdlc:
+        try:
+            payload = json.loads(result.stderr if result.returncode else result.stdout)
+            if not isinstance(payload, dict):
+                raise ValueError("SDLC result must be an object")
+            gate_results = {"gate_results": payload.get("results", []),
+                            "pending_operations": payload.get("pending_operations", [])}
+        except ValueError:
+            # uv can fail before Python starts; preserve that setup diagnostic.
+            if not result.returncode:
+                errors = ["SDLC returned no structured validation/test result"]
     return {
         "applicable": True,
         "validator_present": True,
         "workflow_present": True,
-        "valid": result.returncode == 0,
+        "valid": result.returncode == 0 and not errors,
         "errors": errors,
+        **gate_results,
     }
 
 

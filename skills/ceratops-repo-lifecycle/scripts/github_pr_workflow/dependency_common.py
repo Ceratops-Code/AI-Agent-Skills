@@ -10,11 +10,11 @@ import sys
 from datetime import datetime, timezone
 from typing import Any, Iterable, cast
 
-
 PR_FIELDS = ",".join(
     [
         "author",
         "baseRefName",
+        "baseRefOid",
         "files",
         "headRefName",
         "headRefOid",
@@ -78,7 +78,7 @@ def run_command(
     args: list[str],
     *,
     cwd: pathlib.Path | None = None,
-    timeout: int | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a child process with a stable UTF-8 contract on Windows."""
 
@@ -279,7 +279,12 @@ def resolve_checkout(
         origin = run_command(["git", "remote", "get-url", "origin"], cwd=resolved)
         actual = normalize_github_repo(origin.stdout) if origin.returncode == 0 else None
         if actual and actual.lower() == expected.lower():
-            return {"status": "found", "path": str(resolved), "origin": actual}
+            return {
+                "status": "found",
+                "path": str(resolved),
+                "origin": actual,
+                "explicit": overrides.get(expected.lower()) == resolved,
+            }
         mismatches.append({"path": str(resolved), "reason": "origin_mismatch", "origin": actual})
     if mismatches:
         return {"status": "blocked", "candidates": existing, "details": mismatches}

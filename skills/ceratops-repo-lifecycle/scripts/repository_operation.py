@@ -3,9 +3,10 @@
 
 YAML locations identify operations; their category distinguishes validation from
 mutation. Lifecycle callers own timing and choose operation IDs. This runner
-prepares the whole batch, runs repository and selected-deliverable validations
-before deployment/publication, and stops on failure. Handoffs and prerequisites
-are advisory data, never executable prose or completion receipts.
+prepares the whole batch, runs validation and tests as separate selected stages,
+before delivery, stopping on unsuccessful exit codes. CI never dispatches skill
+handoffs. Skill callers resolve installed action bindings, keeping implementations
+out of repository declarations. Prerequisites remain setup annotations.
 Successful steps may return bounded schema-tagged JSON results; their domain
 status is preserved separately from command completion and checkpointed by callers.
 """
@@ -14,8 +15,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -26,19 +29,21 @@ from ceratops_repo_compatibility_engine.sdlc_contract_validation import (
     SdlcContractError,
     load_contract,
     operation_entries,
+    operation_prerequisites,
 )
 from ceratops_repo_compatibility_engine.sdlc_contract_validation import (
     operation_category as contract_operation_category,
 )
+from github_pr_workflow.command import failure_excerpt
+from sdlc_results import capture_step_result
 
 DEFAULT_CONTRACT = pathlib.Path("sdlc/sdlc.yml")
 PARAMETER_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 PLACEHOLDER_RE = re.compile(r"^\{(?P<name>[a-z][a-z0-9_]*)\}$")
 FAILURE_TAIL_LINES = 8
 FAILURE_TAIL_CHARS = 4096
-STEP_RESULT_BYTES = 65536
-STEP_RESULT_DEPTH = 64
-FAILED_STATUSES = frozenset({"operation_failed", "validation_failed", "state_changed"})
+FAILED_STATUSES = frozenset({"operation_failed", "validation_failed", "tests_failed", "state_changed", "handoff_required", "error"})
+MUTATION_CATEGORIES = frozenset({"build", "deploy-local", "publish"})
 
 
 @dataclass(frozen=True)
@@ -53,11 +58,12 @@ class OperationRequest:
 
 @dataclass(frozen=True)
 class PreparedStep:
-    """One bounded command identified by its v1 step ID or v2 YAML position."""
+    """One bounded command or structured lifecycle handoff."""
 
     position: int | str
-    argv: tuple[str, ...]
+    argv: tuple[str, ...] | None
     cwd: pathlib.Path
+    handoff: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -72,14 +78,113 @@ class PreparedOperation:
     handoff: str | None
     prerequisites: Mapping[str, Any]
     no_op_reason: str | None = None
+    handoff_mode: str = "legacy"
+    contract_path: pathlib.Path | None = None
+    parameters: tuple[tuple[str, str], ...] = ()
 
 
 class OperationError(RuntimeError):
     """A malformed selection or unsafe repository boundary."""
 
 
+def execute_handoff(route: str, repo_root: pathlib.Path) -> dict[str, object]:
+    """Execute an installed-authorized skill action in its declared order.
+
+    SDLC names only a skill and action. The installed binding authorizes an
+    identical source binding when one exists; CI callers never invoke this
+    function. Installed Python steps use their pinned immutable runtime.
+    """
+
+    if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*", route):
+        return {"status": "handoff_required", "handoff": route, "message": "No deterministic skill/action binding."}
+    skill, action = route.split("/")
+    skills = pathlib.Path(os.environ.get("CODEX_HOME", str(pathlib.Path.home() / ".codex"))) / "skills"
+    installed_root = skills / skill
+    installed_binding = installed_root / "references" / "action-executors.json"
+    if (
+        installed_root.is_symlink()
+        or installed_binding.is_symlink()
+        or not installed_binding.is_file()
+    ):
+        return {"status": "handoff_required", "handoff": route, "message": "Installed skill has no executor binding."}
+    root = installed_root
+    binding = installed_binding
+    uses_source_bundle = False
+    source_root = repo_root / "skills" / skill
+    source_binding = source_root / "references" / "action-executors.json"
+    if source_binding.exists():
+        if source_root.is_symlink() or source_binding.is_symlink() or not source_binding.is_file():
+            return {"status": "handoff_required", "handoff": route, "message": "Source skill executor binding is unsafe."}
+        if source_binding.read_bytes() != installed_binding.read_bytes():
+            return {"status": "handoff_required", "handoff": route, "message": "Source skill executor binding differs from the installed authorization."}
+        root = source_root
+        binding = source_binding
+        uses_source_bundle = True
+    completed: list[int] = []
+    receipts: list[dict[str, object]] = []
+    evidence: dict[str, object] = {"handoff": route, "steps": completed}
+    try:
+        document = json.loads(binding.read_text(encoding="utf-8"))
+        if set(document) != {"version", "actions"} or document.get("version") != 1 or not isinstance(document["actions"], dict):
+            raise ValueError("Unsupported executor binding document")
+        entry = document.get("actions", {}).get(action)
+        if entry is None:
+            return {"status": "handoff_required", "handoff": route, "message": "This action requires skill judgment."}
+        if not isinstance(entry, dict) or set(entry) not in ({"run"}, {"steps"}):
+            raise ValueError("Executor must declare run or ordered steps")
+        steps = [entry] if "run" in entry else entry["steps"]
+        if not isinstance(steps, list) or not steps:
+            raise ValueError("Executor steps must be nonempty")
+        values = {"{python}": sys.executable, "{repo_root}": str(repo_root), "{skill_root}": str(root)}
+        commands: list[list[str]] = []
+        # Prepare every step before side effects. The skill owns the whole
+        # deterministic action, including its preconditions and cleanup.
+        for step in steps:
+            if not isinstance(step, dict) or set(step) != {"run"} or not isinstance(step["run"], list) or not step["run"]:
+                raise ValueError("Executor must declare nonempty argv")
+            argv: list[str] = []
+            for argument in step["run"]:
+                if not isinstance(argument, str) or not argument or "\0" in argument:
+                    raise ValueError("Executor arguments must be nonempty text")
+                for token, value in values.items():
+                    argument = argument.replace(token, value)
+                argv.append(argument)
+            if step["run"][0] == "{python}" and not uses_source_bundle:
+                uv = shutil.which("uv")
+                metadata = installed_root / ".runtime-manifest.json"
+                if metadata.is_symlink() or not metadata.is_file() or uv is None:
+                    return {**evidence, "status": "handoff_required", "message": "Python action requires uv and an installed runtime manifest."}
+                installed = json.loads(metadata.read_text(encoding="utf-8"))
+                selected = installed.get("python_runtime")
+                runtime_root = skills.parent / "runtimes/ceratops/versions"
+                if not isinstance(selected, str):
+                    return {**evidence, "status": "handoff_required", "message": "Installed skill has no pinned Python runtime."}
+                python = pathlib.Path(selected)
+                if (
+                    not python.is_absolute()
+                    or python.is_symlink()
+                    or not python.is_file()
+                    or not python.resolve().is_relative_to(runtime_root.resolve())
+                ):
+                    return {**evidence, "status": "handoff_required", "message": "Installed Python runtime is unavailable or unsafe."}
+                argv = [uv, "run", "--no-project", "--python", str(python), "python", *argv[1:]]
+            commands.append(argv)
+        for position, argv in enumerate(commands, 1):
+            result = subprocess.run(argv, cwd=repo_root, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
+            if result.returncode:
+                return {**evidence, "status": "operation_failed", "step": position, "exit_code": result.returncode, "stderr_tail": result.stderr[-4096:], "stdout_tail": result.stdout[-4096:]}
+            completed.append(position)
+            captured = capture_step_result(result.stdout)
+            if captured:
+                receipts.append({"step": position, **captured})
+                evidence["step_results"] = receipts
+    except (OSError, ValueError, TypeError, AttributeError) as exc:
+        return {**evidence, "status": "operation_failed", "message": str(exc)}
+    return {**evidence, "status": "completed"}
+
+
 def operation_category(operation: str) -> str:
-    """Validate a complete YAML location and return its structural category."""
+    """Validate a complete versioned YAML location and return its category."""
 
     try:
         return contract_operation_category(operation)
@@ -174,6 +279,23 @@ def _working_directory(repo_root: pathlib.Path, raw: str) -> pathlib.Path:
     return cwd
 
 
+def _prepared_step(
+    repo_root: pathlib.Path,
+    step: Mapping[str, Any],
+    position: int,
+    parameters: Mapping[str, str],
+) -> PreparedStep:
+    """Bind one schema-validated step without dispatching lifecycle work."""
+
+    if "handoff" in step:
+        return PreparedStep(position, None, repo_root, dict(step["handoff"]))
+    return PreparedStep(
+        step.get("id", position),
+        _expanded_argv(step["run"], parameters),
+        _working_directory(repo_root, step.get("cwd", ".")),
+    )
+
+
 def repository_commit(repo_root: pathlib.Path) -> str | None:
     """Return HEAD for a Git worktree, or None for standalone capability use."""
 
@@ -193,13 +315,11 @@ def require_clean_commit(repo_root: pathlib.Path, commit: str) -> None:
         raise OperationError(
             "Repository HEAD changed; validate the new commit before continuing."
         )
-    result = subprocess.run(
+    status = subprocess.run(
         ["git", "-C", str(repo_root), "status", "--porcelain"],
-        capture_output=True,
-        text=True,
-        check=False,
+        capture_output=True, text=True, check=False,
     )
-    if result.returncode or result.stdout.strip():
+    if status.returncode or status.stdout.strip():
         raise OperationError(
             "Repository must be clean at the checked commit before continuing."
         )
@@ -209,13 +329,15 @@ def prepare_operations(
     repo_root: pathlib.Path,
     requests: Sequence[OperationRequest],
     contract_path: pathlib.Path | None = None,
+    *, context: str = "skill",
 ) -> list[PreparedOperation]:
     """Validate all selected commands, parameters and cwd values before execution."""
 
+    if context not in {"skill", "ci", "return"}:
+        raise OperationError("Unknown SDLC execution context")
     root = repo_root.expanduser().resolve(strict=True)
     contract = read_repository_contract(root, contract_path)
     entries = operation_entries(contract)
-    requirements = contract.get("repository", {}).get("prerequisites", {})
     commit = repository_commit(root)
     prepared: list[PreparedOperation] = []
     for request in requests:
@@ -247,11 +369,7 @@ def prepare_operations(
             continue
         parameters = _parameters(selected, request)
         steps = tuple(
-            PreparedStep(
-                step.get("id", position),
-                _expanded_argv(step["run"], parameters),
-                _working_directory(root, step.get("cwd", ".")),
-            )
+            _prepared_step(root, step, position, parameters)
             for position, step in enumerate(selected.get("steps", []), start=1)
         )
         prepared.append(
@@ -262,10 +380,11 @@ def prepare_operations(
                 commit,
                 steps,
                 selected.get("handoff"),
-                {
-                    name: requirements[name]
-                    for name in selected.get("prerequisites", [])
-                },
+                operation_prerequisites(contract, request.operation),
+                selected.get("no-op"),
+                context if contract.get("version", 2) >= 3 or context == "ci" else "legacy",
+                contract_path,
+                tuple(sorted(parameters.items())),
             )
         )
     return prepared
@@ -279,94 +398,60 @@ def validation_operations(
 ) -> list[str]:
     """Select repository checks and checks of selected deliverables, in YAML order.
 
-    An explicit ordered list replaces discovery for this invocation. No operation
-    name or script path has a special validation meaning; only the category does.
+    Versions 3 and 4 keep every applicable gate even with an explicit order.
+    Historical versions preserve their selection behavior. Categories own gate
+    semantics.
     """
 
+    contract = read_repository_contract(repo_root, contract_path)
+    current = contract.get("version", 2) >= 3
     if explicit is not None:
         for operation in explicit:
-            if operation_category(operation) != "validate":
-                raise OperationError(
-                    "Validation selections must name validate entries."
-                )
-        return list(explicit)
+            if operation_category(operation) not in {"validate", "tests"}:
+                raise OperationError("Validation selections must name validate or tests entries.")
+        if not current:
+            return list(explicit)
     selected_deliverables = {
-        operation.split(".")[1]
-        for operation in selected_operations
+        tuple(operation.split(".")[1:3])
+        if contract.get("version") == 4
+        else (operation.split(".")[1],)
+        for operation in (*selected_operations, *(explicit or ()))
         if operation.startswith("deliverables.")
     }
-    entries = operation_entries(read_repository_contract(repo_root, contract_path))
-    return [
-        operation
-        for operation in entries
-        if operation_category(operation) == "validate"
+    entries = operation_entries(contract)
+    automatic = [
+        operation for operation in entries
+        if operation_category(operation) in {"validate", "tests"}
         and (
             operation.startswith("repository.")
-            or operation.split(".")[1] in selected_deliverables
+            or (
+                tuple(operation.split(".")[1:3])
+                if contract.get("version") == 4
+                else (operation.split(".")[1],)
+            ) in selected_deliverables
+            or (current and not selected_deliverables)
         )
     ]
+    # In the current format an explicit selection can order checks, but cannot
+    # bypass a selected deliverable's tests or repository-level prerequisites.
+    selected = list(dict.fromkeys([*(explicit or []), *automatic]))
+    return sorted(selected, key=lambda item: operation_category(item) == "tests")
 
 
 def _bounded_tail(value: str | None) -> list[str]:
     return (value or "")[-FAILURE_TAIL_CHARS:].splitlines()[-FAILURE_TAIL_LINES:]
 
 
-def _unique_result_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    """Reject ambiguous JSON members rather than silently replace receipt values."""
-
-    value: dict[str, Any] = {}
-    for key, item in pairs:
-        if key in value:
-            raise ValueError("Duplicate result member.")
-        value[key] = item
-    return value
-
-
-def _step_result(stdout: str) -> dict[str, Any]:
-    """Retain a whole JSON receipt without forwarding logs or interpreting success.
-
-    Only a complete object with nonempty schema/status strings is a result.
-    Parsing never scans log fragments or reads stderr. Oversized output gets a
-    content-free omission marker; malformed and ordinary output stay suppressed.
-    Container depth is bounded so downstream checkpoint readers can decode it.
-    Capture cannot turn a completed side effect into a retryable failure.
-    """
-
-    if len(stdout.encode("utf-8")) > STEP_RESULT_BYTES:
-        return {"result_omitted": "stdout_limit"}
-    try:
-        value = json.loads(stdout, object_pairs_hook=_unique_result_object)
-        if not isinstance(value, dict) or not all(
-            isinstance(value.get(key), str) and value[key].strip()
-            for key in ("schema", "status")
-        ):
-            return {}
-        pending: list[tuple[dict[str, Any] | list[Any], int]] = [(value, 1)]
-        while pending:
-            container, depth = pending.pop()
-            if depth > STEP_RESULT_DEPTH:
-                return {}
-            children = container.values() if isinstance(container, dict) else container
-            pending.extend(
-                (child, depth + 1)
-                for child in children
-                if isinstance(child, (dict, list))
-            )
-        # Reject non-finite numbers, including exponent overflow, at every depth.
-        json.dumps(value, allow_nan=False)
-    except (ValueError, RecursionError):
-        return {}
-    return {"result": value}
-
-
-def execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object]:
-    """Run one prepared operation; never infer that an advisory handoff completed."""
+def _execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object]:
+    """Run one operation in its declared caller context and retain gate failures."""
 
     base: dict[str, object] = {
         "operation": prepared.operation,
         "commit": prepared.commit,
         "steps": [],
     }
+    if prepared.prerequisites:
+        base["prerequisites"] = dict(prepared.prerequisites)
     if prepared.no_op_reason is not None:
         return {**base, "status": "no_op", "reason": prepared.no_op_reason}
     if repository_commit(prepared.repo_root) != prepared.commit:
@@ -375,10 +460,31 @@ def execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object]
             "status": "state_changed",
             "message": "HEAD changed after preparation.",
         }
+    if prepared.handoff and prepared.handoff_mode == "ci" and not prepared.steps:
+        return {**base, "status": "deferred_handoff", "handoff": prepared.handoff}
     completed: list[int | str] = []
     step_results: list[dict[str, Any]] = []
     for step in prepared.steps:
-        if prepared.commit and prepared.category in {"deploy-local", "publish"}:
+        if step.handoff is not None:
+            if prepared.commit and prepared.category in MUTATION_CATEGORIES:
+                try:
+                    require_clean_commit(prepared.repo_root, prepared.commit)
+                except OperationError as exc:
+                    return {
+                        **base,
+                        "steps": completed,
+                        "status": "state_changed",
+                        "message": str(exc),
+                    }
+            return {
+                **base,
+                "steps": completed,
+                "status": "deferred_handoff"
+                if prepared.handoff_mode == "ci"
+                else "handoff_required",
+                "handoff": dict(step.handoff),
+            }
+        if prepared.commit and prepared.category in MUTATION_CATEGORIES:
             try:
                 require_clean_commit(prepared.repo_root, prepared.commit)
             except OperationError as exc:
@@ -389,8 +495,15 @@ def execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object]
                     "message": str(exc),
                 }
         try:
+            assert step.argv is not None
+            argv = list(step.argv)
+            # CreateProcess does not apply PATHEXT to bare npm/pnpm commands.
+            # Resolve a bare executable while leaving repository-relative paths
+            # bound to the declared cwd and preserving shell-free arguments.
+            if os.name == "nt" and not any(separator in argv[0] for separator in ("/", "\\")):
+                argv[0] = shutil.which(argv[0]) or argv[0]
             result = subprocess.run(
-                list(step.argv),
+                argv,
                 cwd=step.cwd,
                 capture_output=True,
                 text=True,
@@ -402,22 +515,33 @@ def execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object]
         except OSError as exc:
             code, stdout, stderr = None, "", str(exc)
         if code != 0:
+            child_results = {}
+            for stream, output in (("stdout", stdout), ("stderr", stderr)):
+                captured = capture_step_result(output, require_identity=False)
+                if "result_omitted" in captured:
+                    captured["result_omitted"] = "output_limit"
+                if captured:
+                    child_results[stream] = captured
             return {
                 **base,
                 "status": "validation_failed"
                 if prepared.category == "validate"
-                else "operation_failed",
+                else "tests_failed" if prepared.category == "tests" else "operation_failed",
                 "message": f"SDLC step failed: {prepared.operation} step {step.position}",
                 "steps": completed,
                 "failed_step": step.position,
                 "diagnostic": {
                     "exit_code": code,
+                    "message": failure_excerpt(f"{stderr}\n{stdout}")
+                    or (f"Command exited with code {code}." if code is not None
+                        else "Command could not start."),
                     "stdout_tail": _bounded_tail(stdout),
                     "stderr_tail": _bounded_tail(stderr),
+                    **({"child_results": child_results} if child_results else {}),
                 },
             }
         completed.append(step.position)
-        captured = _step_result(stdout)
+        captured = capture_step_result(stdout)
         if captured:
             step_results.append({"step": step.position, **captured})
             # The shared list also preserves earlier receipts on later failures
@@ -437,9 +561,48 @@ def execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object]
     }
     if prepared.handoff:
         result_value["handoff"] = prepared.handoff
-    if prepared.prerequisites:
-        result_value["prerequisites"] = dict(prepared.prerequisites)
+        if prepared.handoff_mode == "skill":
+            if prepared.commit and prepared.category in MUTATION_CATEGORIES:
+                try:
+                    require_clean_commit(prepared.repo_root, prepared.commit)
+                except OperationError as exc:
+                    return {**base, "status": "state_changed", "message": str(exc)}
+            result_value.update(execute_handoff(prepared.handoff, prepared.repo_root))
+            if result_value["status"] == "completed":
+                result_value["handoff_completed"] = True
+            if repository_commit(prepared.repo_root) != prepared.commit:
+                result_value.update(status="state_changed", message="HEAD changed during the skill action")
+        elif prepared.handoff_mode == "return":
+            result_value["status"] = "handoff_required"
+        elif prepared.handoff_mode == "ci":
+            result_value["status"] = "deferred_handoff"
     return result_value
+
+
+def execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object]:
+    """Execute one command; lifecycle callers supply ordered prerequisites.
+
+    The public CLI, promotion and shipping workflows run validation and tests
+    before deployment. This command executor neither caches nor replays them.
+    """
+    return _execute_prepared_operation(prepared)
+
+
+def _combined_prerequisites(
+    prepared: Sequence[PreparedOperation],
+) -> dict[str, Any]:
+    """Merge one contract version's prerequisite records for prepare-only output."""
+
+    combined: dict[str, Any] = {}
+    for item in prepared:
+        if set(item.prerequisites).issubset({"capabilities", "packages"}):
+            for group in ("capabilities", "packages"):
+                values = item.prerequisites.get(group, {})
+                if values:
+                    combined.setdefault(group, {}).update(values)
+        else:
+            combined.update(item.prerequisites)
+    return combined
 
 
 def execute_prepared_operations(
@@ -459,12 +622,14 @@ def execute_prepared_operations(
                 "pending_operations": [item.operation for item in prepared[index:]],
                 "results": results,
             }
-        completed.append(operation.operation)
+        if result["status"] != "deferred_handoff":
+            completed.append(operation.operation)
     return {
         "status": "completed",
         "completed_operations": completed,
         "pending_operations": [],
         "results": results,
+        **({"deferred_handoffs": [item for item in results if item["status"] == "deferred_handoff"]} if any(item["status"] == "deferred_handoff" for item in results) else {}),
     }
 
 
@@ -481,17 +646,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--validation-operation",
         action="append",
-        help="Complete validate location; repeats replace automatic discovery.",
+        help="Ordered validate/tests locations; v3 and v4 retain every applicable gate.",
     )
     parser.add_argument(
         "--validate",
         action="store_true",
-        help="Run selected validation without deployment or publication.",
+        help="Run selected validation without tests or deployment; add --tests for the following test stage.",
     )
     parser.add_argument("--parameter", action="append", default=[])
     parser.add_argument("--parameter-if-declared", action="append", default=[])
     parser.add_argument("--if-declared", action="store_true")
     parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument("--ci", action="store_true", help="Execute commands only; never dispatch skill handoffs.")
+    parser.add_argument("--tests", action="store_true", help="Run only selected SDLC tests.")
+    parser.add_argument("--return-handoffs", action="store_true", help="Return pending skill routes without dispatch.")
+    parser.add_argument("--evidence-file", type=pathlib.Path)
     parser.add_argument(
         "--commit", help="Require this exact clean Git commit before and after checks."
     )
@@ -502,6 +671,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         root = args.repo_root.expanduser().resolve(strict=True)
+        context = "ci" if args.ci else "return" if args.return_handoffs else "skill"
         parameters = parse_parameters(args.parameter)
         conditional = parse_parameters(args.parameter_if_declared)
         if args.commit:
@@ -512,25 +682,32 @@ def main(argv: list[str] | None = None) -> int:
                 OperationRequest(operation, parameters, conditional, args.if_declared)
                 for operation in args.operation
             ],
-            args.sdlc_contract,
+            args.sdlc_contract, context=context,
         )
-        if any(item.category in {"deploy-local", "publish"} for item in prepared):
+        if not args.prepare_only and any(
+            item.category in MUTATION_CATEGORIES for item in prepared
+        ):
             commit = repository_commit(root)
             if commit:
                 require_clean_commit(root, commit)
                 args.commit = args.commit or commit
-        requires_validation = args.validate or any(
-            item.category in {"deploy-local", "publish"} for item in prepared
-        )
+        selecting_delivery = any(item.category in {"deploy-local", "publish"} for item in prepared)
+        # Legacy advisory handoffs describe a route without executing delivery.
+        # Actual commands and current executable handoffs require the full stages.
+        checking_delivery = any(item.category == "publish" or (
+            item.category == "deploy-local" and (item.steps or item.handoff_mode != "legacy")
+        ) for item in prepared)
+        checking_build = any(item.category == "build" for item in prepared)
+        requires_validation = args.validate or args.tests or checking_delivery or checking_build
         validations = (
             prepare_operations(
                 root,
                 [
                     OperationRequest(
                         operation,
-                        parameters=parameters if args.validate else None,
+                        parameters=parameters if (args.validate or args.tests) and not selecting_delivery else None,
                         parameters_if_declared=conditional
-                        if args.validate
+                        if (args.validate or args.tests) and not selecting_delivery
                         else {**conditional, **parameters},
                     )
                     for operation in validation_operations(
@@ -539,8 +716,11 @@ def main(argv: list[str] | None = None) -> int:
                         args.validation_operation,
                         args.sdlc_contract,
                     )
+                    if ((args.validate and operation_category(operation) == "validate")
+                        or (args.tests and operation_category(operation) == "tests")
+                        or ((checking_delivery or checking_build) and not (args.validate or args.tests)))
                 ],
-                args.sdlc_contract,
+                args.sdlc_contract, context=context,
             )
             if requires_validation
             else []
@@ -550,11 +730,7 @@ def main(argv: list[str] | None = None) -> int:
                 "status": "prepared",
                 "operations": args.operation,
             }
-            requirements = {
-                name: data
-                for item in [*validations, *prepared]
-                for name, data in item.prerequisites.items()
-            }
+            requirements = _combined_prerequisites([*validations, *prepared])
             if requirements:
                 result["prerequisites"] = requirements
         else:
@@ -564,32 +740,32 @@ def main(argv: list[str] | None = None) -> int:
                     **checks,
                     "completed_operations": [],
                     "pending_operations": args.operation
-                    if not args.validate
+                    if not (args.validate or args.tests)
                     else checks["pending_operations"],
                     "results": checks["results"]
-                    if args.validate
+                    if args.validate or args.tests
                     else [checks["results"][-1]],
                 }
             else:
                 if args.commit:
                     require_clean_commit(root, args.commit)
                 result = (
-                    checks if args.validate else execute_prepared_operations(prepared)
+                    checks if args.validate or args.tests else execute_prepared_operations(prepared)
                 )
                 advisory_checks = [
-                    item for item in checks["results"] if item.get("handoff")
+                    item for item in checks["results"] if item.get("handoff") and not item.get("handoff_completed")
                 ]
-                if advisory_checks and not args.validate:
+                if advisory_checks and not (args.validate or args.tests):
                     result["validation_handoffs"] = advisory_checks
     except (OperationError, OSError, ValueError) as exc:
-        print(
-            json.dumps(
-                {"status": "error", "message": str(exc)[:4096]}, separators=(",", ":")
-            ),
-            file=sys.stderr,
-        )
-        return 1
+        result = {"status": "error", "message": str(exc)[:4096]}
     failed = result.get("status") in FAILED_STATUSES
+    if args.evidence_file:
+        if failed:
+            args.evidence_file.parent.mkdir(parents=True, exist_ok=True)
+            args.evidence_file.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        else:
+            args.evidence_file.unlink(missing_ok=True)
     print(
         json.dumps(result, separators=(",", ":")),
         file=sys.stderr if failed else sys.stdout,

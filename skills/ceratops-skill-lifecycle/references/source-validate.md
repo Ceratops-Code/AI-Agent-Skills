@@ -35,7 +35,13 @@ the existing skill-lifecycle validator.
   runtime correctness or the semantic audit in `skills-consistency-review`.
 - SDLC callers route through `deliverables.skills.validate.ceratops-managed`
   with handoff `ceratops-skill-lifecycle/source-validate`; the action owns the
-  helper invocation. Do not add script steps under `skills/` to that entry.
+  helper invocation. Its `references/action-executors.json` binding runs full
+  source validation for skill callers. CI defers this route. Keep helper paths
+  in the skill-owned binding and keep tests in separate SDLC test operations.
+- For SDLC v4, read the named skill's `prerequisites` and its returned package
+  records before resolving `deliverables.skills.NAME.actions.validate`; verify
+  required package artifacts against the package's declared build and check
+  actions. A `steps.handoff` request routes here only after those checks.
 
 ## Workflow
 

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ceratops.dev/schemas/github/nondeterministic-contract.schema.json",
-  "title": "GitHub lifecycle non-deterministic review contract",
+  "title": "Repository lifecycle non-deterministic review contract",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -18,7 +18,7 @@
     "kind": { "const": "nondeterministic_review_contract" },
     "name": { "type": "string", "minLength": 1 },
     "surface": {
-      "enum": ["org", "repo", "pr", "code", "artifact", "code_comments"]
+      "enum": ["org", "repo", "pr", "code", "artifact", "code_comments", "compatibility"]
     },
     "description": { "type": "string", "minLength": 1 },
     "deterministic_contract": { "type": "string", "minLength": 1 },
@@ -73,10 +73,20 @@
   "allOf": [
     {
       "if": {
-        "properties": { "surface": { "const": "code_comments" } },
+        "properties": { "surface": { "enum": ["code_comments", "compatibility"] } },
         "required": ["surface"]
       },
       "else": { "required": ["deterministic_contract", "evidence"] }
+    },
+    {
+      "if": {
+        "properties": { "surface": { "const": "compatibility" } },
+        "required": ["surface"]
+      },
+      "then": {
+        "required": ["deterministic_contract"],
+        "not": { "required": ["evidence"] }
+      }
     }
   ]
 }

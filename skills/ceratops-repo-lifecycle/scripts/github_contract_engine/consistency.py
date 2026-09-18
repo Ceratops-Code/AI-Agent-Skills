@@ -8,6 +8,9 @@ import json
 import pathlib
 from typing import Any
 
+from ceratops_repo_compatibility_engine.compatibility_contract import (
+    load_compatibility_contract,
+)
 from ceratops_repo_compatibility_engine.repository_validation_contract import (
     load_validation_contract,
 )
@@ -77,6 +80,10 @@ ND_CONTRACT_PATHS = {
 REQUIRED_FILES = [
     SOURCE_DOCS,
     CONTRACTS / "repository-validation-contract.json",
+    CONTRACTS / "ceratops-compatibility-deterministic-contract.json",
+    CONTRACTS / "ceratops-compatibility-nondeterministic-contract.json",
+    SCHEMAS / "ceratops-compatibility-contract.schema.json",
+    SCRIPTS / "ceratops_repo_compatibility_engine" / "compatibility_contract.py",
     VALIDATION_SCHEMA,
     SCRIPTS / "ceratops_repo_compatibility_engine" / "repository_validation_contract.py",
     *STATE_CONTRACT_PATHS.values(),
@@ -1090,6 +1097,7 @@ def main(argv: list[str] | None = None) -> int:
     errors.extend(validate_all_contract_schemas())
     try:
         load_validation_contract()
+        load_compatibility_contract()
     except RuntimeError as exc:
         errors.append(str(exc))
     for schema_path in (STATE_SCHEMA, PR_SCHEMA, VALIDATION_SCHEMA):

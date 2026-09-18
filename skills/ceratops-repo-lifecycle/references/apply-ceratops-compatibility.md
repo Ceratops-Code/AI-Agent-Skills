@@ -2,8 +2,8 @@
 
 ## Goal
 
-Make an existing repository satisfy the `ceratops-compatible` repository and
-validation contract without changing any skill's intended behavior. Repositories
+Make an existing repository satisfy the bundled Ceratops compatibility
+contracts without changing any skill's intended behavior. Repositories
 with no skills omit skill-specific surfaces but still declare repository
 validation in their SDLC contract.
 
@@ -16,15 +16,15 @@ validation in their SDLC contract.
 - Existing shared skill rules, metadata, README skill inventory, runtime
   resources, installer, deployment definition, and validation surfaces.
 - Whether compatibility is standalone work or a prerequisite for `create` or
-  `update`, and whether `sdlc/sdlc.yml` should be omitted.
+  `update`, and the repository-owned validation and test declarations.
 
 Infer the source identity from stable repository evidence before asking.
 
 ### Script Bundle
 
-- (D) Run the skill-owned compatibility engine from the repository-lifecycle
-  bundle's `scripts` folder. The engine operates on `--target-repo-root` and is
-  never copied into the target repository.
+- Keep compatibility and SDLC execution code and schemas in this skill.
+  Target repositories receive declarations and repository-specific entrypoints.
+  CI invokes this skill's pinned GitHub action and never dispatches handoffs.
 - (D) `ceratops_repo_compatibility_engine.validate_ceratops_compatibility`
   exposes `validate_ceratops_compatibility(repo_root)` returning
   `{applicable, valid, errors}`. It performs read-only manifest, deployment,
@@ -33,18 +33,23 @@ Infer the source identity from stable repository evidence before asking.
   ceratops_repo_compatibility_engine apply --target-repo-root
   <task-worktree> [--runtime-source-id <stable-id>]`; it performs the
   compatibility transaction and emits one compact result.
-  Add `--no-sdlc-contract` when the caller chooses to leave an existing SDLC
-  contract unchanged or absent. Otherwise every repository receives the
-  template's repository validation capability.
+  Every compatible repository receives the current SDLC format with separate
+  validation and tests. Existing supported formats remain executable outside
+  this compatibility application.
 - (D) Bootstrap-only repair: `python -m ceratops_repo_compatibility_engine
   synchronize-bootstrap --target-repo-root <task-worktree>`; it only compares
   parsed installer versions and copies a missing or lower version.
 - (D) `ceratops_repo_compatibility_engine.sdlc_contract_validation` reads and
   validates SDLC contracts for compatibility application, execution, and
   health; it never creates or modifies them.
-- (D) Missing repository-validation surfaces come from
-  `references/contracts/repository-validation-contract.json` and the templates
-  under `references/templates/`.
+- The internal compatibility pair is
+  `references/contracts/ceratops-compatibility-deterministic-contract.json` and
+  `references/contracts/ceratops-compatibility-nondeterministic-contract.json`.
+  The generator and checker consume the deterministic contract; review uses
+  the companion rubric and local repository evidence. Keep both in this skill.
+- Missing validator check definitions come from
+  `references/contracts/repository-validation-contract.json`; the compatibility
+  contract owns destination paths, template mappings, and skill routing defaults.
 
 ## Constraints
 
@@ -60,10 +65,9 @@ Infer the source identity from stable repository evidence before asking.
 - Do not promote or deploy the completed compatibility change here; return to
   the parent skill and select `promote` or `promote-and-deploy` only when
   requested.
-- Do not modify an existing repository validator or CI validation workflow
-  (`scripts/validate-repository.py`, `.github/workflows/validate.yml`); preserve
-  their bytes and mode. If compatibility requires either to change, stop for
-  approval.
+- Reconcile generated validation and CI wiring inside the rollback boundary.
+  Preserve target-owned checks and test commands; block ambiguous custom
+  rewrites before mutation.
 
 ### Skill-Specific Rules
 
@@ -81,17 +85,38 @@ Infer the source identity from stable repository evidence before asking.
   manifest; block rather than discard a nonempty skill manifest.
   Preserve valid target-owned custom sections and assignments, portable
   runtime payloads, and maintenance commands.
-- Validate supported SDLC formats through the shared loader and preserve
-  existing versions. Materialize missing contracts in the current format
-  without format conversion, aliases, or retired-file migration detectors.
+- Apply the current SDLC format with explicit tests for every deliverable.
+  Preserve target operations when upgrading supported declarations; reject
+  an upgrade whose operation ownership cannot be preserved.
 - Block malformed or unsafe existing declarations before mutation. After the
   first write, restore every changed target file after any caught blocker and
   report the failed phase and rollback state.
 - Generate a missing validator and CI workflow only from checks declared in
   `references/contracts/repository-validation-contract.json`; obtain approval
   before adding an undeclared check.
-- Generated CI uses target-owned dependency setup; the validation contract
-  supplies no package installation requirements.
+- Generate one uv project, lock and `.venv` under `scripts`; uv selects the
+  declared Python and installs locked dependencies. Keep application manifests
+  in their existing locations.
+- Run repository Python entrypoints through `uv run --locked <script.py>`.
+  Keep their project and lock in `scripts`; uv owns Python selection and
+  dependency synchronization. Do not inject environment bootstrap code.
+- Generate `scripts/run-tests.py` when Python tests are detected. Preserve
+  repository-owned test implementation; generated Python test commands use the
+  scripts project. CI runs validation and tests without executing skill handoffs.
+- Review custom validators and configuration-defined scripts to ensure they
+  never run tests. Move test execution into SDLC test operations without losing
+  target behavior before claiming compatibility. Detection cannot prove this
+  semantic boundary or discover every unconventional test suite.
+- Review applicable environment, test, and lifecycle behavior against the
+  compatibility review contract using local declarations and execution results.
+  Report failed or unverified requirements; file presence alone is insufficient.
+- When creating both validation files in a repository without JavaScript
+  package-manager files, create the locked Markdown setup and
+  configuration from templates under `scripts`. Preserve existing Markdown configuration
+  and exclusive validators, and ignore installed dependencies.
+- Generated CI uses target-owned dependency setup, including Node 24 for the
+  generated Markdown setup; the validation contract supplies no package
+  installation requirements.
 - Keep source skill folders portable and keep generated shared-section blocks
   out of source `SKILL.md` files.
 
@@ -114,9 +139,8 @@ Infer the source identity from stable repository evidence before asking.
   source skills exist, write `skills/skill-sections.json`, copy canonical shared
   sections to `skills/sections/`, and remove generated section blocks from
   source skills.
-- Create `sdlc/sdlc.yml` from the owned template, preserving target
-  capabilities and supported existing versions. In the current format, supply
-  repository validation when undeclared. For source skills, add
+- Create or reconcile sdlc/sdlc.yml from the owned template, preserving target
+  capabilities with separate validation and tests. For source skills, add
   `deliverables.skills.validate.ceratops-managed` routing to
   `ceratops-skill-lifecycle/source-validate` and
   `deliverables.skills.deploy-local.ceratops-managed` routing to
@@ -128,12 +152,24 @@ Infer the source identity from stable repository evidence before asking.
 
 ### 3. Create repository validation and bootstrap
 
+- Generate Ruff and mypy defaults in the scripts project from its template.
+  Generated validation uses those defaults unless the repository supplies its
+  own configuration; preserve existing settings and custom validators.
+
 - Create a missing `scripts/validate-repository.py` and
   `.github/workflows/validate.yml` for every repository, including repositories
-  with no skills. CI calls the repository-owned validator.
+  with no skills. CI invokes this skill's GitHub action to select validation and
+  tests separately. Preserve an existing action commit pin; otherwise resolve a
+  published revision or use `--ci-action-revision <commit>`.
 - When skills exist, the compatibility apply helper synchronizes the
   independent `scripts/deploy-skills.py`. Retain a same- or
   higher-version bootstrap and replace only a missing or lower version.
+- Declare skills with Python helpers in `python_runtime_skills`. For those
+  skills, require the target repository's own
+  `skills/sections/python/pyproject.toml` and `uv.lock` before applying
+  compatibility. Report missing files without copying Ceratops dependencies.
+  Bootstrap creates a versioned shared environment from that locked project.
+  The installed bundle must work without its original source checkout.
 - When no skills exist, do not add a bootstrap script or bootstrap deployment
   operation.
 
@@ -142,6 +178,8 @@ Infer the source identity from stable repository evidence before asking.
 - After every compatibility application, including zero-skill repositories, call
   `validate_ceratops_compatibility` inside the rollback boundary and require
   every applicable result to be valid with no errors.
+- Resolve every applicable compatibility review check before claiming full
+  compatibility; keep its result distinct from the read-only structural result.
 - Commit the validated compatibility change in the task worktree.
 - If only local release staging was requested, return to the parent skill and
   select `promote`; if deployment was requested, select `promote-and-deploy`;
@@ -160,8 +198,10 @@ Infer the source identity from stable repository evidence before asking.
   SDLC contracts, and a supported standalone
   installer. Skillless repositories retain only repository capabilities and
   target-owned deliverables.
-- Every target has repository validation and CI wiring; every applicable
-  `validate_ceratops_compatibility` result is valid with no errors.
+- Every target has the isolated validator environment, separate test
+  declarations, and CI action wiring. Python-test repositories also have their
+  runner. Structural checks and applicable validation and tests pass separately;
+  deferred CI handoffs remain for the owning skill action to resolve.
 - Any caught blocker after mutation restores the exact prior target files and
   reports completed or failed rollback state.
 - Any requested repository-lifecycle handoff completed or its blocker is

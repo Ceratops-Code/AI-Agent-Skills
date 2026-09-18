@@ -15,7 +15,7 @@ Editing these sources does not update installed copies. From the repository,
 install or update them explicitly:
 
 ```powershell
-python scripts/deploy-hooks.py
+uv run --locked scripts/deploy-hooks.py
 ```
 
 The standalone installer copies all four helpers to `$CODEX_HOME/hooks` and
@@ -287,7 +287,7 @@ Windows shell sanity hints:
 Run deterministic tests for the current worktree from the repository root:
 
 ```powershell
-python scripts/testing/run-tests.py --worktree
+uv run --locked scripts/testing/run-tests.py --worktree
 ```
 
 Smoke-test the command interface with:

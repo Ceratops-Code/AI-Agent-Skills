@@ -28,21 +28,21 @@ Project-specific rules for this skills repository.
   whenever its action contract and one-request orchestrator accept the complete
   intended scope. The action may update the verified primary `release/local`
   checkout and install its selected skills; otherwise use `update`.
-  - overrides: SKILLS-WORKTREE-01, SKILLS-STAGE-01
+  - overrides: SKILLS-WORKTREE-01, SKILLS-PROMOTE-01
 - [SKILLS-FAST-02] An accepted rules-only `fast-change` uses its action
   contract instead of the ordinary instruction-edit verification requirement.
   - overrides: SKILLS-VERIFY-01
-- [SKILLS-STAGE-01] Stage skill-source changes into `release/local`
-  only when the task explicitly requests staging, shipping, or local preview
+- [SKILLS-PROMOTE-01] Promote skill-source changes into `release/local`
+  only when the task explicitly requests promotion, shipping, or local preview
   sync.
   - self: gate
 - [SKILLS-SHIP-01] Skills-repo changes must ship from `release/local`, never
   directly from task or feature branches.
-- [SKILLS-CREATE-01] New Ceratops skill creation is the only default-staging
+- [SKILLS-CREATE-01] New Ceratops skill creation is the only default-promotion
   exception: `$ceratops-skill-lifecycle` create must hand off to
   `$ceratops-repo-lifecycle` action `promote-and-deploy` and finish with
   deployment verification.
-  - overrides: SKILLS-STAGE-01
+  - overrides: SKILLS-PROMOTE-01
 - [SKILLS-BATCH-01] Treat an explicit request to promote or ship
   `release/local` as authorization for every commit currently on that
   branch; do not request per-commit inclusion confirmation.

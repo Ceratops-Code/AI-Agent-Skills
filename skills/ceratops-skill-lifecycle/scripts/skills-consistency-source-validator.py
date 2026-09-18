@@ -16,10 +16,15 @@ import json
 import pathlib
 import re
 import runpy
+import shlex
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from typing import cast
+
+import tomllib
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
 
 LIFECYCLE_BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE_REPOSITORY_ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -52,7 +57,9 @@ SKILL_NAME_PATTERN = r"(?![a-z0-9-]*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?"
 NAME_RE = re.compile(rf"^{SKILL_NAME_PATTERN}$")
 SKILL_REF_RE = re.compile(r"\$([a-z0-9]+(?:-[a-z0-9]+)+)(?![A-Za-z0-9_-])")
 README_SKILL_ROW_RE = re.compile(
-    rf"^\|\s*`(?P<name>{SKILL_NAME_PATTERN})`\s*\|",
+    rf"^\|\s*(?:`(?P<plain>{SKILL_NAME_PATTERN})`|"
+    rf"\[`(?P<linked>{SKILL_NAME_PATTERN})`\]"
+    rf"\(skills/(?P=linked)/README\.md\))\s*\|",
     re.MULTILINE,
 )
 ACTION_REFERENCES_HEADING = "### Action References"
@@ -300,6 +307,45 @@ def check_runtime_payloads(
     if not isinstance(payloads, dict):
         errors.append("section manifest runtime_payloads must be an object")
         return errors
+    project = ROOT / "skills/sections/python"
+    declaration = project / "pyproject.toml"
+    lock = project / "uv.lock"
+    declared_python = manifest.get("python_runtime_skills")
+    if (
+        not isinstance(declared_python, list)
+        or len(declared_python) != len({item for item in declared_python if isinstance(item, str)})
+        or not all(isinstance(item, str) and item in skill_names for item in declared_python)
+    ):
+        errors.append("section manifest python_runtime_skills must list unique source skills")
+        python_skills: set[str] = set()
+    else:
+        python_skills = set(declared_python)
+    for skill_name in sorted(skill_names - python_skills):
+        scripts = ROOT / "skills" / skill_name / "scripts"
+        if scripts.is_dir() and any(path.is_file() for path in scripts.rglob("*.py")):
+            errors.append(f"{skill_name}: Python helper needs python_runtime_skills assignment")
+    if python_skills and (not declaration.is_file() or not lock.is_file()):
+        errors.append("declared Python skills require source pyproject.toml and uv.lock")
+    if declaration.is_file() != lock.is_file():
+        errors.append("source skill Python runtime requires both pyproject.toml and uv.lock")
+    elif declaration.is_file():
+        try:
+            parsed = tomllib.loads(declaration.read_text(encoding="utf-8"))
+            if not parsed.get("project", {}).get("requires-python"):
+                errors.append("source skill Python runtime must declare project.requires-python")
+            tomllib.loads(lock.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError, AttributeError) as exc:
+            errors.append(f"source skill Python runtime declaration is invalid: {exc}")
+    forbidden_sources = {
+        "skills/sections/scripts/run-skill.py",
+        "skills/sections/python/pyproject.toml",
+        "skills/sections/python/uv.lock",
+    }
+    retired_targets = {
+        "scripts/run-skill.py",
+        "scripts/python-runtime/pyproject.toml",
+        "scripts/python-runtime/uv.lock",
+    }
     for skill_name, values in payloads.items():
         if (
             selected_skill_names is not None
@@ -326,6 +372,9 @@ def check_runtime_payloads(
                 source, target = raw_source, raw_target
             else:
                 errors.append(f"{label} must be a path or source-target mapping")
+                continue
+            if source in forbidden_sources or target in retired_targets:
+                errors.append(f"{label} must not install a runtime launcher or shared Python declarations")
                 continue
             source_posix = pathlib.PurePosixPath(source.replace("\\", "/"))
             source_windows = pathlib.PureWindowsPath(source)
@@ -499,7 +548,10 @@ def readme_skill_rows(readme_text: str) -> set[str]:
     match = re.search(r"^## Skills\s*$\n(?P<body>.*?)(?=^##\s|\Z)", readme_text, re.MULTILINE | re.DOTALL)
     if match is None:
         return set()
-    return {row.group("name") for row in README_SKILL_ROW_RE.finditer(match.group("body"))}
+    return {
+        str(row.group("plain") or row.group("linked"))
+        for row in README_SKILL_ROW_RE.finditer(match.group("body"))
+    }
 
 
 def validate_workflow_target(command: str, skill_names: set[str]) -> list[str]:
@@ -515,6 +567,9 @@ def validate_workflow_target(command: str, skill_names: set[str]) -> list[str]:
     parts = normalized.split()
     if not parts:
         return ["section manifest maintenance workflow contains an empty command"]
+    # The locked uv script form selects the script's declared project.
+    if parts[:3] == ["uv", "run", "--locked"]:
+        parts = ["python", *parts[3:]]
 
     if normalized.startswith("$"):
         target = normalized[1:]
@@ -523,7 +578,10 @@ def validate_workflow_target(command: str, skill_names: set[str]) -> list[str]:
         return errors
 
     if len(parts) >= 2 and parts[0] in {"python", "py"} and (parts[1].startswith("scripts/") or parts[1].startswith("skills/")):
-        script_path = ROOT / parts[1]
+        python_script = pathlib.PurePosixPath(parts[1])
+        if ".." in python_script.parts:
+            return [f"section manifest maintenance workflow uses a non-portable script path: {parts[1]}"]
+        script_path = ROOT / python_script
         if not script_path.is_file():
             errors.append(f"section manifest maintenance workflow points to missing script {parts[1]}")
         return errors
@@ -686,6 +744,65 @@ def contract_remediation_ids(path: pathlib.Path) -> set[str]:
         if isinstance(values, list):
             classified.update(str(value) for value in values if isinstance(value, str) and value)
     return classified
+
+
+def check_skill_deterministic_contract() -> list[str]:
+    """Validate declarations without running commands supplied by a contract.
+
+    The bundle owns the schema and supported command forms. Repositories supply
+    data, never an executable validator or schema selected by that data. Keep
+    CLI behavior tests alongside these declarations when helper arguments change.
+    """
+
+    schema_path = LIFECYCLE_BUNDLE_ROOT / "references/schemas/skill-deterministic-contract.schema.json"
+    try:
+        contract = read_json(ROOT / SKILL_DETERMINISTIC_CONTRACT)
+        schema = read_json(schema_path)
+        Draft202012Validator.check_schema(schema)
+        validator = Draft202012Validator(schema)
+        errors = [
+            f"{SKILL_DETERMINISTIC_CONTRACT}: {error.json_path}: {error.message}"
+            for error in validator.iter_errors(contract)
+        ]
+    except (OSError, ValueError, SchemaError) as exc:
+        return [f"{SKILL_DETERMINISTIC_CONTRACT}: cannot validate contract: {exc}"]
+    if errors:
+        return errors
+
+    # These are canonical argv declarations, not shell fragments. Reject every
+    # extra flag or helper rather than executing data to discover its behavior.
+    bundle = SKILL_CONTRACT_DIR.parents[1]
+    source_validator = (bundle / "scripts" / pathlib.Path(__file__).name).as_posix()
+    inventory = (bundle / "scripts/runtime/install-managed-skills.py").as_posix()
+    execution = cast(dict[str, str], contract["execution"])
+    if execution["source_validator"] != source_validator:
+        errors.append(f"{SKILL_DETERMINISTIC_CONTRACT}: execution.source_validator must be {source_validator}")
+    commands = {
+        "skill_validation_command": ["python", source_validator, "--mode", "skill", "--skill", "<skill-name>"],
+        "full_validation_command": ["python", source_validator, "--mode", "full"],
+        "section_validation_command": ["python", source_validator, "--mode", "sections"],
+        "runtime_inventory_command": ["python", inventory, "--inventory-output", "<caller-selected-file>"],
+    }
+    for field, expected in commands.items():
+        try:
+            arguments = shlex.split(execution[field])
+        except ValueError:
+            arguments = []
+        if arguments != expected:
+            errors.append(f"{SKILL_DETERMINISTIC_CONTRACT}: execution.{field} must declare {' '.join(expected)}")
+    for relative in (source_validator, inventory):
+        target = ROOT / relative
+        if not target.is_file() or not target.resolve().is_relative_to(ROOT.resolve()):
+            errors.append(f"{SKILL_DETERMINISTIC_CONTRACT}: missing or external helper: {relative}")
+    registry = ROOT / SKILL_CONTRACT_DIR / str(contract["source_docs_ref"])
+    if not registry.is_file():
+        errors.append(f"{SKILL_DETERMINISTIC_CONTRACT}: missing source_docs_ref: {registry.name}")
+    checks = cast(list[dict[str, object]], contract["checks"])
+    ids = [str(check["id"]) for check in checks]
+    if len(ids) != len(set(ids)):
+        errors.append(f"{SKILL_DETERMINISTIC_CONTRACT}: duplicate deterministic check ID")
+    errors.extend(check_skill_contract_remediation_policy())
+    return errors
 
 
 def check_skill_contract_remediation_policy() -> list[str]:
@@ -873,8 +990,10 @@ def check_source_governance_consistency(
     errors.extend(check_multi_action_skill_contract(manifest))
     errors.extend(check_action_sections(manifest))
     if profile == PROFILE_CERATOPS:
-        errors.extend(check_skill_contract_remediation_policy())
-        errors.extend(check_skill_nondeterministic_contract())
+        contract_errors = check_skill_deterministic_contract()
+        errors.extend(contract_errors)
+        if not contract_errors:
+            errors.extend(check_skill_nondeterministic_contract())
 
     assignments = manifest.get("skills", {})
     payloads = manifest.get("runtime_payloads", {})
@@ -958,7 +1077,7 @@ def check_section_sources(manifest: dict[str, object], skill_dirs: list[pathlib.
             continue
         try:
             rendered_sections_block(skill_dir.name, manifest)
-        except Exception as exc:
+        except (OSError, KeyError, TypeError, ValueError) as exc:
             errors.append(f"{skill_dir.name}: could not render runtime shared sections: {exc}")
     return errors
 
@@ -979,8 +1098,7 @@ def check_canonical_sections(
         )
         return (
             [
-                "repositories without skills must not retain canonical section "
-                f"declarations: {', '.join(retained)}"
+                f"repositories without skills must not retain canonical section declarations: {', '.join(retained)}"
             ]
             if retained
             else []
@@ -1064,6 +1182,11 @@ def check_selected_skills(
         selected_skill_names,
     )
     errors.extend(check_runtime_input_safety(runtime_inputs))
+    if profile == PROFILE_CERATOPS and "ceratops-skill-lifecycle" in selected_skill_names:
+        contract_errors = check_skill_deterministic_contract()
+        errors.extend(contract_errors)
+        if not contract_errors:
+            errors.extend(check_skill_nondeterministic_contract())
     return errors
 
 
@@ -1073,7 +1196,7 @@ def check_resource_layout(skill_dir: pathlib.Path, profile: str) -> list[str]:
     errors: list[str] = []
     allowed_dirs = ALLOWED_SKILL_RESOURCE_DIRS if profile == PROFILE_CERATOPS else ALLOWED_SKILL_RESOURCE_DIRS | {"tests"}
     for child in skill_dir.iterdir():
-        if child.is_file() and child.name != "SKILL.md":
+        if child.is_file() and child.name not in {"SKILL.md", "README.md"}:
             errors.append(f"{skill_dir.name}: unsupported top-level file {child.name}")
         if child.is_dir() and child.name not in allowed_dirs:
             errors.append(f"{skill_dir.name}: unsupported top-level directory {child.name}")
@@ -1087,7 +1210,11 @@ def check_resource_layout(skill_dir: pathlib.Path, profile: str) -> list[str]:
             references_dir / "templates",
         }
         for path in references_dir.rglob("*"):
-            if path.is_file() and path.parent not in allowed_parents:
+            if (
+                path.is_file()
+                and not is_ignored_repo_path(path)
+                and path.parent not in allowed_parents
+            ):
                 rel_path = path.relative_to(skill_dir)
                 errors.append(
                     f"{skill_dir.name}: unsupported nested references file: {rel_path}"
@@ -1152,7 +1279,7 @@ def check_skill(
     else:
         try:
             rendered_sections_block(name, manifest)
-        except Exception as exc:
+        except (OSError, KeyError, TypeError, ValueError) as exc:
             errors.append(f"{name}: could not render runtime shared sections: {exc}")
     errors.extend(check_resource_layout(skill_dir, profile))
 
@@ -1353,7 +1480,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     readme_rows = readme_skill_rows(readme_text)
     skill_names = {skill_dir.name for skill_dir in skill_dirs}
     if isinstance(workflow_hints, dict):
-        for _workflow_name, commands in workflow_hints.items():
+        for commands in workflow_hints.values():
             if isinstance(commands, list) and all(isinstance(item, str) for item in commands):
                 for command in commands:
                     errors.extend(validate_workflow_target(command, skill_names))

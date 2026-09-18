@@ -35,6 +35,7 @@ SCHEMA_ASSIGNMENTS = {
         CONTRACTS / "code-repo-nondeterministic-contract.json",
         CONTRACTS / "artifact-nondeterministic-contract.json",
         CONTRACTS / "code-comment-nondeterministic-contract.json",
+        CONTRACTS / "ceratops-compatibility-nondeterministic-contract.json",
     ),
     SCHEMAS / "github-contract-source-docs.schema.json": (
         CONTRACTS / "github-contract-source-docs.json",
@@ -42,7 +43,13 @@ SCHEMA_ASSIGNMENTS = {
     SCHEMAS / "repository-validation-contract.schema.json": (
         CONTRACTS / "repository-validation-contract.json",
     ),
+    SCHEMAS / "ceratops-compatibility-contract.schema.json": (
+        CONTRACTS / "ceratops-compatibility-deterministic-contract.json",
+    ),
     SCHEMAS / "sdlc.yml.schema.json": (),
+    SCHEMAS / "sdlc.v4.schema.json": (),
+    SCHEMAS / "sdlc.v2.schema.json": (),
+    SCHEMAS / "sdlc.v1.schema.json": (),
 }
 
 

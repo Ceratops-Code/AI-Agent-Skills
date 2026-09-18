@@ -48,7 +48,6 @@ def test_build_checks_owns_order_both_platforms_and_space_safe_paths(
         ("ruff", None),
         ("mypy", "linux"),
         ("mypy", "win32"),
-        ("pytest", None),
     ]
     yaml_check = VALIDATOR.build_checks(ROOT, python_executable=sys.executable)[1]
     yaml_inventory = subprocess.run(
@@ -63,11 +62,14 @@ def test_build_checks_owns_order_both_platforms_and_space_safe_paths(
         ROOT / "skills/ceratops-repo-lifecycle/references/templates/sdlc.yml.tmpl"
     ).resolve() in yaml_paths
     assert (ROOT / "sdlc/sdlc.yml").resolve() in yaml_paths
+    assert all(".venv" not in path.parts and "node_modules" not in path.parts for path in yaml_paths)
     assert checks[2].command == (
         "python executable",
         "-m",
         "ruff",
         "check",
+        "--config",
+        "scripts/pyproject.toml",
         "scripts",
         "tools",
         "skills/ceratops-repo-lifecycle/references/templates/"
@@ -75,22 +77,9 @@ def test_build_checks_owns_order_both_platforms_and_space_safe_paths(
     )
     assert checks[3].command[-2:] == ("--platform", "linux")
     assert checks[4].command[-2:] == ("--platform", "win32")
-    diagnostic = repo_root / "build" / "test-diagnostics" / "pytest-failure.json"
-    assert checks[5].command == (
-        "python executable",
-        "scripts/testing/run-tests.py",
-        "--all",
-        "--diagnostic-output",
-        str(diagnostic),
-    )
-    assert len(
-        VALIDATOR.build_checks(
-            repo_root,
-            python_executable="python executable",
-            npm_executable="npm executable",
-            include_tests=False,
-        )
-    ) == 5
+    assert checks[0].command == ("npm executable", "--prefix", "scripts", "run", "lint:markdown")
+    assert all(check.cwd == repo_root for check in checks)
+    assert all(check.command[3:5] == ("--config-file", "scripts/pyproject.toml") for check in checks[3:])
 
 
 def test_ci_runs_repository_validator_that_owns_both_mypy_platforms() -> None:
@@ -100,43 +89,29 @@ def test_ci_runs_repository_validator_that_owns_both_mypy_platforms() -> None:
         )
     )
     steps = workflow["jobs"]["validate-repository"]["steps"]
-    python_step = next(step for step in steps if step.get("name") == "Select repository Python")
-    assert python_step["uses"].startswith("actions/setup-python@")
-    assert python_step["with"] == {"python-version-file": "pyproject.toml"}
+    uv_step = next(step for step in steps if step.get("uses", "").startswith("astral-sh/setup-uv@"))
     installation_step = next(step for step in steps if step.get("name") == "Install development validators")
-    assert steps.index(python_step) < steps.index(installation_step)
-    validation_step = next(
-        step for step in steps if step.get("name") == "Validate repository"
-    )
-    assert " ".join(validation_step["run"].split()).startswith(
-        "python scripts/validate-repository.py "
-    )
-    assert "--without-tests" in validation_step["run"].split()
-    pull_request_step = next(
-        step for step in steps if step.get("name") == "Run pull-request impact tests"
-    )
-    full_step = next(
-        step for step in steps if step.get("name") == "Run full main-branch tests"
-    )
-    pull_request_command = " ".join(pull_request_step["run"].split())
-    assert pull_request_command.startswith(
-        "python scripts/testing/run-tests.py --base "
-    )
-    assert " --head " in pull_request_command
-    assert (
-        "--diagnostic-output ${{ runner.temp }}/pytest-failure.json"
-        in pull_request_command
-    )
-    assert " ".join(full_step["run"].split()) == (
-        "python scripts/testing/run-tests.py --all "
-        "--diagnostic-output ${{ runner.temp }}/pytest-failure.json"
-    )
-    upload_step = next(
-        step for step in steps if step.get("name") == "Upload validation evidence"
-    )
-    assert upload_step["with"]["path"].splitlines() == [
-        "${{ runner.temp }}/repository-validation.log",
-        "${{ runner.temp }}/pytest-failure.json",
+    assert steps.index(uv_step) < steps.index(installation_step)
+    assert "uv sync --project scripts --locked" in installation_step["run"]
+    assert "npm --prefix scripts ci" in installation_step["run"]
+    gate = next(step for step in steps if step.get("name") == "Validate and test through SDLC")
+    assert gate["uses"] == "./skills/ceratops-repo-lifecycle/scripts"
+    assert gate["with"] == {"repo-root": ".", "evidence-file": "${{ runner.temp }}/sdlc-validation.json"}
+    assert steps.index(installation_step) < steps.index(gate)
+    contract = yaml.safe_load((ROOT / "sdlc/sdlc.yml").read_text(encoding="utf-8"))
+    assert contract["version"] == 3
+    assert contract["repository"]["validate"]["repository"]["steps"] == [
+        {"run": ["uv", "run", "--locked", "scripts/validate-repository.py"]},
+    ]
+    assert contract["repository"]["tests"]["python"]["steps"] == [
+        {"run": ["uv", "run", "--locked", "scripts/testing/run-tests.py", "--auto"]},
+    ]
+    upload = next(step for step in steps if step.get("name") == "Upload validation evidence")
+    assert upload["with"]["include-hidden-files"] is True
+    assert upload["with"]["path"].splitlines() == [
+        "${{ runner.temp }}/sdlc-validation.json",
+        ".build/deploy-validation/repository-validation.log",
+        ".build/test-diagnostics/pytest-failure.json",
     ]
 
     checks = VALIDATOR.build_checks(
@@ -149,13 +124,7 @@ def test_ci_runs_repository_validator_that_owns_both_mypy_platforms() -> None:
         for check in checks
         if check.name == "mypy"
     ] == ["linux", "win32"]
-    assert next(check for check in checks if check.name == "pytest").command == (
-        "python",
-        "scripts/testing/run-tests.py",
-        "--all",
-        "--diagnostic-output",
-        str(ROOT / "build" / "test-diagnostics" / "pytest-failure.json"),
-    )
+    assert all(check.name != "pytest" for check in checks)
 
 
 def test_run_process_captures_output_without_a_shell(
@@ -204,7 +173,7 @@ def test_success_prints_exactly_ok_and_suppresses_child_output(
     assert result == 0
     assert captured.out == "OK\n"
     assert captured.err == ""
-    assert len(calls) == 6
+    assert len(calls) == 5
     assert not evidence_file.exists()
     assert not temporary.exists()
 
@@ -254,76 +223,23 @@ def test_failure_is_fail_fast_compact_and_writes_complete_evidence(
     assert "complete stderr diagnostics" not in captured.out
 
 
-def test_pytest_failure_surfaces_bounded_actions_and_retains_complete_evidence(
-    tmp_path: pathlib.Path, capsys: Any
-) -> None:
-    calls: list[tuple[str, ...]] = []
-    child_payload: dict[str, Any] = {
-        "status": "pytest-failed",
-        "pytest": {
-            "failure_count": 6,
-            "omitted_failure_count": 4,
-            "failures": [
-                {
-                    "test": "tests/test_alpha.py::test_contract",
-                    "source_location": "tests/test_alpha.py:18",
-                    "excerpt": "E       assert actual == expected",
-                },
-                {
-                    "test": "tests/test_beta.py::test_configuration",
-                    "source_location": "tests/test_beta.py:27",
-                    "excerpt": "E       RuntimeError: invalid configuration",
-                },
-            ],
-            "diagnostic": {
-                "bytes": 4321,
-                "path": "build/test-diagnostics/pytest-failure.json",
-                "sha256": "a" * 64,
-            },
-            "context_excerpt": "full child context that is not forwarded",
-        },
-        "unrelated": "not part of the aggregate failure contract",
-    }
-    child_stdout = json.dumps(child_payload, separators=(",", ":"))
+def test_validation_has_no_test_mode_or_test_side_effects(tmp_path: pathlib.Path, capsys: Any) -> None:
+    calls = []
 
-    def fake_runner(
-        command: tuple[str, ...], cwd: pathlib.Path
-    ) -> subprocess.CompletedProcess[str]:
-        del cwd
+    def run(command, cwd):
         calls.append(command)
-        if len(calls) == 6:
-            return completed(
-                command,
-                returncode=1,
-                stdout=child_stdout,
-                stderr="complete pytest runner stderr",
-            )
+        assert "pytest" not in command
+        assert not any("run-tests.py" in argument for argument in command)
         return completed(command)
 
-    evidence_file = tmp_path / "validator" / "failure.log"
-    result = VALIDATOR.main(
-        ["--evidence-file", str(evidence_file)],
-        process_runner=fake_runner,
-    )
-
-    captured = capsys.readouterr()
-    payload = json.loads(captured.out)
-    assert result == 1
-    assert len(calls) == 6
-    assert payload == {
-        "check": "pytest",
-        "exit_code": 1,
-        "evidence_file": str(evidence_file.resolve()),
-        "failure_count": 6,
-        "omitted_failure_count": 4,
-        "failures": child_payload["pytest"]["failures"],
-        "diagnostic": child_payload["pytest"]["diagnostic"],
-    }
-    assert "context_excerpt" not in captured.out
-    assert "unrelated" not in captured.out
-    evidence = evidence_file.read_text(encoding="utf-8")
-    assert child_stdout in evidence
-    assert "complete pytest runner stderr" in evidence
+    evidence = tmp_path / "validation.log"
+    assert VALIDATOR.main(["--evidence-file", str(evidence)], process_runner=run) == 0
+    assert len(calls) == 5
+    assert capsys.readouterr().out == "OK\n"
+    calls.clear()
+    assert VALIDATOR.main(["--without-tests"], process_runner=run) == 2
+    assert not calls
+    assert json.loads(capsys.readouterr().out)["unexpected_arguments"] == ["--without-tests"]
 
 
 def test_omitted_evidence_flag_keeps_repository_default(
@@ -331,8 +247,9 @@ def test_omitted_evidence_flag_keeps_repository_default(
 ) -> None:
     repo_root = tmp_path / "repository"
     repo_root.mkdir()
-    (repo_root / "pyproject.toml").write_text(
-        (ROOT / "pyproject.toml").read_text(encoding="utf-8"), encoding="utf-8"
+    (repo_root / "scripts").mkdir()
+    (repo_root / "scripts/pyproject.toml").write_text(
+        (ROOT / "scripts/pyproject.toml").read_text(encoding="utf-8"), encoding="utf-8"
     )
     validator_path = repo_root / "scripts" / "validate-repository.py"
     monkeypatch.setattr(VALIDATOR, "__file__", str(validator_path))
@@ -346,7 +263,7 @@ def test_omitted_evidence_flag_keeps_repository_default(
     result = VALIDATOR.main([], process_runner=failing_runner)
 
     payload = json.loads(capsys.readouterr().out)
-    expected = repo_root / "build" / "deploy-validation" / "repository-validation.log"
+    expected = repo_root / ".build" / "deploy-validation" / "repository-validation.log"
     assert result == 3
     assert payload["evidence_file"] == str(expected)
     assert expected.is_file()
@@ -379,7 +296,8 @@ def test_omitted_evidence_flag_keeps_repository_default(
 def test_python_requirement_uses_declared_range_not_a_helper_pin(
     tmp_path: pathlib.Path, monkeypatch: Any, requirement: str, version: str, accepted: bool
 ) -> None:
-    (tmp_path / "pyproject.toml").write_text(
+    (tmp_path / "scripts").mkdir(exist_ok=True)
+    (tmp_path / "scripts/pyproject.toml").write_text(
         f'[project]\nrequires-python = "{requirement}"\n', encoding="utf-8"
     )
     monkeypatch.setattr(VALIDATOR.platform, "python_version", lambda: version)
@@ -394,7 +312,8 @@ def test_python_requirement_uses_declared_range_not_a_helper_pin(
 def test_python_requirement_rejects_missing_or_invalid_metadata(
     tmp_path: pathlib.Path, metadata: str
 ) -> None:
-    (tmp_path / "pyproject.toml").write_text(metadata, encoding="utf-8")
+    (tmp_path / "scripts").mkdir(exist_ok=True)
+    (tmp_path / "scripts/pyproject.toml").write_text(metadata, encoding="utf-8")
     with pytest.raises(ValueError):
         VALIDATOR.require_repository_python(tmp_path)
 
@@ -402,7 +321,8 @@ def test_python_requirement_rejects_missing_or_invalid_metadata(
 def test_wrong_python_stops_before_checks_and_succeeds_after_correction(
     tmp_path: pathlib.Path, monkeypatch: Any, capsys: Any
 ) -> None:
-    (tmp_path / "pyproject.toml").write_text(
+    (tmp_path / "scripts").mkdir(exist_ok=True)
+    (tmp_path / "scripts/pyproject.toml").write_text(
         '[project]\nrequires-python = ">=3.14,<3.15"\n', encoding="utf-8"
     )
     monkeypatch.setattr(VALIDATOR, "__file__", str(tmp_path / "scripts" / "validate-repository.py"))
@@ -424,28 +344,60 @@ def test_wrong_python_stops_before_checks_and_succeeds_after_correction(
     monkeypatch.setattr(VALIDATOR.platform, "python_version", lambda: "3.14.7")
     assert VALIDATOR.main(["--evidence-file", str(evidence)], process_runner=runner) == 0
     assert capsys.readouterr().out == "OK\n"
-    assert len(calls) == 6
+    assert len(calls) == 5
     assert not evidence.exists()
 
 
-def test_repository_setup_has_one_python_selection_and_no_interpreter_downloads() -> None:
-    metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    assert metadata["tool"]["uv"]["python-preference"] == "only-system"
-    assert metadata["tool"]["uv"]["python-downloads"] == "never"
+@pytest.mark.parametrize("entrypoint", [
+    "scripts/deploy-hooks.py", "scripts/deploy-skills.py",
+    "scripts/validate-repository.py", "scripts/testing/run-tests.py",
+    *["skills/ceratops-repo-lifecycle/references/templates/" + name + ".py.tmpl"
+      for name in ("deploy-skills", "run-tests", "validate-repository")],
+])
+def test_repository_entrypoints_run_through_uv(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, entrypoint: str,
+) -> None:
+    metadata = tomllib.loads((ROOT / "scripts/pyproject.toml").read_text(encoding="utf-8"))
+    tool_settings = metadata
+    assert not (ROOT / "pyproject.toml").exists()
+    assert metadata["tool"]["uv"].get("python-preference") != "only-system"
+    assert metadata["tool"]["uv"].get("python-downloads") != "never"
     assert metadata["tool"]["uv"]["package"] is False
-    assert "python_version" not in metadata["tool"]["mypy"]
-    assert "target-version" not in metadata["tool"].get("ruff", {})
+    assert "python_version" not in tool_settings["tool"]["mypy"]
+    assert tool_settings["tool"]["ruff"]["target-version"] == f"py{sys.version_info.major}{sys.version_info.minor}"
     tool_metadata = tomllib.loads(
         (ROOT / "tools" / "ceratops_tool_manager" / "pyproject.toml").read_text(encoding="utf-8")
     )
     assert metadata["project"]["requires-python"] == tool_metadata["project"]["requires-python"]
+    monkeypatch.delenv("UV_PROJECT_ENVIRONMENT", raising=False)
+    script = ROOT / entrypoint
+    if script.suffix == ".tmpl":
+        # Exercise rendered standalone scripts without any installed skill or
+        # repository bootstrap. Their own directory determines the uv project.
+        scripts = tmp_path / "independent/scripts"
+        scripts.mkdir(parents=True)
+        template = script.read_text(encoding="utf-8")
+        script = scripts / script.stem
+        script.write_text(template.replace("__TEST_TARGETS__", "[]").replace("__CHECK_DEFINITIONS__", "[]"), encoding="utf-8")
+        project_template = ROOT / "skills/ceratops-repo-lifecycle/references/templates/validation-pyproject.toml.tmpl"
+        (scripts / "pyproject.toml").write_text(
+            project_template.read_text(encoding="utf-8").replace("__DEPENDENCIES__", "[]"), encoding="utf-8",
+        )
+        locked = subprocess.run(["uv", "lock", "--project", str(scripts)], capture_output=True, text=True)
+        assert locked.returncode == 0, locked.stderr
+    result = subprocess.run(["uv", "run", "--locked", str(script), "--help"], cwd=tmp_path, capture_output=True, text=True)
+    if entrypoint == "scripts/validate-repository.py":
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert json.loads(result.stdout)["unexpected_arguments"] == ["--help"]
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "usage:" in result.stdout.lower()
 
 
 def test_runtime_dependencies_supply_timezones_without_an_os_database() -> None:
     requirements = [
         Requirement(line)
-        for line in (ROOT / "requirements-runtime.txt").read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.startswith("#")
+        for line in tomllib.loads((ROOT / "skills/sections/python/pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
     ]
     timezone_requirement = next(item for item in requirements if item.name == "tzdata")
     assert version("tzdata") in timezone_requirement.specifier

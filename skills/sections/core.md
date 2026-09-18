@@ -42,9 +42,10 @@
   user already explicitly requested that tradeoff.
 - Treat audits, diagnostics, recommendations, requested wording, and other
   advisory requests as non-mutating.
-- Mutate only when the user or the selected execution action explicitly requests
-  the target class. In a mixed request, mutate only the expressly requested
-  targets.
+- Mutate only within the action and target scope of an execution request,
+  confirmation, or standing instruction; choosing a workflow supplies no
+  additional authorization. In a mixed request, mutate only the expressly
+  requested targets.
 - Do not update this `SKILL.md` or other skill/control files during a routine
   run unless the user explicitly asked for skill maintenance or the task cannot
   be completed safely without a narrow in-scope fix.
@@ -52,6 +53,14 @@
   commands, `python -m <module>` entrypoints, or scripts copied into the
   installed skill folder; do not locate shared helpers by absolute paths or by
   the repo's parent directory.
+- For every invocation of an installed Python helper, including retries and
+  diagnostics, use `python_runtime` from that skill's
+  `.runtime-manifest.json`. Before submitting the tool call, verify that the
+  command uses `uv run --no-project --python <python_runtime> python
+  <skill-root>/<helper> ...` with the original arguments. Stop if the
+  command cannot be verified. Deployment pins that path to one version of
+  the shared skill environment. External tools retain their installer-owned
+  runtimes.
 - Run repository-maintenance executables only from `scripts/` in an active
   source checkout. Run skill deliverable helpers from the installed skill
   folder; source maintenance may use the owning skill or declared

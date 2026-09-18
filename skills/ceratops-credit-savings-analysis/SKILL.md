@@ -12,6 +12,12 @@ Analyze completed model-call evidence for avoidable credit spend. Use
 surface only when the user names it. This skill recommends controls but never
 applies them.
 
+## Design Reference
+
+`README.md` is the authoritative architecture and maintenance reference. Read
+it before changing or diagnosing this skill's workflow, schemas, persistence,
+retry, recovery, or deployment behavior.
+
 ## Public Action Routing
 
 ### Action References
@@ -59,14 +65,17 @@ applies them.
   identities, candidate membership, prompts, results, and attempt telemetry as
   authoritative. Execution never recollects the session. Never skip, repeat,
   reorder, or add a semantic task outside the manifest.
-- Before freezing child tasks, resolve and hash the effective global and
-  run-local `AGENTS.md` chain. If a recorded canonical worktree cwd is gone, use
-  its primary checkout only after exact repository-identity verification and
-  record the substitution. Launch Luna from each verified run cwd and Sol from
-  the verified primary cwd; retain the effective chain hash on every task and
-  attempt and give Sol the hash and any differing run-local rule text. Stop on
-  an unresolved source or rule-evidence omission; never fall back to task
-  temporary root.
+- Before freezing child tasks, read and retain the complete effective global
+  and run-local `AGENTS.md` chain once. If a recorded canonical worktree cwd is
+  gone, use its primary checkout only after exact repository-identity
+  verification and record the substitution. Launch Luna from each verified run
+  cwd and Sol from the verified primary cwd; retain the frozen chain hash on
+  every task and attempt and give Sol the frozen hash and frozen differing
+  run-local rule text. During execution and resume, validate the retained rule
+  snapshot from its stored text and hashes without rereading live `AGENTS.md`;
+  later live instruction changes do not invalidate accepted or pending analysis
+  tasks. Stop on an unresolved source or rule-snapshot omission; never fall
+  back to task temporary root.
 - The controller validates `gpt-5.6-luna` and `gpt-5.6-sol` at maximum effort
   from the local Codex catalog. Luna and Sol children retain native rollout
   state. Every child is approval-free and read-only. The
@@ -79,14 +88,18 @@ applies them.
   Validate and durably checkpoint each completed child while siblings continue.
   Keep shared orchestration state mutations in the controller and final ordering
   deterministic.
-- Luna performs high-recall discovery across all five fixed surfaces together.
+- Luna inspects every admitted call across all five fixed surfaces and
+  selects the strongest supported candidates within a frozen count limit.
+  Disclose when a task reaches that limit so discovery is not described as
+  exhaustive.
   Run up to fifteen Luna children concurrently and admit no more than seventy
   Luna attempts for one frozen thread tree, including corrective reruns. Launch
   Luna with a retained native session so a later analysis can collect it as an
   ordinary descendant thread. Before launch, assign every admitted run part to
   one of up to six Sol reviewers. Calculate each Luna's output-byte allowance
-  from its reviewer's fixed input and remaining proven capacity, then freeze and
-  prove every assignment at its planned maximum. If a Luna result violates its
+  from its reviewer's fixed input and remaining proven capacity. Divide a
+  conservative candidate count budget among that reviewer's Luna tasks before
+  launch and validate both limits. If a Luna result violates its
   schema or allowance, rerun that task once with a smaller output allowance; if
   it still fails, report that run part as unreviewed and continue. Never
   truncate
@@ -100,30 +113,42 @@ applies them.
   the unassessed calls with their complete run-part context and replace those
   classifications; prioritize this recovery over optional direct-evidence
   review. After the parallel reviewers and any recovery or direct-evidence
-  review finish, run one dependent final Sol to merge their compact judgments,
-  produce the report, and deeply verify the top three deduplicated owner/control
-  findings against exact evidence. Each rejected Sol task receives one automatic
-  corrective retry when the sixteen-attempt ceiling permits. After a non-final
+  review finish, run one dependent final Sol to judge candidates without an
+  accepted decision and deeply verify the top three deduplicated owner/control
+  findings against exact evidence. Code carries accepted judgments into the
+  final result and produces the report. Each rejected Sol task receives one
+  automatic corrective retry when the sixteen-attempt ceiling permits. When the
+  caller requests stop-on-validation-error, run model tasks serially and stop after
+  the first rejection before another model call. After a non-final
   task fails validation twice, retain its exact unreviewed candidate, call, and
   byte inventory, exclude that inventory from final transport, and continue to
   the final merger. Plan at most eight Sol calls, excluding retries and
   corrective attempts; allow at most sixteen actual Sol invocations including
   initial calls, retries, and corrective attempts. The final Sol does not
   re-adjudicate every candidate or receive the complete source tree.
-- Restore canonical identifiers and derive nonsemantic summaries, ordering,
-  surfaces, workstreams, repeated evidence, and savings arithmetic in code. Sol
-  adjudicators merge overlaps and temporary controls, apply recurrence and ROI
-  rules, and classify source calls in grouped form. Persist result-size,
+- Restore canonical identifiers, derive candidate dispositions from finding/risk
+  links, and derive nonsemantic summaries, ordering, surfaces, workstreams,
+  repeated evidence, final helper-category summaries, and savings arithmetic
+  in code. The final Sol returns an empty
+  helper-category review array; copy exact accepted reviewer records and
+  assemble that section in the controller. Sol adjudicators merge overlaps and
+  temporary controls, apply recurrence and ROI rules, and classify source calls
+  in grouped form. Persist result-size,
   duration, visible-token, and reasoning-token telemetry as diagnostics. Run no
   model bookkeeping calls; stop before execution when the finite plan is
   malformed or changes admitted run, part, or candidate coverage.
   Generate model-facing schemas and Python shape checks from one shared response
   contract, preserving independent evidence and semantic validation. Give each
-  corrective retry its complete retained prior response and exact validation
-  errors inside the proven input envelope. Preserve accepted results, evidence,
-  coverage and unaffected judgments; keep valid identifiers unchanged and repair
-  invalid finding identifiers consistently with their references. Never change a
-  semantic judgment merely to satisfy validation.
+  existing corrective retry its complete retained prior response,
+  exact validation errors, and deterministically diagnosed invalid-claim scope
+  inside the proven input envelope. Reconsider only those invalid claims against
+  the same evidence: correct supported estimates or withdraw unsupported
+  findings
+  with their dependent references and call accounting. Preserve accepted
+  results,
+  complete coverage, valid identifiers, and unaffected judgments; repair invalid
+  identifiers consistently with their references. Do not invent savings to pass
+  validation.
 - The planner attempts every completed run. When the seventy-Luna cap prevents
   complete transport, retain exact partial-coverage records by run and part
   identity, record count, input bytes, candidate count, and output bytes.
@@ -149,9 +174,9 @@ applies them.
 
 - Count spend as avoidable only when available instructions, fresh evidence,
   stable contracts, direct helper composition, same-pass revision, or a cheap
-  targeted check could have prevented or reduced it. Exclude ordinary model
-  mistakes unless a concise durable producer control would materially reduce
-  recurrence.
+  targeted check could have prevented or reduced it. Apply the same
+  preventability test to ordinary model mistakes; require a durable producer
+  control only when recommending a recurring fix.
 - Exclude calls required by active freshness, safety, verification, controlled
   iteration, or workflow gates. Record conversational tool-protocol overhead as
   necessary rather than as a helper defect. Surface passes and synthesis make
@@ -177,10 +202,13 @@ applies them.
   Preserve a supported overlap as secondary evidence without double-counting
   model calls. Mark a volume-only finding as `context-volume`, keep all of its
   call-savings fields at zero, and classify its evidence calls independently.
-- Compute net calls saved per affected run as prevented calls minus recurring
-  calls introduced by the fix, and calls saved per similar run as that net
-  multiplied by estimated affected-run frequency. State assumptions, test ROI
-  at the low end of the frequency range, and reject non-positive lifetime value
+- Record each evidence-supported avoidable model call even if it occurred once
+  or has no durable fix. Compute net calls saved per affected run as prevented
+  calls minus recurring calls introduced by a proposed fix, and calls saved per
+  similar run as that net multiplied by estimated affected-run frequency. Use
+  `floor(3% × frozen source-call count)` only to prioritize recurring fixes,
+  never to dismiss observed waste. State assumptions, test durable-fix ROI at
+  the low end of the frequency range, and reject non-positive lifetime value
   unless correctness or safety independently requires the control.
 - Report priced credit only when the controller accepted a valid caller-supplied
   pricing profile. Never describe token volume as monetary or credit cost
@@ -215,11 +243,15 @@ applies them.
   requested scope, including earlier runs when presenting a later recheck.
   Group findings only when the same fix addresses them without hiding a
   distinct owner or failure. Give the direct result first.
-- Prioritize supported recurring net savings and verified one- or two-line
-  fixes. Do not impose a fixed finding count or fill a quota. Keep minor and
-  verified-resolved findings in machine evidence; provide details on request.
+- Include evidence-supported observed avoidable calls even without a recurring
+  finding. Prioritize recurring fixes using the 3% floor and verified one- or
+  two-line fixes. By default, present at most five recommendations in chat;
+  use a different limit when the user specifies one. Do not fill a quota. Keep
+  minor and verified-resolved findings in machine evidence; provide details on
+  request.
 - Give each selected finding a concrete title and three short parts:
-  - `Problem:` the observed episode, what failed, and the avoidable work.
+  - `Problem:` the observed episode, affected tasks and run dates, what failed,
+    and the avoidable work.
   - `Proposed fix:` the exact change and where it belongs.
   - `Benefit and effort:` supported savings and implementation effort, with
     material assumptions and any uncertainty that changes the recommendation.
@@ -242,6 +274,8 @@ applies them.
   savings separate from call savings, and state when credit or token savings
   cannot be quantified. Retain full cost and complexity analysis in machine
   evidence without reproducing every field in chat.
+- Report the audit's own recorded analysis-call count and token usage
+  separately from source-task usage; mark unavailable usage as unavailable.
 - Keep findings self-contained and use plain language before implementation
   terms. Show internal status labels or confidence ratings only on request.
   Show internal identifiers or helper taxonomy only on request. Give analysis

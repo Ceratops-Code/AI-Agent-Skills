@@ -1,7 +1,22 @@
-version: 2
+version: 3
 kind: ceratops-sdlc
+# Lifecycle order: validation, tests, then explicitly requested deployment.
+# The SDLC runner invokes repository validation and tests before deployment.
+# Repository scripts own result storage, reuse and applicability; success is exit 0.
+# Keep behavioral test commands under tests, never under validate or deploy-local.
 repository:
+  prerequisites:
+    uv:
+      executable: uv
+  bootstrap:
+    validation:
+      prerequisites: [uv]
+      steps:
+        - run: [uv, sync, --project, scripts, --locked]
   validate:
     repository:
       steps:
-        - run: [python, scripts/validate-repository.py]
+        - run: [uv, run, --locked, scripts/validate-repository.py]
+  tests:
+    none:
+      no-op: No repository test command has been detected or declared.

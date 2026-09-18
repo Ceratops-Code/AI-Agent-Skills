@@ -1,4 +1,4 @@
-version: 2
+version: 3
 kind: ceratops-sdlc
 
 repository:
@@ -6,9 +6,8 @@ repository:
     python:
       executable: python
       version-from:
-        file: pyproject.toml
+        file: scripts/pyproject.toml
         key: project.requires-python
-      includes: [pip]
 
     node:
       executable: node
@@ -30,24 +29,39 @@ repository:
 
   bootstrap:
     runtime:
-      prerequisites: [python]
+      prerequisites: [uv]
       steps:
-        - run: [python, -m, pip, install, -r, requirements-runtime.txt]
+        - run: [uv, sync, --project, scripts, --locked]
 
     development:
-      prerequisites: [python, node]
+      prerequisites: [uv, node]
       steps:
-        - run: [python, -m, pip, install, -r, requirements-dev.txt]
+        - run: [uv, sync, --project, scripts, --locked]
         # Resolve npm.cmd on Windows and npm on other platforms.
-        - run: [python, -c, "import shutil, subprocess; subprocess.run([shutil.which('npm'), 'ci'], check=True)"]
+        - run: [uv, run, --project, scripts, --locked, python, -c, "import shutil, subprocess; subprocess.run([shutil.which('npm'), '--prefix', 'scripts', 'ci'], check=True)"]
+
+  test-selection:
+    ci:
+      parameters: [base, head]
+      steps:
+        - run: [uv, run, --locked, scripts/testing/run-tests.py, --select-only, --base, "{base}", --head, "{head}"]
 
   validate:
     repository:
       steps:
-        - run: [python, scripts/validate-repository.py]
+        - run: [uv, run, --locked, scripts/validate-repository.py]
+
+  tests:
+    python:
+      steps:
+        - run: [uv, run, --locked, scripts/testing/run-tests.py, --auto]
 
 deliverables:
   skills:
+    tests:
+      repository:
+        no-op: Covered by repository.tests.python, including this deliverable's tests.
+
     validate:
       ceratops-managed:
         handoff: ceratops-skill-lifecycle/source-validate
@@ -58,19 +72,27 @@ deliverables:
 
       standalone:
         steps:
-          - run: [python, scripts/deploy-skills.py]
+          - run: [uv, run, --locked, scripts/deploy-skills.py]
 
   hooks:
+    tests:
+      repository:
+        no-op: Covered by repository.tests.python, including this deliverable's tests.
+
     deploy-local:
       standalone:
         steps:
-          - run: [python, scripts/deploy-hooks.py]
+          - run: [uv, run, --locked, scripts/deploy-hooks.py]
 
   tools:
+    tests:
+      repository:
+        no-op: Covered by repository.tests.python, including this deliverable's tests.
+
     deploy-local:
       ceratops-managed:
         handoff: ceratops-tool-lifecycle/install
 
       standalone:
         steps:
-          - run: [python, scripts/deploy-tool-manager.py]
+          - run: [uv, run, --locked, scripts/deploy-tool-manager.py]

@@ -9,10 +9,11 @@ Create a tool's editable source and a reproducible release in its owning repo.
 1. Establish the requested behavior and source owner. Use the ordinary coding
    environment and maintained packaging dependencies. Keep repository creation
    or Git release work in `ceratops-repo-lifecycle` when required.
-2. Build a Python wheel project with an exact numeric `major.minor.patch`
-   version and pinned build backend. Add the `tool.json` identity contract
-   documented in the manager's source README. The supported runtime is global
-   Windows x64 CPython 3.14; other runtime formats require manager development.
+2. Declare the tool name and exact numeric `major.minor.patch` version in
+   `pyproject.toml` with a pinned wheel build backend. Add the schema-2
+   `tool.json` readiness-module contract documented in the manager README;
+   it must not duplicate the project name or version. The supported runtime is
+   global Windows x64 CPython 3.14; other formats require manager development.
 3. Implement the module's fixed `--deployment-check` readiness protocol. Its
    JSON must report exact tool identity and installed package version with
    `ready: true`; check required dependencies without modifying user data.
@@ -26,9 +27,13 @@ Create a tool's editable source and a reproducible release in its owning repo.
    ```
 
    Review `pylock.toml` between these commands. The first records locked
-   dependencies; the second builds and registers that exact package without
-   activating it. An AI-Agent-Skills checkout is not required. If the manager
-   is absent, use bootstrap only when first installation is authorized.
+   dependencies; the second builds and registers that exact tool without
+   activating it. For a tool declaring a separate SDLC package prerequisite,
+   build and validate that package wheel first; register the tool with
+   `package --source <tool-source> --package-wheel <wheel> --package-lock
+   <package-pylock.toml>`. Keep the package source and lock in its package
+   directory. An AI-Agent-Skills checkout is not required. If the manager is
+   absent, use bootstrap only when first installation is authorized.
 6. Hand authorized deployment to this skill's install action. Use a new version
    when artifact contents change; a published identity/version is immutable.
 

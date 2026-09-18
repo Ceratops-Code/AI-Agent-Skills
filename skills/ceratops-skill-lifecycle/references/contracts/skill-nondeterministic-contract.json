@@ -45,55 +45,91 @@
       "id": "ND.skill.trigger-fit",
       "applies_when": "Every skill source or metadata review.",
       "review_required": "Confirm the frontmatter description states what the skill does and when it should trigger; interface metadata and the default prompt target the same task class without overtriggering; and any declared tool dependencies match the workflow without overdeclaring integrations.",
-      "evidence_keys": ["skill.SKILL.md", "skill.agents.openai.yaml"]
+      "evidence_keys": [
+        "skill.SKILL.md",
+        "skill.agents.openai.yaml"
+      ]
     },
     {
       "id": "ND.skill.role-based-structure",
       "applies_when": "Every skill source review.",
       "review_required": "Confirm the skill satisfies each applicable common skill content role directly or through clearly routed shared sections, helpers, references, or assets.",
-      "evidence_keys": ["skill.SKILL.md", "skill.references", "templates.skill-sections"]
+      "evidence_keys": [
+        "skill.SKILL.md",
+        "skill.references",
+        "templates.skill-sections"
+      ]
     },
     {
       "id": "ND.skill.scope-boundary",
       "applies_when": "Every skill source review.",
       "review_required": "Confirm scope, inputs, rules, boundaries, completion gates, and output contract agree on one workflow surface and do not mix unrelated owners or lifecycle phases.",
-      "evidence_keys": ["skill.SKILL.md", "skill.references"]
+      "evidence_keys": [
+        "skill.SKILL.md",
+        "skill.references"
+      ]
     },
     {
       "id": "ND.skill.workflow-contract",
       "applies_when": "The skill tells the agent how to execute work.",
       "review_required": "Confirm steps are dependency-ordered, name decision evidence, route blockers explicitly, and avoid ceremonial work.",
-      "evidence_keys": ["skill.SKILL.md", "skill.references", "skill.scripts"]
+      "evidence_keys": [
+        "skill.SKILL.md",
+        "skill.references",
+        "skill.scripts"
+      ]
     },
     {
       "id": "ND.skill.deterministic-placement",
       "applies_when": "The skill has commands, scripts, generated artifacts, validators, or repeatable cleanup.",
-      "review_required": "Confirm deterministic behavior lives in executable helpers when practical and prompt text retains high-level intent, routing, exceptions, and result handling.",
-      "evidence_keys": ["skill.SKILL.md", "skill.scripts", "skill.references"]
+      "review_required": "Confirm deterministic behavior lives in executable helpers when practical and prompt text retains high-level intent, routing, exceptions, and result handling. Confirm bundled Python helpers use the shared launcher, their declared runtime covers their dependencies and required Python version, and external tool runtimes retain their own installer. Recreate environments at the destination; share only identical project/lock pairs.",
+      "evidence_keys": [
+        "skill.SKILL.md",
+        "skill.scripts",
+        "skill.references",
+        "skill.runtime_dependencies",
+        "skill.runtime_execution_results"
+      ]
     },
     {
       "id": "ND.skill.reference-discipline",
       "applies_when": "The skill references documentation, examples, templates, assets, or installed OpenAI skills.",
       "review_required": "Confirm references are loaded progressively, deep procedural detail stays in skill-local resources, examples are patterns rather than authority, and public files use portable paths.",
-      "evidence_keys": ["skill.SKILL.md", "skill.references", "skill.assets", "skill-contract-source-docs.json"]
+      "evidence_keys": [
+        "skill.SKILL.md",
+        "skill.references",
+        "skill.assets",
+        "skill-contract-source-docs.json"
+      ]
     },
     {
       "id": "ND.skill.context-economy",
       "applies_when": "Every skill source review.",
       "review_required": "Confirm the skill minimizes routine reads, broad scans, repeated validation, and final-output verbosity while preserving evidence gates and blocker reporting.",
-      "evidence_keys": ["skill.SKILL.md", "skill.references", "skill.scripts"]
+      "evidence_keys": [
+        "skill.SKILL.md",
+        "skill.references",
+        "skill.scripts"
+      ]
     },
     {
       "id": "ND.skill.safety-and-state-boundaries",
       "applies_when": "The skill mutates files, Git state, services, credentials, automations, or runtime installations.",
       "review_required": "Confirm the skill names safe default scope, requires authority for risky steps, classifies retained or stale state, and does not widen across sibling scopes.",
-      "evidence_keys": ["skill.SKILL.md", "skill.references", "AGENTS.md"]
+      "evidence_keys": [
+        "skill.SKILL.md",
+        "skill.references",
+        "AGENTS.md"
+      ]
     },
     {
       "id": "ND.skill.output-and-closure",
       "applies_when": "Every skill source review.",
       "review_required": "Confirm the output contract says what to report and omit, which blockers or retained state remain visible, and what completion claim the evidence supports.",
-      "evidence_keys": ["skill.SKILL.md", "skill.references"]
+      "evidence_keys": [
+        "skill.SKILL.md",
+        "skill.references"
+      ]
     }
   ]
 }

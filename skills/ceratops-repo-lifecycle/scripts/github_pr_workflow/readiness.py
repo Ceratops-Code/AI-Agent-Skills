@@ -30,6 +30,8 @@ from github_contract_engine.github_api import run_gh_graphql, run_json_command
 from github_contract_engine.levels import ERROR, count_by_level
 from github_contract_engine.schema_validation import validate_contract_document
 
+from github_pr_workflow.command import clean_log, failure_excerpt, has_failure_evidence
+
 SCRIPTS_DIR = pathlib.Path(__file__).resolve().parent.parent
 SKILL_DIR = SCRIPTS_DIR.parent
 ROOT = SKILL_DIR.parent.parent if SKILL_DIR.parent.name == "skills" else SKILL_DIR
@@ -180,10 +182,6 @@ FAILING_CHECK_STATES = {
     "STARTUP_FAILURE",
     "TIMED_OUT",
 }
-FAILURE_LINE_RE = re.compile(
-    r"\b(?:fail(?:ed|ure)?|error|traceback|exception|panic|fatal|timeout|segmentation fault)\b",
-    re.IGNORECASE,
-)
 
 
 class CommandError(RuntimeError):
@@ -899,45 +897,9 @@ def emit(summary: dict[str, object], findings: list[Finding], *, as_json: bool, 
 
 
 def compact_failed_log(value: str, *, limit: int = 2_000) -> str | None:
-    """Keep decisive failure lines plus recent context within a UTF-8 byte bound."""
+    """Apply the shared helper error policy to Actions output."""
 
-    lines = [line.strip() for line in value.splitlines() if line.strip()]
-    if not lines:
-        return None
-    decisive = [
-        index
-        for index, line in enumerate(lines)
-        if line.startswith(("FAILED ", "ERROR ", "E ", "AssertionError", "assert "))
-        or "AssertionError" in line
-        or FAILURE_LINE_RE.search(line)
-    ][:6]
-    recent = list(range(max(0, len(lines) - 8), len(lines)))
-    selected: dict[int, str] = {}
-    used = 0
-    for index in [*decisive, *reversed(recent)]:
-        if index in selected:
-            continue
-        separator = 1 if selected else 0
-        remaining = limit - used - separator
-        if remaining <= 0:
-            break
-        line_limit = min(350 if index in decisive else 220, remaining)
-        encoded = lines[index].encode("utf-8")
-        if len(encoded) > line_limit:
-            if line_limit <= 3:
-                compact = "." * line_limit
-            else:
-                compact = (
-                    encoded[: line_limit - 3]
-                    .decode("utf-8", errors="ignore")
-                    .rstrip()
-                    + "..."
-                )
-        else:
-            compact = lines[index]
-        selected[index] = compact
-        used += separator + len(compact.encode("utf-8"))
-    return "\n".join(selected[index] for index in sorted(selected)) or None
+    return failure_excerpt(value, limit=limit)
 
 
 def read_pr_checks(
@@ -1056,19 +1018,41 @@ def check_log_detail(
     if status != "completed":
         detail["diagnostic"] = "Selected Actions job or run status is unavailable."
         return detail
+    raw_command = [
+        "gh", "api", f"repos/{repository}/actions/jobs/{job_id}/logs",
+        "--allow-escape-sequences",
+    ]
     command = ["gh", "run", "view", run_id, "--repo", repository]
     if job_id and str(run.get("status") or "").lower() != "completed":
-        command = ["gh", "api", f"repos/{repository}/actions/jobs/{job_id}/logs"]
+        command = raw_command
     else:
         if job_id:
             command.extend(("--job", job_id))
         command.append("--log-failed")
     log = run_command(command, cwd=repo_root)
+    if job_id and command != raw_command and (
+        log.returncode != 0 or not has_failure_evidence(log.stdout)
+    ):
+        # The ordinary view can omit early structured errors. Fetch the verified
+        # completed job's log as data; terminal controls are stripped before use.
+        raw_log = run_command(raw_command, cwd=repo_root)
+        if raw_log.returncode == 0:
+            log = raw_log
+        else:
+            detail["diagnostic"] = (
+                "Raw job log unavailable: "
+                + (clean_log(raw_log.stderr).strip() or "GitHub returned no diagnostic")
+            )[:500]
     if log.returncode != 0:
-        detail["diagnostic"] = (log.stderr.strip() or "Actions logs unavailable")[:500]
+        if not detail["diagnostic"]:
+            detail["diagnostic"] = (
+                clean_log(log.stderr).strip() or "Actions logs unavailable"
+            )[:500]
         return detail
     excerpt = compact_failed_log(log.stdout)
     detail.update(failed_log_excerpt=excerpt, log_status="available" if excerpt else "empty")
+    if not has_failure_evidence(log.stdout) and not detail["diagnostic"]:
+        detail["diagnostic"] = "The completed job log contains no decisive error."
     return detail
 
 

@@ -7,6 +7,8 @@ generated marker blocks from source skills, synchronizes the bootstrap through
 the package-owned helper, and emits one compact JSON result.
 """
 
+# Compatibility rejects malformed repository input as RuntimeError for its callers.
+# ruff: noqa: TRY004
 from __future__ import annotations
 
 import argparse
@@ -17,34 +19,39 @@ import pprint
 import re
 import shutil
 import subprocess
-import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+import tomllib
 import yaml
 
+from .ci_workflow import pinned_action, resolve_action, workflow_errors
+from .compatibility_contract import (
+    load_compatibility_contract,
+    surface_path,
+    template_path,
+)
+from .python_tests import discover_python_tests, test_operation
+from .python_tool_configuration import project_text, repository_configured
 from .repository_validation_contract import load_validation_contract
 from .sdlc_contract_validation import load_contract, validation_errors
 from .validate_ceratops_compatibility import (
     action_assignment_errors,
     validate_ceratops_compatibility,
 )
+from .validation_environment import (
+    detected_python_skills,
+    remove_created_environment,
+    require_skill_runtime_project,
+    retire_old_skill_runtime_payloads,
+    runtime_files,
+    setup_runtime,
+)
 
 BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[2]
-TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "skill-sections.json.tmpl"
-SDLC_TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "sdlc.yml.tmpl"
 SOURCE_REPO_ROOT = BUNDLE_ROOT.parents[1]
 SOURCE_CANONICAL_SECTIONS = SOURCE_REPO_ROOT / "skills" / "sections"
 INSTALLED_CANONICAL_SECTIONS = BUNDLE_ROOT / "skills" / "sections"
-VALIDATOR_TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "validate-repository.py.tmpl"
-WORKFLOW_TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "validate.yml.tmpl"
-MANIFEST_RELATIVE = pathlib.Path("skills/skill-sections.json")
-INSTALLER_RELATIVE = pathlib.Path("scripts/deploy-skills.py")
-SDLC_RELATIVE = pathlib.Path("sdlc/sdlc.yml")
-VALIDATOR_RELATIVE = pathlib.Path("scripts/validate-repository.py")
-WORKFLOW_RELATIVE = pathlib.Path(".github/workflows/validate.yml")
-MANAGED_SKILL_HANDOFF = "ceratops-skill-lifecycle/deploy"
-SKILL_VALIDATION_HANDOFF = "ceratops-skill-lifecycle/source-validate"
 START = "<!-- CERATOPS_SHARED_SECTIONS_START -->"
 END = "<!-- CERATOPS_SHARED_SECTIONS_END -->"
 SOURCE_RE = re.compile(r"<!-- SECTION SOURCE: skills/sections/([^ ]+) -->")
@@ -85,9 +92,12 @@ class CompatibilityPlan:
     sdlc_contract: dict[str, object] | None
     validator_text: str | None
     workflow_text: str | None
+    markdown_files: dict[str, str]
     validation_checks: list[str]
     skills: list[str]
     updated_markers: list[str]
+    runtime_files: dict[pathlib.Path, str]
+    python_tests: list[str]
 
 
 def require_linked_worktree(repo_root: pathlib.Path) -> None:
@@ -141,8 +151,13 @@ def _safe_validation_path(value: object, label: str) -> pathlib.PurePosixPath:
     return path
 
 
+def _package_root(repo_root: pathlib.Path) -> pathlib.Path:
+    """Preserve root application ownership; default standalone tooling to scripts."""
+    return repo_root if (repo_root / "package.json").exists() else repo_root / "scripts"
+
+
 def _package_manifest(repo_root: pathlib.Path) -> dict[str, object]:
-    path = repo_root / "package.json"
+    path = _package_root(repo_root) / "package.json"
     if not path.is_file() or path.is_symlink():
         return {}
     return load_mapping(path)
@@ -170,7 +185,7 @@ def _package_manager(repo_root: pathlib.Path, payload: Mapping[str, object]) -> 
     lock_managers = [
         name
         for name, filename in (("npm", "package-lock.json"), ("pnpm", "pnpm-lock.yaml"))
-        if (repo_root / filename).is_file()
+        if (_package_root(repo_root) / filename).is_file()
     ]
     if len(lock_managers) > 1:
         raise RuntimeError("multiple JavaScript package-manager lockfiles are unsupported")
@@ -195,6 +210,7 @@ def _validation_condition_matches(
     condition: Mapping[str, object],
     package_scripts: set[str],
     package_manager: str | None,
+    planned_files: Mapping[str, str] | None = None,
 ) -> bool:
     kind = condition.get("kind")
     if kind == "package-script" and set(condition) in (
@@ -227,6 +243,8 @@ def _validation_condition_matches(
         if not isinstance(value, str) or not value:
             raise RuntimeError("repository-validation contract file-contains value must be text")
         path = repo_root.joinpath(*relative.parts)
+        if planned_files is not None and relative.as_posix() in planned_files:
+            return value in planned_files[relative.as_posix()]
         return (
             path.is_file()
             and not path.is_symlink()
@@ -235,20 +253,27 @@ def _validation_condition_matches(
     raise RuntimeError(f"unsupported repository-validation condition: {kind!r}")
 
 
-def contract_checks(repo_root: pathlib.Path) -> list[dict[str, object]]:
+def contract_checks(
+    repo_root: pathlib.Path, *, package: dict[str, object] | None = None
+) -> list[dict[str, object]]:
     """Select checks only after validating the complete shared contract."""
 
     contract = load_validation_contract()
-    package = _package_manifest(repo_root)
+    package = _package_manifest(repo_root) if package is None else package
     scripts = _package_scripts(package)
     package_manager, _ = _package_manager(repo_root, package)
+    planned_files = {
+        surface_path("validation_project").as_posix(): project_text(
+            repo_root, template_path("validation_project"),
+        ),
+    }
     selected: list[dict[str, object]] = []
     for check in contract["checks"]:
         if any(
-            _validation_condition_matches(repo_root, condition, scripts, package_manager)
+            _validation_condition_matches(repo_root, condition, scripts, package_manager, planned_files)
             for condition in check["when"]
         ) and not any(
-            _validation_condition_matches(repo_root, condition, scripts, package_manager)
+            _validation_condition_matches(repo_root, condition, scripts, package_manager, planned_files)
             for condition in check.get("unless", [])
         ):
             selected.append(
@@ -259,15 +284,104 @@ def contract_checks(repo_root: pathlib.Path) -> list[dict[str, object]]:
                     "exclusive": check.get("exclusive", False),
                 }
             )
+            tool = check["id"]
+            if check["command"][0] in {"{npm}", "{pnpm}"} and _package_root(repo_root) != repo_root:
+                # npm/pnpm execute package scripts in their selected project,
+                # while the contract's working directory stays repository-relative.
+                flag = "--prefix" if check["command"][0] == "{npm}" else "--dir"
+                selected[-1]["command"] = [check["command"][0], flag, "scripts", *check["command"][1:]]
+            if tool in {"ruff", "mypy"} and not repository_configured(repo_root, tool):
+                # Root-owned configuration retains normal tool discovery. The
+                # generated fallback lives beside the scripts dependencies and
+                # must be selected explicitly because checks run from repo root.
+                flag = "--config" if tool == "ruff" else "--config-file"
+                selected[-1]["command"] = [*check["command"], flag, surface_path("validation_project").as_posix()]
+            elif tool == "yaml-lint":
+                # Root settings retain yamllint's discovery precedence. Select
+                # a nested configuration explicitly from the contract's paths.
+                configuration = next((
+                    value for condition in check["when"]
+                    if condition["kind"] == "path-any"
+                    for value in condition["value"]
+                    if (repo_root / value).is_file() and not (repo_root / value).is_symlink()
+                ), None)
+                if configuration and pathlib.PurePosixPath(configuration).parent != pathlib.PurePosixPath("."):
+                    selected[-1]["command"] = [*check["command"], "--config-file", configuration]
     exclusive_checks = [check for check in selected if check["exclusive"]]
     if len(exclusive_checks) > 1:
         raise RuntimeError("multiple exclusive repository validators matched")
     return exclusive_checks or selected
 
 
+def default_markdown_files(repo_root: pathlib.Path) -> dict[str, str]:
+    """Plan a locked npm default without replacing target package ownership.
+
+    Application and rollback own these files; planning never installs packages
+    or contacts a registry. Existing Markdown settings keep their precedence.
+    """
+
+    package_files = (
+        "package.json", "package-lock.json", "npm-shrinkwrap.json",
+        "pnpm-lock.yaml", "pnpm-workspace.yaml", "yarn.lock", "bun.lock", "bun.lockb",
+    )
+    if any(
+        (directory / name).exists() or (directory / name).is_symlink()
+        for directory in (repo_root, repo_root / "scripts") for name in package_files
+    ):
+        return {}
+    templates = BUNDLE_ROOT / "references" / "templates"
+    files = {
+        name: (templates / template).read_text(encoding="utf-8")
+        for name, template in (
+            ("scripts/package.json", "markdown-package.json.tmpl"),
+            ("scripts/package-lock.json", "markdown-package-lock.json.tmpl"),
+        )
+    }
+    configurations = (
+        ".markdownlint.jsonc", ".markdownlint.json", ".markdownlint.yaml",
+        ".markdownlint.yml", ".markdownlint.cjs", ".markdownlint.js",
+        ".markdownlint.toml", ".markdownlintrc",
+    )
+    existing = []
+    for name in (*configurations, *(f"scripts/{name}" for name in configurations)):
+        path = repo_root / name
+        if path.exists() or path.is_symlink():
+            if path.is_symlink() or not path.is_file():
+                raise RuntimeError(f"existing Markdown configuration must be a regular file: {path}")
+            existing.append(name)
+    if not existing:
+        files["scripts/.markdownlint.json"] = (templates / "markdownlint.json.tmpl").read_text(
+            encoding="utf-8"
+        )
+    else:
+        # Bind the preserved configuration explicitly, including nested files
+        # and formats that the CLI does not discover automatically.
+        package = json.loads(files["scripts/package.json"])
+        configuration = pathlib.PurePosixPath(existing[0])
+        selected_config = configuration.name if configuration.parent.as_posix() == "scripts" else "../" + existing[0]
+        package["scripts"]["lint:markdown"] = package["scripts"]["lint:markdown"].replace(
+            "--config .markdownlint.json", f"--config {selected_config}",
+        )
+        files["scripts/package.json"] = json.dumps(package, indent=2) + "\n"
+    ignore = repo_root / ".gitignore"
+    prior = ""
+    if ignore.exists() or ignore.is_symlink():
+        if ignore.is_symlink() or not ignore.is_file():
+            raise RuntimeError(f"existing Git ignore file must be a regular file: {ignore}")
+        prior = ignore.read_bytes().decode("utf-8")
+    newline = "\r\n" if "\r\n" in prior else "\n"
+    # Append after existing rules so a prior negation cannot expose dependencies.
+    files[".gitignore"] = (
+        prior + (newline if prior and not prior.endswith("\n") else "")
+        + "/scripts/node_modules/" + newline
+    )
+    return files
+
+
 def _validation_workflow(
-    repo_root: pathlib.Path, checks: list[dict[str, object]]
-) -> tuple[str, str, str]:
+    repo_root: pathlib.Path, checks: list[dict[str, object]],
+    *, markdown_files: Mapping[str, str],
+) -> tuple[str, str]:
     """Render CI using target-owned dependency setup and Python requirements."""
 
     commands: list[str] = []
@@ -279,71 +393,20 @@ def _validation_workflow(
             if not isinstance(value, str):
                 raise RuntimeError("repository-validation contract check command values must be text")
             commands.append(value)
-    pyproject = _pyproject(repo_root)
-    project = pyproject.get("project", {})
-    requires_python = (
-        project.get("requires-python") if isinstance(project, Mapping) else None
+    setup: list[str] = ["      - name: Set up uv", f"        uses: {SETUP_UV}"]
+    package = (
+        json.loads(markdown_files["scripts/package.json"])
+        if markdown_files else _package_manifest(repo_root)
     )
-    if requires_python is not None and (
-        not isinstance(requires_python, str) or not requires_python.strip()
-    ):
-        raise RuntimeError("project.requires-python must be nonempty text")
-    python_selector = (
-        'python-version-file: "pyproject.toml"'
-        if requires_python is not None
-        else 'python-version: "3.12"'
-    )
-    setup: list[str] = [
-        "      - name: Set up Python",
-        f"        uses: {SETUP_PYTHON}",
-        "        with:",
-        f"          {python_selector}",
-    ]
-    validation_python = "python"
-    python_setup: list[str] = []
-    if (repo_root / "uv.lock").is_file() and "{python}" in commands:
-        setup.extend(
-            [
-                "      - name: Set up uv",
-                f"        uses: {SETUP_UV}",
-            ]
-        )
-        optional = project.get("optional-dependencies", {}) if isinstance(project, Mapping) else {}
-        groups = pyproject.get("dependency-groups", {})
-        if isinstance(optional, Mapping) and "dev" in optional:
-            python_setup.append("uv sync --extra dev --frozen")
-        elif isinstance(groups, Mapping) and "dev" in groups:
-            python_setup.append("uv sync --group dev --frozen")
-        else:
-            python_setup.append("uv sync --frozen")
-        validation_python = "uv run --no-sync python"
-    elif "{python}" in commands:
-        if (repo_root / "requirements-dev.txt").is_file():
-            python_setup.append("python -m pip install -r requirements-dev.txt")
-        elif (repo_root / "requirements.txt").is_file():
-            python_setup.append("python -m pip install -r requirements.txt")
-        elif (repo_root / "pyproject.toml").is_file():
-            optional = project.get("optional-dependencies", {}) if isinstance(project, Mapping) else {}
-            if isinstance(optional, Mapping) and "dev" in optional:
-                python_setup.append('python -m pip install -e ".[dev]"')
-            elif isinstance(project, Mapping) and project:
-                python_setup.append('python -m pip install -e "."')
-    if python_setup:
-        setup.extend(
-            [
-                "      - name: Install Python validation dependencies",
-                "        run: |",
-                *(f"          {command}" for command in python_setup),
-            ]
-        )
-    package = _package_manifest(repo_root)
     manager, manager_version = _package_manager(repo_root, package)
+    if "test" in _package_scripts(package):
+        commands.append("{" + (manager or "npm") + "}")
     if "{npm}" in commands and "{pnpm}" in commands:
         raise RuntimeError("one validation workflow cannot mix npm and pnpm checks")
     if "{npm}" in commands:
         if manager != "npm":
             raise RuntimeError("npm validation checks require npm repository ownership")
-        if not (repo_root / "package-lock.json").is_file():
+        if not markdown_files and not (_package_root(repo_root) / "package-lock.json").is_file():
             raise RuntimeError(
                 "npm validation checks require package-lock.json for "
                 "deterministic npm ci setup"
@@ -353,15 +416,15 @@ def _validation_workflow(
                 "      - name: Set up Node.js",
                 f"        uses: {SETUP_NODE}",
                 "        with:",
-                '          node-version: "20"',
+                f'          node-version: "{"24" if markdown_files else "20"}"',
                 "      - name: Install npm validation dependencies",
-                "        run: npm ci",
+                "        run: npm " + ("--prefix scripts " if _package_root(repo_root) != repo_root else "") + "ci",
             ]
         )
     if "{pnpm}" in commands:
         if manager != "pnpm" or not manager_version:
             raise RuntimeError("pnpm validation checks require packageManager pnpm@<version>")
-        if not (repo_root / "pnpm-lock.yaml").is_file():
+        if not (_package_root(repo_root) / "pnpm-lock.yaml").is_file():
             raise RuntimeError("pnpm validation checks require pnpm-lock.yaml")
         setup.extend(
             [
@@ -373,7 +436,7 @@ def _validation_workflow(
                 "        run: |",
                 "          corepack enable",
                 f"          corepack prepare pnpm@{manager_version} --activate",
-                "          pnpm install --frozen-lockfile",
+                "          pnpm " + ("--dir scripts " if _package_root(repo_root) != repo_root else "") + "install --frozen-lockfile",
             ]
         )
     if any(check["id"] == "powershell-lint" for check in checks):
@@ -387,30 +450,35 @@ def _validation_workflow(
             ]
         )
     runner = "windows-latest" if "{pwsh}" in commands else "ubuntu-latest"
-    return runner, "\n".join(setup), validation_python
+    return runner, "\n".join(setup)
 
 
 def validation_surfaces(
-    repo_root: pathlib.Path,
-) -> tuple[str | None, str | None, list[str]]:
-    """Render only missing validation files and preserve existing files exactly."""
+    repo_root: pathlib.Path, ci_action_revision: str | None = None,
+) -> tuple[str | None, str | None, list[str], dict[str, str]]:
+    """Create missing validators and reconcile the CI edge without losing custom steps."""
 
-    validator = repo_root / VALIDATOR_RELATIVE
-    workflow = repo_root / WORKFLOW_RELATIVE
+    validator = repo_root / surface_path("validator")
+    workflow = repo_root / surface_path("workflow")
     for path, label in (
         (validator, "repository validator"),
         (workflow, "CI validation workflow"),
     ):
-        if path.exists() or path.is_symlink():
-            if path.is_symlink() or not path.is_file():
-                raise RuntimeError(f"existing {label} must be a regular file: {path}")
-    if validator.is_file() and workflow.is_file():
-        return None, None, []
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise RuntimeError(f"existing {label} must be a regular file: {path}")
 
     checks = contract_checks(repo_root)
+    markdown_files = (
+        default_markdown_files(repo_root)
+        if not validator.is_file() and not workflow.is_file()
+        and not any(check["exclusive"] for check in checks)
+        else {}
+    )
+    if markdown_files:
+        checks = contract_checks(repo_root, package=json.loads(markdown_files["scripts/package.json"]))
     validator_text = None
     if not validator.is_file():
-        template = VALIDATOR_TEMPLATE.read_text(encoding="utf-8")
+        template = template_path("validator").read_text(encoding="utf-8")
         marker = "__CHECK_DEFINITIONS__"
         if template.count(marker) != 1:
             raise RuntimeError("repository validator template marker is invalid")
@@ -419,18 +487,73 @@ def validation_surfaces(
             pprint.pformat(checks, sort_dicts=False, width=72),
         )
     workflow_text = None
+    action = load_compatibility_contract()["ci_action"]
     if not workflow.is_file():
-        template = WORKFLOW_TEMPLATE.read_text(encoding="utf-8")
-        markers = ("__RUNNER__", "      # __SETUP_STEPS__", "__VALIDATOR_PYTHON__")
+        template = template_path("workflow").read_text(encoding="utf-8")
+        markers = ("__RUNNER__", "      # __SETUP_STEPS__", "__CI_ACTION__", "__CI_REPO_ROOT__", "__CI_EVIDENCE__")
         if any(template.count(marker) != 1 for marker in markers):
             raise RuntimeError("CI validation template markers are invalid")
-        runner, setup, validation_python = _validation_workflow(repo_root, checks)
+        runner, setup = _validation_workflow(
+            repo_root, checks, markdown_files=markdown_files
+        )
         workflow_text = (
             template.replace("__RUNNER__", runner)
             .replace("      # __SETUP_STEPS__", setup)
-            .replace("__VALIDATOR_PYTHON__", validation_python)
+            .replace("__CI_ACTION__", resolve_action(action, ci_action_revision))
+            .replace("__CI_REPO_ROOT__", action["inputs"]["repo-root"])
+            .replace("__CI_EVIDENCE__", action["inputs"]["evidence-file"])
         )
-    return validator_text, workflow_text, [str(check["id"]) for check in checks]
+    if workflow.is_file():
+        payload = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or not isinstance(payload.get("jobs"), dict):
+            raise RuntimeError("existing CI workflow has no jobs; reconcile its SDLC invocation explicitly")
+        if True in payload:
+            payload["on"] = payload.pop(True)
+        changed = False
+        found = False
+        resolved_action = None
+        for job in payload["jobs"].values():
+            if not isinstance(job, dict):
+                continue
+            steps = job.get("steps", [])
+            if not isinstance(steps, list):
+                raise RuntimeError("existing CI job steps must be a list")
+            for step in list(steps):
+                command = step.get("run", "") if isinstance(step, dict) else ""
+                if not isinstance(command, str):
+                    raise RuntimeError("existing CI run command must be text")
+                if isinstance(step, dict) and str(step.get("uses", "")).startswith(action["uses"] + "@"):
+                    if not pinned_action(step["uses"], action):
+                        raise RuntimeError("existing lifecycle action must use a full commit pin")
+                    if errors := workflow_errors(workflow, action):
+                        raise RuntimeError("; ".join(errors))
+                    found = True
+                    if ci_action_revision is not None:
+                        chosen = resolve_action(action, ci_action_revision)
+                        if step["uses"] != chosen:
+                            step["uses"] = chosen
+                            changed = True
+                elif surface_path("validator").as_posix() in command:
+                    if "\n" in command.strip() or any(token in command for token in ("&&", ";", "|")):
+                        raise RuntimeError("custom CI validation command requires explicit SDLC integration")
+                    if step.get("working-directory") not in (None, "."):
+                        raise RuntimeError("custom CI working-directory requires explicit action integration")
+                    if resolved_action is None:
+                        resolved_action = resolve_action(action, ci_action_revision)
+                    step.pop("run")
+                    step.pop("shell", None)
+                    step.pop("working-directory", None)
+                    step.update(uses=resolved_action, **{"with": dict(action["inputs"])})
+                    changed = found = True
+                    if not any("astral-sh/setup-uv@" in item.get("uses", "") for item in steps if isinstance(item, dict)):
+                        steps.insert(steps.index(step), {"name": "Set up uv", "uses": SETUP_UV.split(" #", 1)[0]})
+        if not found:
+            raise RuntimeError("existing CI workflow must expose a repository validation invocation before integration")
+        if changed:
+            workflow_text = yaml.dump(payload, Dumper=IndentedSafeDumper, sort_keys=False)
+    # Report only checks we generated; preserved validators own their internals.
+    generated_checks = [str(check["id"]) for check in checks] if validator_text is not None else []
+    return validator_text, workflow_text, generated_checks, markdown_files
 
 
 def load_yaml_mapping(path: pathlib.Path) -> dict[str, object]:
@@ -449,10 +572,11 @@ def validate_template(template: Mapping[str, object]) -> None:
 
     expected = {
         "runtime_source_id": "",
-        "validation_profile": "ceratops-compatible",
+        "validation_profile": load_compatibility_contract()["generated_manifest_profile"],
         "sections": {"core": "skills/sections/core.md"},
         "maintenance_workflows": {},
         "runtime_payloads": {},
+        "python_runtime_skills": [],
         "skills": {},
         "actions": {},
     }
@@ -468,37 +592,52 @@ def build_sdlc_contract_candidate(
 ) -> dict[str, object] | None:
     """Preserve target capabilities and apply repository validation.
 
-    The template owns repository validation; this producer owns skill action
-    routing. Existing operations retain their definitions. Skillless targets
+    The template owns repository validation; the compatibility contract owns
+    skill action routing. Existing operations retain their definitions. Skillless targets
     lose only exact producer-owned entries. Deployment is never implicit.
     """
 
     if not apply_contract:
-        return None
-    reusable = load_contract(SDLC_TEMPLATE)
-    target = repo_root / SDLC_RELATIVE
+        raise RuntimeError("SDLC is required for current Ceratops compatibility")
+    reusable = load_contract(template_path("sdlc"))
+    target = repo_root / surface_path("sdlc")
     contract = load_contract(target) if target.is_file() else dict(reusable)
-    if contract["version"] != reusable["version"]:
-        # Compatibility work must not turn a supported contract into a migration.
-        # Returning no candidate leaves its exact bytes and operation locations.
-        return None
-    candidate = dict(contract)
+    if contract["version"] == 1:
+        raise RuntimeError("SDLC version 1 operation ownership must be mapped to deliverables before applying current compatibility")
+    candidate = dict(contract, version=reusable["version"])
     repository = dict(candidate.get("repository", {}))
-    repository.setdefault("validate", reusable["repository"]["validate"])
+    validations = dict(repository.get("validate", {}))
+    existing_validation = validations.get("repository")
+    if existing_validation is None or existing_validation == {"steps": [{"run": ["python", "scripts/validate-repository.py"]}]}:
+        validations["repository"] = reusable["repository"]["validate"]["repository"]
+    elif existing_validation != reusable["repository"]["validate"]["repository"]:
+        # A custom wrapper can carry arguments or setup that cannot safely be
+        # replaced or duplicated. The action must first separate that behavior.
+        raise RuntimeError("custom repository validation operation requires explicit integration with the uv validator command")
+    repository["validate"] = validations
+    repository.setdefault("prerequisites", {}).setdefault("uv", {"executable": "uv"})
+    repository.setdefault("bootstrap", {}).setdefault("validation", reusable["repository"]["bootstrap"]["validation"])
+    tests = dict(repository.get("tests", {}))
+    infer_tests = not tests or tests == reusable["repository"]["tests"]
+    if infer_tests:
+        tests = {}
+    detected = discover_python_tests(repo_root, load_compatibility_contract()["python_test_detection"])
+    if detected and infer_tests:
+        tests["python"] = test_operation(repo_root, surface_path("python_test_runner").as_posix())
+    package = _package_manifest(repo_root)
+    manager, _ = _package_manager(repo_root, package)
+    if "test" in _package_scripts(package) and infer_tests:
+        binding = [] if _package_root(repo_root) == repo_root else ["--dir" if manager == "pnpm" else "--prefix", "scripts"]
+        tests["package"] = {"steps": [{"run": [manager or "npm", *binding, "test"]}]}
+    if (repo_root / "go.mod").is_file() and infer_tests:
+        tests["go"] = {"steps": [{"run": ["go", "test", "./..."]}]}
+    if (repo_root / "Cargo.toml").is_file() and infer_tests:
+        tests["rust"] = {"steps": [{"run": ["cargo", "test"]}]}
+    repository["tests"] = tests or reusable["repository"]["tests"]
     candidate["repository"] = repository
     deliverables = dict(candidate.get("deliverables", {}))
     skills = dict(deliverables.get("skills", {}))
-    owned_operations: dict[str, dict[str, dict[str, object]]] = {
-        "validate": {
-            "ceratops-managed": {"handoff": SKILL_VALIDATION_HANDOFF},
-        },
-        "deploy-local": {
-            "ceratops-managed": {"handoff": MANAGED_SKILL_HANDOFF},
-            "standalone": {
-                "steps": [{"run": ["python", "scripts/deploy-skills.py"]}],
-            },
-        },
-    }
+    owned_operations = load_compatibility_contract()["managed_skill_operations"]
     for category, owned_entries in owned_operations.items():
         operations = dict(skills.get(category, {}))
         for name, owned in owned_entries.items():
@@ -515,6 +654,8 @@ def build_sdlc_contract_candidate(
     else:
         deliverables.pop("skills", None)
     if deliverables:
+        for deliverable in deliverables.values():
+            deliverable.setdefault("tests", {"none": {"no-op": "No deliverable-specific test operation is declared; repository tests remain separately selectable."}})
         candidate["deliverables"] = deliverables
     else:
         candidate.pop("deliverables", None)
@@ -673,6 +814,7 @@ def plan_ceratops_compatibility(
     existing: Mapping[str, object],
     *,
     apply_sdlc_contract: bool,
+    ci_action_revision: str | None = None,
 ) -> CompatibilityPlan:
     """Validate target evidence and compose writes without changing files."""
 
@@ -686,6 +828,7 @@ def plan_ceratops_compatibility(
                 "sections",
                 "maintenance_workflows",
                 "runtime_payloads",
+                "python_runtime_skills",
                 "skills",
                 "actions",
             )
@@ -711,6 +854,18 @@ def plan_ceratops_compatibility(
         raise RuntimeError("existing maintenance_workflows must be an object")
     if not isinstance(runtime_payloads, Mapping):
         raise RuntimeError("existing runtime_payloads must be an object")
+    updated_payloads = dict(runtime_payloads)
+    retire_old_skill_runtime_payloads(updated_payloads)
+    prior_python = existing.get("python_runtime_skills", [])
+    if (
+        not isinstance(prior_python, list)
+        or len(prior_python) != len({item for item in prior_python if isinstance(item, str)})
+        or not all(isinstance(item, str) and item in skill_names for item in prior_python)
+    ):
+        raise RuntimeError("existing python_runtime_skills must list unique source skills")
+    python_skills = sorted(
+        set(prior_python) | detected_python_skills(repo_root, skill_names, updated_payloads)
+    )
 
     assignments: dict[str, list[str]] = {}
     required_sections: set[str] = {"core"} if skill_paths else set()
@@ -779,7 +934,7 @@ def plan_ceratops_compatibility(
         {name: custom_sections[name] for name in sorted(custom_sections)}
     )
     profile = existing.get("validation_profile", template["validation_profile"])
-    if profile not in {"ceratops", "ceratops-compatible"}:
+    if profile not in load_compatibility_contract()["manifest_profiles"]:
         raise RuntimeError(f"unsupported validation_profile: {profile!r}")
     canonical_sources: dict[str, pathlib.Path] = {}
     if required_sections:
@@ -801,7 +956,8 @@ def plan_ceratops_compatibility(
                 "validation_profile": profile,
                 "sections": sections,
                 "maintenance_workflows": dict(maintenance_workflows),
-                "runtime_payloads": dict(runtime_payloads),
+                "runtime_payloads": updated_payloads,
+                "python_runtime_skills": python_skills,
                 "skills": assignments,
                 "actions": existing.get("actions", {}),
             }
@@ -810,7 +966,20 @@ def plan_ceratops_compatibility(
         action_errors = action_assignment_errors(repo_root, manifest)
         if action_errors:
             raise RuntimeError("; ".join(action_errors))
-    validator_text, workflow_text, validation_checks = validation_surfaces(repo_root)
+    validator_text, workflow_text, validation_checks, markdown_files = validation_surfaces(repo_root, ci_action_revision)
+    compatibility_contract = load_compatibility_contract()
+    python_tests = discover_python_tests(repo_root, compatibility_contract["python_test_detection"])
+    generated_runtime = runtime_files(
+        repo_root, BUNDLE_ROOT, compatibility_contract, contract_checks(repo_root),
+        planned_files=markdown_files, has_python_skills=bool(python_skills),
+    )
+    markdown_files.pop(".gitignore", None)
+    require_skill_runtime_project(
+        repo_root, compatibility_contract, has_python_skills=bool(python_skills),
+    )
+    test_runner = repo_root / surface_path("python_test_runner")
+    if python_tests and not test_runner.is_file():
+        generated_runtime[test_runner] = template_path("python_test_runner").read_text(encoding="utf-8").replace("__TEST_TARGETS__", repr(python_tests))
     return CompatibilityPlan(
         manifest=manifest,
         skill_updates=skill_updates,
@@ -822,9 +991,12 @@ def plan_ceratops_compatibility(
         ),
         validator_text=validator_text,
         workflow_text=workflow_text,
+        markdown_files=markdown_files,
         validation_checks=validation_checks,
         skills=sorted(assignments),
         updated_markers=sorted(updated_markers),
+        runtime_files=generated_runtime,
+        python_tests=python_tests,
     )
 
 
@@ -834,6 +1006,12 @@ def apply_compatibility_plan(
 ) -> None:
     """Apply one fully validated plan inside the caller's rollback boundary."""
 
+    for destination, content in plan.runtime_files.items():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        newline = "\r\n" if destination.is_file() and b"\r\n" in destination.read_bytes() else "\n"
+        destination.write_text(content.replace("\r\n", "\n"), encoding="utf-8", newline=newline)
+    for relative, text in plan.markdown_files.items():
+        (repo_root / relative).write_text(text, encoding="utf-8", newline="")
     if plan.canonical_sources:
         sections_dir = repo_root / "skills" / "sections"
         sections_dir.mkdir(parents=True, exist_ok=True)
@@ -847,7 +1025,7 @@ def apply_compatibility_plan(
             encoding="utf-8",
             newline=newline,
         )
-    existing_path = repo_root / MANIFEST_RELATIVE
+    existing_path = repo_root / surface_path("skill_manifest")
     if plan.manifest is None:
         if existing_path.is_file():
             existing_path.unlink()
@@ -863,7 +1041,7 @@ def apply_compatibility_plan(
             newline="\n",
         )
     if plan.sdlc_contract is not None:
-        sdlc_path = repo_root / SDLC_RELATIVE
+        sdlc_path = repo_root / surface_path("sdlc")
         sdlc_path.parent.mkdir(parents=True, exist_ok=True)
         sdlc_path.write_text(
             yaml.dump(
@@ -875,7 +1053,7 @@ def apply_compatibility_plan(
             newline="\n",
         )
     if plan.validator_text is not None:
-        validator_path = repo_root / VALIDATOR_RELATIVE
+        validator_path = repo_root / surface_path("validator")
         validator_path.parent.mkdir(parents=True, exist_ok=True)
         validator_path.write_text(
             plan.validator_text,
@@ -883,7 +1061,7 @@ def apply_compatibility_plan(
             newline="\n",
         )
     if plan.workflow_text is not None:
-        workflow_path = repo_root / WORKFLOW_RELATIVE
+        workflow_path = repo_root / surface_path("workflow")
         workflow_path.parent.mkdir(parents=True, exist_ok=True)
         workflow_path.write_text(
             plan.workflow_text,
@@ -900,11 +1078,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--target-repo-root", required=True, type=pathlib.Path)
     parser.add_argument("--runtime-source-id")
-    parser.add_argument(
-        "--no-sdlc-contract",
-        action="store_true",
-        help="Leave sdlc/sdlc.yml absent or unchanged.",
-    )
+    parser.add_argument("--ci-action-revision", help="Published lifecycle action commit; otherwise preserve or resolve its pin.")
     args = parser.parse_args(argv)
     repo_root = args.target_repo_root.resolve()
     phase = "preflight"
@@ -912,11 +1086,14 @@ def main(argv: list[str] | None = None) -> int:
     snapshots: list[FileSnapshot] = []
     created_dirs: list[pathlib.Path] = []
     mutation_started = False
+    environment_created = False
+    runtime = {}
     try:
+        runtime = load_compatibility_contract()["runtime"]
         require_linked_worktree(repo_root)
-        template = load_mapping(TEMPLATE)
+        template = load_mapping(template_path("skill_manifest"))
         validate_template(template)
-        existing_path = repo_root / MANIFEST_RELATIVE
+        existing_path = repo_root / surface_path("skill_manifest")
         existing = load_mapping(existing_path) if existing_path.is_file() else {}
         has_source_skills = any((repo_root / "skills").glob("*/SKILL.md"))
         source_id = (
@@ -930,22 +1107,24 @@ def main(argv: list[str] | None = None) -> int:
             source_id,
             template,
             existing,
-            apply_sdlc_contract=not args.no_sdlc_contract,
+            apply_sdlc_contract=True,
+            ci_action_revision=args.ci_action_revision,
         )
         skill_paths = sorted((repo_root / "skills").glob("*/SKILL.md"))
-        mutable_paths = [*skill_paths, existing_path]
+        mutable_paths = [*skill_paths, existing_path, *plan.runtime_files, repo_root / runtime["lockfile"]]
+        mutable_paths.extend(repo_root / name for name in plan.markdown_files)
         mutable_paths.extend(
             repo_root / "skills" / "sections" / f"{section_name}.md"
             for section_name in plan.canonical_sources
         )
         if plan.skills:
-            mutable_paths.append(repo_root / INSTALLER_RELATIVE)
+            mutable_paths.append(repo_root / surface_path("skill_bootstrap"))
         if plan.sdlc_contract is not None:
-            mutable_paths.append(repo_root / SDLC_RELATIVE)
+            mutable_paths.append(repo_root / surface_path("sdlc"))
         if plan.validator_text is not None:
-            mutable_paths.append(repo_root / VALIDATOR_RELATIVE)
+            mutable_paths.append(repo_root / surface_path("validator"))
         if plan.workflow_text is not None:
-            mutable_paths.append(repo_root / WORKFLOW_RELATIVE)
+            mutable_paths.append(repo_root / surface_path("workflow"))
         snapshots = [snapshot_file(path) for path in dict.fromkeys(mutable_paths)]
         created_dirs = [
             path
@@ -975,6 +1154,19 @@ def main(argv: list[str] | None = None) -> int:
                 or plan.workflow_text is not None
             )
         ]
+        # Include every new ancestor before writing payloads. Rollback removes
+        # only empty directories after restoring files and the owned environment.
+        new_directories = set(created_dirs)
+        for target in mutable_paths:
+            current = target.parent
+            while current != repo_root and current.is_relative_to(repo_root):
+                if not current.exists():
+                    new_directories.add(current)
+                current = current.parent
+        created_dirs = sorted(new_directories, key=lambda item: len(item.parts))
+        for target in mutable_paths:
+            if target.is_symlink() or not target.resolve().is_relative_to(repo_root):
+                raise RuntimeError(f"unsafe compatibility destination: {target}")
         phase = "compatibility_application"
         mutation_started = True
         apply_compatibility_plan(repo_root, plan)
@@ -993,6 +1185,11 @@ def main(argv: list[str] | None = None) -> int:
                 raise RuntimeError("bootstrap synchronizer returned an invalid result")
             bootstrap_status = bootstrap_status_value
 
+        phase = "validator_environment_setup"
+        environment_created = not (repo_root / runtime["environment"]).exists()
+        if (repo_root / runtime["environment"]).is_symlink():
+            raise RuntimeError("validator environment must not be a directory link")
+        setup_runtime(repo_root, runtime)
         phase = "compatibility_validation"
         compatibility = validate_ceratops_compatibility(repo_root)
         if (
@@ -1006,7 +1203,11 @@ def main(argv: list[str] | None = None) -> int:
         reason = str(exc)
         if mutation_started:
             try:
+                if environment_created:
+                    remove_created_environment(repo_root, runtime["environment"])
                 restore_snapshots(snapshots, created_dirs)
+                if not environment_created and (repo_root / runtime["lockfile"]).is_file():
+                    setup_runtime(repo_root, runtime)
                 rollback = "completed"
             except RuntimeError as rollback_exc:
                 rollback = "failed"
@@ -1032,7 +1233,7 @@ def main(argv: list[str] | None = None) -> int:
                     "applied"
                     if plan.sdlc_contract is not None
                     else "not_configured"
-                    if not (repo_root / SDLC_RELATIVE).exists()
+                    if not (repo_root / surface_path("sdlc")).exists()
                     else "unchanged"
                 ),
                 "repository_validation": {
@@ -1048,6 +1249,9 @@ def main(argv: list[str] | None = None) -> int:
                         else "preserved"
                     ),
                 },
+                "python_tests": plan.python_tests,
+                "validator_environment": runtime["environment"],
+                "custom_validation_review_required": plan.validator_text is None,
                 "markers_removed": plan.updated_markers,
                 "rollback": "not_needed",
                 "runtime_source_id": source_id,

@@ -38,22 +38,24 @@ Contributions should keep skills practical, current, and safe.
 Run before opening a pull request:
 
 ```powershell
-npm ci
-python -m pip install -r requirements-dev.txt
+npm --prefix scripts ci
+uv sync --project scripts --locked
 $validationEvidence = Join-Path $env:TEMP "repository-validation.log"
-python scripts/validate-repository.py --evidence-file $validationEvidence
+uv run --locked scripts/validate-repository.py --evidence-file $validationEvidence
+uv run --locked scripts/testing/run-tests.py --all
 ```
 
-This is the same validation entrypoint used by CI. It assumes the declared
-development dependencies are installed and writes complete first-failure
-diagnostics only to the selected evidence file. It does not invoke skill-local
-validators.
+These are the same validation and test entrypoints used by CI. The validator
+never runs tests. Its shared bootstrap selects the locked scripts environment
+before validation. Complete first-failure diagnostics go only to the selected
+evidence file. It does not invoke skill-local validators. The test suite needs
+`rg` (ripgrep) on `PATH`.
 
 Run full skill-source validation separately when skill source, metadata, shared
 sections, runtime inputs, or skill contracts change:
 
 ```powershell
-python .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py --mode full
+uv run --project scripts --locked python .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py --mode full
 ```
 
 If the change affects workflow behavior, include a short test note in the PR

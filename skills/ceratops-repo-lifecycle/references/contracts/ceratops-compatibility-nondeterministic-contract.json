@@ -1,0 +1,61 @@
+{
+  "contract_format_version": 1,
+  "kind": "nondeterministic_review_contract",
+  "name": "Ceratops compatibility behavioral review",
+  "surface": "compatibility",
+  "description": "Internal requirements reviewed from repository declarations, implementation, and observed execution. No external evidence registry governs Ceratops compatibility. A structural checker result alone cannot establish these requirements.",
+  "deterministic_contract": "ceratops-compatibility-deterministic-contract.json",
+  "checks": [
+    {
+      "id": "ND.COMPATIBILITY.ENVIRONMENT",
+      "applies_when": "The repository has the required validator environment.",
+      "review_required": "Run repository Python entrypoints, including validation and tests, through uv using scripts/pyproject.toml, a compatible Python, and locked dependencies. Direct script invocation discovers the project from the script location; module commands explicitly select the scripts project. uv owns environment creation, Python acquisition and synchronization; repository scripts contain no environment bootstrap or package-installation logic. Preserve caller arguments, working directories, and exit status. Application environments outside scripts remain repository-owned. Normal execution preserves the lock; dependency updates are explicit. Dependency declarations need one owner per environment; a requirements file is not required alongside pyproject.toml and uv.lock.",
+      "evidence_keys": [
+        "repository.dependency_declarations",
+        "repository.lockfiles",
+        "entrypoints.setup",
+        "entrypoints.execution_results"
+      ]
+    },
+    {
+      "id": "ND.COMPATIBILITY.TESTS",
+      "applies_when": "The repository declares deliverables or contains Python tests.",
+      "review_required": "Repository validation never executes tests. SDLC declares separate tests for each deliverable, with explicit no-op reasons when appropriate; repository tests may cover shared behavior. Python test repositories have the template-created run-tests.py and SDLC wiring. Review ambiguous detection and preserve repository-owned framework, test cases, custom commands, and application dependencies. Generated Python tests use the scripts project; confirm it declares all dependencies those tests import. Promotion, shipping and CI require their applicable validation and test results separately.",
+      "evidence_keys": [
+        "repository.test_configuration",
+        "sdlc.tests",
+        "ci.test_results",
+        "tests.execution_results"
+      ]
+    },
+    {
+      "id": "ND.COMPATIBILITY.LIFECYCLE",
+      "applies_when": "The repository declares lifecycle operations or deliverables.",
+      "review_required": "Owning helpers select and execute validation and tests from SDLC before the selected mutation, stop on failure, and clean their owned temporary artifacts. CI never dispatches skill handoffs and reports deferred routes separately. Skill callers may execute registered deterministic handoffs; unresolved routes remain pending and cannot authorize later mutation. Generic lifecycle helpers do not hardcode skill implementations. SDLC execution and schemas stay in the lifecycle skill. CI obtains that implementation through its pinned GitHub action without installed Codex skills or generated engine copies. Confirm the pinned revision is published and custom CI conditions and inputs cover the intended repository and required gates.",
+      "evidence_keys": [
+        "sdlc.operations",
+        "lifecycle.callers",
+        "lifecycle.execution_results",
+        "lifecycle.cleanup_results"
+      ]
+    },
+    {
+      "id": "ND.COMPATIBILITY.APPLICATION",
+      "applies_when": "Ceratops compatibility is applied or its generator changes.",
+      "review_required": "Create or reconcile required files from declared templates and register the isolated validator project with dependency maintenance. SDLC is required in the current compatibility format; supported older formats remain executable outside application. Preserve target-owned operations, dependencies, test implementations, skill declarations, and file modes. Block ambiguous custom rewrites before mutation. Perform setup and structural verification inside the rollback boundary; restore changed target files after failure and remove newly created environments owned by the failed application. Report unresolved behavior without claiming full compatibility. Targets with Python helper skills supply their own source Python project and lock under skills/sections/python; compatibility reports missing declarations before mutation and never copies Ceratops dependencies. The installed lifecycle bundle works without its original checkout. Deployment prepares a versioned shared environment and records its interpreter only for those Python skills. Review skill-specific dependency coverage before claiming the deployed helpers are ready. Generate Ruff and mypy defaults from the scripts-project template, preserve existing settings, and verify generated checks select repository configuration when supplied or the scripts-project defaults otherwise. Keep authoritative custom validators authoritative.",
+      "evidence_keys": [
+        "compatibility.application_result",
+        "compatibility.preservation_tests",
+        "compatibility.rollback_tests",
+        "repository.setup_and_test_wiring"
+      ]
+    }
+  ],
+  "review_result_values": {
+    "pass": "The applicable requirement is supported by concrete local evidence.",
+    "fail": "Local evidence demonstrates an unmet requirement.",
+    "not_applicable": "Record why the requirement does not apply to this repository.",
+    "blocked": "Required evidence is unavailable; do not infer success.",
+    "approved_drift": "Record the exact user-approved exception and retained consequence."
+  }
+}

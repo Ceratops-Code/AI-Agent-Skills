@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import pathlib
 import re
+import subprocess
 import tomllib
 import urllib.error
 import urllib.parse
@@ -76,6 +77,7 @@ def project_pr(value: dict[str, Any]) -> dict[str, Any]:
         "head_oid": value.get("headRefOid"),
         "head_ref": value.get("headRefName"),
         "base_ref": value.get("baseRefName"),
+        "base_oid": value.get("baseRefOid"),
         "mergeable": value.get("mergeable"),
         "merge_state": value.get("mergeStateStatus"),
         "review_decision": value.get("reviewDecision"),
@@ -97,8 +99,60 @@ def project_pr(value: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _pr_query(command: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+    """Keep a stalled GitHub query inside the caller's bounded wait."""
+
+    try:
+        return run_command(command, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            command, 124, "", "GitHub PR query timed out"
+        )
+
+
+def branch_freshness(
+    repo: str, live: dict[str, Any], *, timeout: float = 30
+) -> dict[str, Any]:
+    """Compare immutable base/head commits; CLEAN alone does not prove freshness."""
+
+    base, head = live.get("base_oid"), live.get("head_oid")
+    identity = {"base_oid": base, "head_oid": head}
+    if not all(
+        isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{40}", value)
+        for value in (base, head)
+    ):
+        return {**identity, "status": "failed", "message": "missing exact base/head commits"}
+    completed = _pr_query(
+        [
+            "gh", "api", f"repos/{repo}/compare/{base}...{head}",
+            "--jq", "{base_oid: .base_commit.sha, behind_by: .behind_by}",
+        ],
+        timeout,
+    )
+    if completed.returncode:
+        return {**identity, "status": "failed", "message": compact_error(completed)}
+    try:
+        value = json.loads(completed.stdout)
+        behind = value.get("behind_by")
+        if (
+            value.get("base_oid") != base
+            or type(behind) is not int
+            or behind < 0
+        ):
+            raise ValueError("comparison lacks matching base and nonnegative behind count")
+    except (AttributeError, ValueError) as exc:
+        return {**identity, "status": "failed", "message": f"invalid comparison: {exc}"}
+    return {
+        **identity,
+        "status": "behind" if behind else "current",
+        "behind_by": behind,
+    }
+
+
 def fetch_pr_batch(
     requested: dict[str, set[int]],
+    *,
+    timeout: float = 30,
 ) -> tuple[dict[tuple[str, int], dict[str, Any]], list[dict[str, Any]]]:
     """Fetch all queued PR details with one projected query per repository.
 
@@ -110,7 +164,7 @@ def fetch_pr_batch(
     blockers: list[dict[str, Any]] = []
     for repo, numbers in sorted(requested.items()):
         batch_error: str | None = None
-        completed = run_command(
+        completed = _pr_query(
             [
                 "gh",
                 "pr",
@@ -123,7 +177,8 @@ def fetch_pr_batch(
                 "100",
                 "--json",
                 PR_FIELDS,
-            ]
+            ],
+            timeout,
         )
         values: list[Any] = []
         if completed.returncode == 0:
@@ -145,7 +200,7 @@ def fetch_pr_batch(
             key = (repo.lower(), number)
             if key in details:
                 continue
-            fallback = run_command(
+            fallback = _pr_query(
                 [
                     "gh",
                     "pr",
@@ -155,7 +210,8 @@ def fetch_pr_batch(
                     repo,
                     "--json",
                     PR_FIELDS,
-                ]
+                ],
+                timeout,
             )
             if fallback.returncode != 0:
                 blockers.append(

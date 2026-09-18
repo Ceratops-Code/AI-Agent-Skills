@@ -6,13 +6,13 @@ Inspect exact installed and registered versions without executing tool code.
 
 ## Workflow
 
-1. Call MCP `versions` with optional `tool_id`, or run:
+1. Call MCP `versions` with optional `tool_name`, or run:
 
    ```powershell
-   C:\AI-Agents-Tools\ceratops_tool_manager\bin\ceratops_tool_manager.cmd versions [tool-id]
+   C:\AI-Agents-Tools\ceratops_tool_manager\bin\ceratops_tool_manager.cmd versions [tool-name]
    ```
 
-   Omitting the identity inspects the deployment manager.
+   Omitting the tool name inspects the deployment manager.
 2. Interpret `installed_version` as the version selected for the next launch,
    `available_versions` as registered releases, and `running_version` as the
    responding manager process version. Other tools have null running versions;

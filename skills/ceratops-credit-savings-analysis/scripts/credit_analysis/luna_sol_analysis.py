@@ -1,17 +1,21 @@
 """Shared causal-episode planning and Luna/Sol orchestration."""
-# ruff: noqa: F401,F403,F405,I001
+# ruff: noqa: I001
 
 from __future__ import annotations
+
+import re
 
 from .execution_outcomes import has_failure_telemetry, has_nonzero_process_result
 from .model_response_contract import (
     _holistic_luna_schema,
+    _holistic_restore_alias_value,
+    _holistic_sol_schema,
     _validate_holistic_transport_value,
-    build_sol_schema,
     validate_classification_reason,
 )
 
 from .model_input_preparation import *
+from .model_prompting import _holistic_prompt, _holistic_prompt_prefix
 from .model_capacity_planning import *
 from .multi_thread_analysis import *
 from .persistent_subthread_analysis import *
@@ -20,6 +24,8 @@ from .source_execution_context import *
 from .orchestration_execution import command_execute_orchestration
 from .report_rendering import _presentation_contract, _render_holistic_report
 from .report_bookkeeping import (
+    _assemble_final_transport,
+    _candidate_disposition,
     _closed_result,
     _holistic_category_reviews,
     _holistic_preserve_finding_sources,
@@ -1002,10 +1008,10 @@ def _jsonl_event_summary(path: pathlib.Path) -> dict[str, Any]:
                 if isinstance(item["turn"].get("usage"), Mapping):
                     candidates.append(item["turn"]["usage"])
             for candidate in candidates:
-                for key in usage:
+                for key, current in usage.items():
                     value = candidate.get(key)
                     if isinstance(value, int) and not isinstance(value, bool):
-                        usage[key] = max(usage[key], value)
+                        usage[key] = max(current, value)
     return {
         "events": sum(event_types.values()),
         "event_types": dict(sorted(event_types.items())),
@@ -2209,6 +2215,18 @@ def _validate_holistic_manifest(
         for task in sol_tasks[:6]
     ):
         raise CreditAnalysisError("Sol reviewer dependencies changed after planning")
+    for reviewer in reviewers:
+        assigned = [
+            task for task in tasks
+            if task["task_id"] in reviewer["luna_task_ids"]
+        ]
+        limits = [task.get("candidate_limit") for task in assigned]
+        if all(limit is None for limit in limits):
+            continue  # Older frozen plans predate count-bounded discovery.
+        if any(not isinstance(limit, int) or isinstance(limit, bool) or limit < 1 for limit in limits):
+            raise CreditAnalysisError("Luna candidate limit is invalid")
+        if sum(limits) != SOL_REVIEW_CANDIDATE_BUDGET:
+            raise CreditAnalysisError("Sol candidate budget changed after planning")
     if sol_tasks[6].get("dependencies") != [
         task["task_id"] for task in sol_tasks[:6]
     ]:
@@ -2412,6 +2430,7 @@ def command_plan_orchestration(
                     ]
                 ),
                 "output_byte_limit": None,
+                "candidate_limit": None,
                 "sol_reviewer_task_id": None,
                 "planned_routing_bytes": None,
                 "capacity_omitted": capacity_omitted,
@@ -2454,6 +2473,7 @@ def command_plan_orchestration(
             continue
         reviewer_ordinal = int(assignment["reviewer_ordinal"])
         task["output_byte_limit"] = int(assignment["output_byte_limit"])
+        task["candidate_limit"] = int(assignment["candidate_limit"])
         task["sol_reviewer_task_id"] = (
             f"sol.adjudication.{reviewer_ordinal:04d}"
         )
@@ -2876,25 +2896,6 @@ def _holistic_result_refs(value: Any, label: str, *, empty: bool = False) -> lis
     return refs
 
 
-def _holistic_sol_schema(
-    *,
-    state: Mapping[str, Any],
-    task: Mapping[str, Any],
-    input_sha256: str,
-    contract: Mapping[str, Any],
-    luna_candidate_ids: Sequence[str],
-    alias_record: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Bind frozen transport aliases to the shared response contract."""
-    canonical_to_alias, _ = _holistic_alias_lookups(alias_record)
-    return build_sol_schema(
-        contract=contract,
-        luna_aliases=[canonical_to_alias[item] for item in luna_candidate_ids],
-        call_aliases=list(alias_record["aliases"]["calls"]),
-        evidence_aliases=list(alias_record["aliases"]["evidence"]),
-    )
-
-
 def _validate_holistic_luna_result(
     raw: Mapping[str, Any],
     *,
@@ -2933,6 +2934,13 @@ def _validate_holistic_luna_result(
     if coverage != expected_coverage:
         raise CreditAnalysisError("Luna coverage attestation changed")
     candidates = _result_objects(raw.get("candidates"), "Luna candidates")
+    candidate_limit = task.get("candidate_limit")
+    if (
+        task["phase"] == "luna-discovery"
+        and isinstance(candidate_limit, int)
+        and len(candidates) > candidate_limit
+    ):
+        raise CreditAnalysisError("Luna result exceeds its frozen candidate limit")
     allowed_candidates = set(task["candidate_ids"])
     record_index = {record["candidate_id"]: record for record in compact["records"]}
     normalized: list[dict[str, Any]] = []
@@ -3771,6 +3779,57 @@ def _deep_review_findings(
     return sorted(representatives.values(), key=finding_rank)[:3]
 
 
+def _final_payload_byte_budget(
+    *,
+    state: Mapping[str, Any],
+    task: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    canonical_payload: Mapping[str, Any],
+    luna_candidate_ids: Sequence[str],
+    aliases: Mapping[str, Any],
+    canonical_to_alias: Mapping[str, str],
+) -> int:
+    """Reserve the exact final schema and prompt framing before fitting evidence."""
+
+    base_payload = _holistic_alias_value(
+        {**canonical_payload, "deep_review_evidence": []},
+        canonical_to_alias,
+    )
+    placeholder_digest = "0" * 64
+    alias_record = {**aliases, "input_sha256": placeholder_digest}
+    schema = _holistic_sol_schema(
+        state=state,
+        task=task,
+        input_sha256=placeholder_digest,
+        contract=contract,
+        luna_candidate_ids=luna_candidate_ids,
+        alias_record=alias_record,
+    )
+    prompt = _holistic_prompt(
+        state=state,
+        task=task,
+        input_payload=base_payload,
+        input_sha256=placeholder_digest,
+        luna_candidate_ids=luna_candidate_ids,
+    )
+    non_payload_bytes = (
+        len(prompt.encode("utf-8"))
+        - _json_bytes(base_payload)
+        + _json_bytes(schema)
+    )
+    model_spec = state["model_specs"]["sol"]
+    budget = min(
+        int(model_spec["evidence_byte_budget"]),
+        int(model_spec["input_byte_budget"]) - non_payload_bytes,
+    )
+    if budget < _json_bytes(base_payload):
+        raise CreditAnalysisError(
+            "final semantic packet plus schema and prompt framing exceeds the "
+            "proven UTF-8 byte envelope"
+        )
+    return budget
+
+
 def _holistic_sol_input(
     *,
     state: dict[str, Any],
@@ -3964,6 +4023,14 @@ def _holistic_sol_input(
             for record in compact["records"]
         ]
     )
+    accepted_candidate_ids = {
+        decision["luna_candidate_id"]
+        for result in [
+            *adjudication_results,
+            *([recovery_result] if recovery_result is not None else []),
+        ]
+        for decision in result["candidate_decisions"]
+    }
     canonical_payload = {
         "schema": HOLISTIC_TASK_SCHEMA,
         "analysis_id": state["analysis_id"],
@@ -3981,7 +4048,14 @@ def _holistic_sol_input(
             else {}
         ),
         "luna_results": (
-            luna_results if task["phase"] == "sol-adjudication" else []
+            luna_results if task["phase"] == "sol-adjudication" else [
+                result for result in luna_results
+                if result["task_id"] in routed_luna_task_ids
+                and any(
+                    candidate["id"] not in accepted_candidate_ids
+                    for candidate in result["candidates"]
+                )
+            ]
         ),
         "luna_candidate_ids": [candidate["id"] for candidate in candidates],
         "candidate_original_evidence": (
@@ -4030,6 +4104,15 @@ def _holistic_sol_input(
     canonical_to_alias, _ = _holistic_alias_lookups(aliases)
     budget_bytes = int(state["model_specs"]["sol"]["evidence_byte_budget"])
     if task["phase"] == "sol-final":
+        budget_bytes = _final_payload_byte_budget(
+            state=state,
+            task=task,
+            contract=contract,
+            canonical_payload=canonical_payload,
+            luna_candidate_ids=[str(candidate["id"]) for candidate in candidates],
+            aliases=aliases,
+            canonical_to_alias=canonical_to_alias,
+        )
         selected_evidence, capacity_omissions = _fit_final_supplemental_evidence(
             base_payload=canonical_payload,
             evidence_groups=deep_review_evidence,
@@ -4234,163 +4317,6 @@ def _holistic_prepare_task(
     return payload, digest, prompt_path, schema_path, luna_candidate_ids
 
 
-def _holistic_prompt_prefix(
-    *,
-    state: Mapping[str, Any],
-    task: Mapping[str, Any],
-    input_sha256: str,
-    luna_candidate_ids: Sequence[str],
-) -> str:
-    lineage = json.dumps(
-        {
-            "controller_analysis_id": state["analysis_id"],
-            "task_id": task["task_id"],
-            "ephemeral_child": False,
-            "execution_cwd": str(task["execution_cwd"]),
-            "instruction_chain_sha256": str(task["instruction_chain_sha256"]),
-            "source_cutoff_precedes_this_child": True,
-        },
-        separators=(",", ":"),
-    )
-    common = f"""Controller lineage: {lineage}
-This is an analysis-only child. Do not use tools, read files, run commands, or
-modify any repository, skill, prompt, helper, workflow, or instruction. Analyze
-only the supplied packet and return one JSON object matching the output schema.
-Apply the supplied analysis_policy exactly. Intentional full skill-body injection
-is required runtime context, never credit waste. Never recommend a reasoning
-setting, effort, or level. Use only frozen local and canonical-state evidence;
-when broader or deep research would be required, preserve the uncertainty and
-provide a concise paste-ready targeted official-source check instead of guessing.
-Describe the concrete episode and the proposed before-and-after behavior. For
-script findings, name the verified repository-relative filename and relevant
-function, command, or setting in the problem and proposed control. Distinguish
-maintained source, installed copies, deleted temporary scripts, and direct tool
-invocations; if the owner or correction is unverified, state the missing check.
-Do not substitute generic labels such as validation or caller sequence for the
-actual actions. A rule's existence does not prove corrected behavior works;
-preserve the required machine implementation classification. Verify one- or
-two-line effort claims against the actual change.
-The input identity is {input_sha256}.
-"""
-    if task["phase"] == "luna-discovery":
-        instructions = f"""
-Act as the high-recall discovery tier. The packet contains every selected call
-assigned to it in causal order and exposes the supplied fixed lenses in order.
-Inspect all calls. Emit only plausible findings and plausible risks, plus every
-observed temporary control for mandatory Sol review even when it appears
-intentional or harmless. Do not enumerate routine dismissals,
-do not classify every action or call-surface pair, do not calculate savings, and
-do not make final findings. Every emitted candidate must cite supplied candidate
-IDs and packet-local original evidence references. Put candidate IDs only in
-`candidate_ids`; put only `evidence://` or `analysis://` values in
-`evidence_refs`. When citing an adjacent record, add its candidate ID to
-`candidate_ids` and its original reference to `evidence_refs`. Keep shared producer/control episodes
-together and keep analysis-overhead work separate from producer work. Stay
-within the controller-supplied {int(task['output_byte_limit'])}-byte result
-target; concise hypotheses are sufficient and genuine candidates must not be
-silently dropped.
-"""
-    elif task["phase"] == "sol-direct-evidence":
-        instructions = """
-Act as an independent direct-evidence tier. Inspect only the supplied prepared
-run part, without using Luna reports. Emit only material candidates Luna may have missed,
-using the same candidate schema and exact evidence rules as Luna discovery.
-Do not classify calls, calculate savings, or synthesize the final report.
-"""
-    elif (
-        task["phase"] == "sol-adjudication"
-        and task.get("review_kind") == "unassessed-recovery"
-    ):
-        instructions = f"""
-Act as the focused unresolved-call reviewer. Review only the
-{len(task['call_ids'])} target calls in `call_inventory`; the supplied Luna
-reports and complete ordered run parts are context, not additional classification
-targets. Adjudicate every supplied Luna candidate exactly once so findings remain
-traceable, but do not reconsider calls already classified by the preliminary
-reviewers. Replace each target call's preliminary `unassessed` classification
-with the strongest evidence-supported classification. Preserve `unassessed` only
-for a remaining decision-blocking gap. Return the ordinary adjudication fields
-without an analysis summary or surface summaries.
-"""
-    elif task["phase"] == "sol-adjudication":
-        instructions = f"""
-Act as one independent Luna-report reviewer. Review every routed Luna candidate
-exactly once ({len(luna_candidate_ids)} total) from its hypothesis and embedded
-evidence references. Do not independently re-read the source evidence. Review
-every supplied surface section in its fixed order,
-merge overlapping findings once by owning producer/control, and preserve every
-confirmed finding. Perform the mandatory temporary-control review for every
-temporary-control candidate, using exactly one allowed disposition; transient
-work is not automatically defective, and a permanent recommendation requires
-likely recurrence plus positive maintenance-adjusted savings. Review a
-temporary control recognized during adjudication even if Luna gave it another
-candidate kind. Only `durable-control-missing` with the recurrence and savings
-gate satisfied may link to a finding; every other disposition needs an explicit
-no-finding reason.
-
-Classify every source call exactly once in compact groups; group order and
-contiguity are transport-only and the controller canonicalizes source order and
-derives workstreams. Use only the packet-local call, Luna-candidate, and evidence
-aliases exposed in the packet and output schema; do not reproduce canonical IDs.
-Keep analysis-overhead findings separate from producer findings and savings.
-Use `necessary` only for a specific active gate with a supplied reason code;
-never use it as a catch-all. Use `reviewed_no_confirmed_waste` for inspected calls
-without confirmed waste. `unassessed` is only for a decision-blocking evidence
-gap and must stay within the supplied cap. Let explicit avoidable call
-classifications govern model-call finding membership and observed counts; an
-unimplemented finding may include already-implemented calls when at least one
-affected call remains unimplemented. Use Luna's supplied canonical-status
-evidence before labeling a durable control missing. When it shows the safeguard
-already exists, preserve `implementation_status` as `implemented` and describe
-violating behavior as a compliance or runtime gap; do not propose a duplicate
-control. Do not perform broad rediscovery that duplicates Luna. Return only the semantic
-fields in the schema: do not restate identity, surface summaries, workstreams,
-observed counts, recurrence arithmetic, or an analysis summary. Keep rationales
-compact and do not repeat evidence text already addressed by an evidence alias.
-Aim for about 1,500 visible output tokens while retaining every candidate
-decision, confirmed finding, material variant, required review, and call
-classification.
-"""
-    else:
-        instructions = f"""
-Act as the final synthesis tier. Preserve every prior shard candidate decision,
-confirmed finding, risk, temporary-control review, helper-category review, and
-call classification. When `recovery_result` is present, use its validated
-findings and risks and replace the matching preliminary `unassessed` call
-classifications. Adjudicate only separate direct-evidence candidates. Merge true
-duplicates by likely owning producer and durable control without dropping a
-material variant. Deep-verify only the supplied owner-deduplicated top-three
-findings against their raw evidence; do not re-adjudicate all Luna candidates.
-Return the complete semantic result ({len(luna_candidate_ids)} candidate
-decisions) using the transport aliases. Keep every finding and its full evidence,
-verification, cost, complexity, risk, and ROI assessment in the machine result.
-Write self-contained problem and proposed-control text that supports later chat
-selection by supported recurring net savings and verified one- or two-line
-fixes, without a fixed quota. Chat uses Problem, Proposed fix, and Benefit and
-effort; the controller saves only the runs table in the human report. Review
-ranking does not limit presentation or finding retention.
-"""
-    return common + instructions + "\nInput packet:\n"
-
-
-def _holistic_prompt(
-    *,
-    state: Mapping[str, Any],
-    task: Mapping[str, Any],
-    input_payload: Mapping[str, Any],
-    input_sha256: str,
-    luna_candidate_ids: Sequence[str],
-) -> str:
-    prefix = _holistic_prompt_prefix(
-        state=state,
-        task=task,
-        input_sha256=input_sha256,
-        luna_candidate_ids=luna_candidate_ids,
-    )
-    packet = json.dumps(input_payload, ensure_ascii=False, separators=(",", ":"))
-    return prefix + packet + "\n"
-
-
 def _holistic_workstream_by_call(compact: Mapping[str, Any]) -> dict[str, str]:
     return {str(record["call_id"]): str(record["workstream"]) for record in compact["records"]}
 
@@ -4403,7 +4329,7 @@ def _validate_holistic_finding(
     workstreams: Mapping[str, str],
     surface_order: Sequence[str],
     label: str,
-    allow_source_findings: bool = False,
+    allow_source_findings: bool = False, source_call_count: int = 0,
 ) -> dict[str, Any]:
     fields = {
         "id",
@@ -4481,8 +4407,8 @@ def _validate_holistic_finding(
         abs_tol=1e-6,
     ):
         raise CreditAnalysisError(f"{label} recurrence arithmetic is invalid")
-    if finding["waste_kind"] == "model-calls" and expected_savings <= 0:
-        raise CreditAnalysisError(f"{label} has non-positive recurring savings")
+    if finding["waste_kind"] == "model-calls" and net < 0:
+        raise CreditAnalysisError(f"{label} recurring savings are negative")
     confidence = finding.get("confidence")
     if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0 <= confidence <= 1:
         raise CreditAnalysisError(f"{label} confidence is invalid")
@@ -4644,64 +4570,6 @@ def _holistic_reconcile_findings(
     return normalized
 
 
-def _holistic_reconcile_orphaned_avoidable_calls(
-    classifications: Sequence[dict[str, Any]],
-    findings: Sequence[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], dict[str, str], int]:
-    """Conservatively unassess avoidability that has no model-call finding.
-
-    The controller never invents a finding or savings claim. The caller's
-    existing unassessed-coverage gate still rejects broad inconsistencies.
-    """
-
-    finding_calls = {
-        call_id
-        for finding in findings
-        if finding["waste_kind"] == "model-calls"
-        for call_id in finding["affected_call_ids"]
-    }
-    normalized: list[dict[str, Any]] = []
-    for group in classifications:
-        for call_id in group["call_ids"]:
-            detail = {
-                key: value
-                for key, value in group.items()
-                if key != "call_ids"
-            }
-            if (
-                detail["classification"]
-                in {"avoidable_implemented", "avoidable_unimplemented"}
-                and call_id not in finding_calls
-            ):
-                detail.update(
-                    {
-                        "classification": "unassessed",
-                        "reason_code": None,
-                        "rationale": (
-                            "Sol marked this call avoidable but supplied no "
-                            "model-call finding; the controller conservatively "
-                            "left it unassessed."
-                        ),
-                    }
-                )
-            if normalized and all(
-                normalized[-1][key] == detail[key] for key in detail
-            ):
-                normalized[-1]["call_ids"].append(call_id)
-            else:
-                normalized.append({"call_ids": [call_id], **detail})
-    classification_by_call = {
-        call_id: str(group["classification"])
-        for group in normalized
-        for call_id in group["call_ids"]
-    }
-    unassessed = sum(
-        classification == "unassessed"
-        for classification in classification_by_call.values()
-    )
-    return normalized, classification_by_call, unassessed
-
-
 def _validate_holistic_sol_result(
     raw: Mapping[str, Any],
     *,
@@ -4750,7 +4618,7 @@ def _validate_holistic_sol_result(
             workstreams=workstreams,
             surface_order=surface_order,
             label=f"confirmed finding {index}",
-            allow_source_findings=task["phase"] == "sol-final",
+            allow_source_findings=task["phase"] == "sol-final", source_call_count=len(state["manifest"]["call_ids"]),
         )
         for index, finding in enumerate(
             _result_objects(raw.get("confirmed_findings"), "confirmed findings"),
@@ -4764,9 +4632,6 @@ def _validate_holistic_sol_result(
             call_order=call_order,
             workstreams=workstreams,
         )
-    )
-    classifications, classification_by_call, unassessed = (
-        _holistic_reconcile_orphaned_avoidable_calls(classifications, findings)
     )
     if task["phase"] == "sol-final":
         maximum_unassessed = math.floor(
@@ -4782,19 +4647,6 @@ def _validate_holistic_sol_result(
     finding_by_id = {finding["id"]: finding for finding in findings}
     if len(finding_by_id) != len(findings):
         raise CreditAnalysisError("confirmed finding ID is duplicated")
-    avoidable_calls = {
-        call_id
-        for call_id, classification in classification_by_call.items()
-        if classification in {"avoidable_implemented", "avoidable_unimplemented"}
-    }
-    finding_calls = {
-        call_id
-        for finding in findings
-        if finding["waste_kind"] == "model-calls"
-        for call_id in finding["affected_call_ids"]
-    }
-    if avoidable_calls != finding_calls:
-        raise CreditAnalysisError("avoidable call classifications do not match findings")
     risks: list[dict[str, Any]] = []
     for index, risk in enumerate(_result_objects(raw.get("plausible_risks"), "plausible risks"), start=1):
         label = f"plausible risk {index}"
@@ -5115,25 +4967,6 @@ def _validate_holistic_sol_result(
     }
 
 
-def _holistic_restore_alias_value(value: Any, aliases: Mapping[str, str]) -> Any:
-    if isinstance(value, Mapping):
-        return {
-            str(key): _holistic_restore_alias_value(item, aliases)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_holistic_restore_alias_value(item, aliases) for item in value]
-    if isinstance(value, str):
-        if value in aliases:
-            return aliases[value]
-        result = value
-        for alias in sorted(aliases, key=len, reverse=True):
-            if alias in result:
-                result = result.replace(alias, aliases[alias])
-        return result
-    return value
-
-
 def _holistic_derived_workstream(
     calls: Sequence[str], workstreams: Mapping[str, str]
 ) -> str:
@@ -5165,6 +4998,19 @@ def _holistic_restore_sol_transport(
     restored = _holistic_restore_alias_value(raw, alias_to_canonical)
     if not isinstance(restored, dict):
         raise CreditAnalysisError("Sol transport result is invalid")
+    decision_fields = schema["properties"]["candidate_decisions"]["items"]["properties"]
+    if "disposition" not in decision_fields:
+        if task["phase"] == "sol-final":
+            packet = _holistic_restore_alias_value(
+                _read_json(pathlib.Path(str(task["artifacts"]["input"])), "frozen Sol input"),
+                alias_to_canonical,
+            )
+            restored = _assemble_final_transport(restored, packet)
+        else:
+            for decision in restored["candidate_decisions"]:
+                decision["disposition"] = _candidate_disposition(
+                    decision["finding_ids"], decision["risk_ids"]
+                )
 
     surface_order = list(state["manifest"]["surface_order"])
     call_order = (
@@ -5771,6 +5617,15 @@ def _holistic_final(
     luna_task_by_id = {
         task["task_id"]: task for task in state["manifest"]["luna_tasks"]
     }
+    capped_luna_task_ids = {
+        result["task_id"]
+        for result in luna_results
+        if (
+            (limit := luna_task_by_id[result["task_id"]].get("candidate_limit"))
+            is not None
+            and len(result["candidates"]) >= int(limit)
+        )
+    }
     final_input_path = pathlib.Path(
         str(state["manifest"]["sol_tasks"][-1]["artifacts"]["input"])
     )
@@ -5885,6 +5740,8 @@ def _holistic_final(
             "record_count": len(task["candidate_ids"]),
             "input_bytes": int(task["input_bytes"]),
             "output_byte_limit": int(task["output_byte_limit"]),
+            "candidate_limit": task.get("candidate_limit"),
+            "candidate_discovery_at_limit": task_id in capped_luna_task_ids,
             "actual_output_bytes": observed_output_bytes(task_id),
             "status": "reviewed" if task_id in reviewed_luna_task_ids else "unreviewed",
         }
@@ -5935,6 +5792,7 @@ def _holistic_final(
             "candidate_count": sum(discovery_kinds.values()),
             "candidate_kind_totals": dict(sorted(discovery_kinds.items())),
             "packet_coverage": [result["coverage"] for result in luna_results],
+            "candidate_discovery_at_limit_parts": sorted(capped_luna_task_ids),
         },
         "surface_summaries": sol["surface_summaries"],
         "candidate_decisions": sol["candidate_decisions"],
@@ -5987,6 +5845,7 @@ def _holistic_final(
             "planned_parts": len(luna_task_by_id),
             "reviewed_parts": len(reviewed_luna_task_ids),
             "unreviewed_parts": len(luna_task_by_id) - len(reviewed_luna_task_ids),
+            "candidate_discovery_at_limit_parts": len(capped_luna_task_ids),
             "eligible_calls": len(state["manifest"]["call_ids"]),
             "analyzed_calls": len(analyzed_call_ids),
             "eligible_evidence_bytes": sum(episode_bytes.values()),
@@ -6183,6 +6042,7 @@ def command_run_orchestration(
 __all__ = (
     "ANALYSIS_SUMMARY_FIELDS",
     "CALL_CLASSIFICATION_FIELDS",
+    "CANONICAL_REFERENCE_RE",
     "CONFIRMATION_ASSESSMENT_FIELDS",
     "CONFIRMATION_CHILD_ASSESSMENT_FIELDS",
     "CONFIRMATION_CHILD_FINDING_FIELDS",
@@ -6210,7 +6070,6 @@ __all__ = (
     "TEMPORARY_CONTRIBUTION_FIELDS",
     "TEMPORARY_MERGE_FIELDS",
     "TEMPORARY_REVIEW_FIELDS",
-    "CANONICAL_REFERENCE_RE",
     "WORKSPACE_LOCATION_RE",
     "_aggregate_finding_volume",
     "_bind_attempt_record",
@@ -6237,7 +6096,6 @@ __all__ = (
     "_holistic_model_specs",
     "_holistic_partition",
     "_holistic_prepare_task",
-    "_prepare_bounded_evidence",
     "_holistic_prompt",
     "_holistic_prompt_prefix",
     "_holistic_public_status",
@@ -6254,11 +6112,12 @@ __all__ = (
     "_holistic_task_map",
     "_holistic_workstream_by_call",
     "_invoke_injected_runner",
-    "_persistent_descendant_references",
     "_json_bytes",
     "_jsonl_event_summary",
     "_observable_high_signal_reasons",
     "_orchestration_state_path_from_request",
+    "_persistent_descendant_references",
+    "_prepare_bounded_evidence",
     "_process_is_alive",
     "_relevant_segments",
     "_render_holistic_report",

@@ -4,156 +4,237 @@
   "name": "ceratops_repository_validation_contract",
   "captured_on": "2026-09-09",
   "source_docs_ref": "github-contract-source-docs.json",
-  "source_doc_scopes": ["repository_validation"],
+  "source_doc_scopes": [
+    "repository_validation"
+  ],
   "checks": [
     {
       "id": "npm-markdown-lint",
       "when": [
-        {"kind": "package-script", "manager": "npm", "value": "lint:markdown"}
+        {
+          "kind": "package-script",
+          "manager": "npm",
+          "value": "lint:markdown"
+        }
       ],
-      "command": ["{npm}", "run", "lint:markdown"],
+      "command": [
+        "{npm}",
+        "run",
+        "lint:markdown"
+      ],
       "cwd": "."
     },
     {
       "id": "npm-lint",
       "when": [
-        {"kind": "package-script", "manager": "npm", "value": "lint"}
+        {
+          "kind": "package-script",
+          "manager": "npm",
+          "value": "lint"
+        }
       ],
-      "command": ["{npm}", "run", "lint"],
-      "cwd": "."
-    },
-    {
-      "id": "npm-test",
-      "when": [
-        {"kind": "package-script", "manager": "npm", "value": "test"}
+      "command": [
+        "{npm}",
+        "run",
+        "lint"
       ],
-      "command": ["{npm}", "test"],
       "cwd": "."
     },
     {
       "id": "npm-build",
       "when": [
-        {"kind": "package-script", "manager": "npm", "value": "build"}
+        {
+          "kind": "package-script",
+          "manager": "npm",
+          "value": "build"
+        }
       ],
-      "command": ["{npm}", "run", "build"],
+      "command": [
+        "{npm}",
+        "run",
+        "build"
+      ],
       "cwd": "."
     },
     {
       "id": "pnpm-markdown-lint",
       "when": [
-        {"kind": "package-script", "manager": "pnpm", "value": "lint:markdown"}
+        {
+          "kind": "package-script",
+          "manager": "pnpm",
+          "value": "lint:markdown"
+        }
       ],
-      "command": ["{pnpm}", "run", "lint:markdown"],
+      "command": [
+        "{pnpm}",
+        "run",
+        "lint:markdown"
+      ],
       "cwd": "."
     },
     {
       "id": "pnpm-lint",
       "when": [
-        {"kind": "package-script", "manager": "pnpm", "value": "lint"}
+        {
+          "kind": "package-script",
+          "manager": "pnpm",
+          "value": "lint"
+        }
       ],
-      "command": ["{pnpm}", "run", "lint"],
-      "cwd": "."
-    },
-    {
-      "id": "pnpm-test",
-      "when": [
-        {"kind": "package-script", "manager": "pnpm", "value": "test"}
+      "command": [
+        "{pnpm}",
+        "run",
+        "lint"
       ],
-      "command": ["{pnpm}", "test"],
       "cwd": "."
     },
     {
       "id": "pnpm-build",
       "when": [
-        {"kind": "package-script", "manager": "pnpm", "value": "build"}
+        {
+          "kind": "package-script",
+          "manager": "pnpm",
+          "value": "build"
+        }
       ],
-      "command": ["{pnpm}", "run", "build"],
+      "command": [
+        "{pnpm}",
+        "run",
+        "build"
+      ],
       "cwd": "."
     },
     {
       "id": "pnpm-typecheck",
       "when": [
-        {"kind": "package-script", "manager": "pnpm", "value": "typecheck"}
+        {
+          "kind": "package-script",
+          "manager": "pnpm",
+          "value": "typecheck"
+        }
       ],
-      "unless": [
-        {"kind": "package-script", "manager": "pnpm", "value": "build"}
+      "command": [
+        "{pnpm}",
+        "run",
+        "typecheck"
       ],
-      "command": ["{pnpm}", "run", "typecheck"],
       "cwd": "."
     },
     {
-      "id": "pytest",
+      "id": "npm-typecheck",
       "when": [
-        {"kind": "path-any", "value": ["pytest.toml", ".pytest.toml", "pytest.ini", ".pytest.ini", "conftest.py"]},
-        {"kind": "file-contains", "path": "tox.ini", "value": "[pytest]"},
-        {"kind": "file-contains", "path": "setup.cfg", "value": "[tool:pytest]"},
-        {"kind": "file-contains", "path": "pyproject.toml", "value": "[tool.pytest"},
-        {"kind": "file-contains", "path": "requirements-dev.txt", "value": "pytest"},
-        {"kind": "file-contains", "path": "requirements.txt", "value": "pytest"}
+        {
+          "kind": "package-script",
+          "manager": "npm",
+          "value": "typecheck"
+        }
       ],
-      "command": ["{python}", "-m", "pytest", "-q"],
-      "cwd": "."
-    },
-    {
-      "id": "unittest",
-      "when": [
-        {"kind": "path-any", "value": ["tests/test_*.py"]}
+      "command": [
+        "{npm}",
+        "run",
+        "typecheck"
       ],
-      "unless": [
-        {"kind": "path-any", "value": ["pytest.toml", ".pytest.toml", "pytest.ini", ".pytest.ini", "conftest.py"]},
-        {"kind": "file-contains", "path": "tox.ini", "value": "[pytest]"},
-        {"kind": "file-contains", "path": "setup.cfg", "value": "[tool:pytest]"},
-        {"kind": "file-contains", "path": "pyproject.toml", "value": "[tool.pytest"},
-        {"kind": "file-contains", "path": "requirements-dev.txt", "value": "pytest"},
-        {"kind": "file-contains", "path": "requirements.txt", "value": "pytest"}
-      ],
-      "command": ["{python}", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"],
       "cwd": "."
     },
     {
       "id": "ruff",
       "when": [
-        {"kind": "path-any", "value": ["ruff.toml", ".ruff.toml"]},
-        {"kind": "file-contains", "path": "pyproject.toml", "value": "[tool.ruff"},
-        {"kind": "file-contains", "path": "requirements-dev.txt", "value": "ruff"},
-        {"kind": "file-contains", "path": "requirements.txt", "value": "ruff"}
+        {
+          "kind": "path-any",
+          "value": [
+            "ruff.toml",
+            ".ruff.toml"
+          ]
+        },
+        {
+          "kind": "file-contains",
+          "path": "pyproject.toml",
+          "value": "[tool.ruff"
+        },
+        {
+          "kind": "file-contains",
+          "path": "requirements-dev.txt",
+          "value": "ruff"
+        },
+        {
+          "kind": "file-contains",
+          "path": "requirements.txt",
+          "value": "ruff"
+        },
+        {
+          "kind": "file-contains",
+          "path": "scripts/pyproject.toml",
+          "value": "[tool.ruff"
+        }
       ],
-      "command": ["{python}", "-m", "ruff", "check", "."],
+      "command": [
+        "{python}",
+        "-m",
+        "ruff",
+        "check",
+        "."
+      ],
       "cwd": "."
     },
     {
       "id": "mypy",
       "when": [
-        {"kind": "path-any", "value": ["mypy.ini", ".mypy.ini"]},
-        {"kind": "file-contains", "path": "pyproject.toml", "value": "[tool.mypy]"},
-        {"kind": "file-contains", "path": "requirements-dev.txt", "value": "mypy"},
-        {"kind": "file-contains", "path": "requirements.txt", "value": "mypy"}
+        {
+          "kind": "path-any",
+          "value": [
+            "mypy.ini",
+            ".mypy.ini"
+          ]
+        },
+        {
+          "kind": "file-contains",
+          "path": "pyproject.toml",
+          "value": "[tool.mypy]"
+        },
+        {
+          "kind": "file-contains",
+          "path": "requirements-dev.txt",
+          "value": "mypy"
+        },
+        {
+          "kind": "file-contains",
+          "path": "requirements.txt",
+          "value": "mypy"
+        },
+        {
+          "kind": "file-contains",
+          "path": "scripts/pyproject.toml",
+          "value": "[tool.mypy"
+        }
       ],
-      "command": ["{python}", "-m", "mypy"],
+      "command": [
+        "{python}",
+        "-m",
+        "mypy"
+      ],
       "cwd": "."
     },
     {
       "id": "yaml-lint",
       "when": [
-        {"kind": "path-any", "value": [".yamllint", ".yamllint.yml", ".yamllint.yaml"]}
+        {
+          "kind": "path-any",
+          "value": [
+            ".yamllint",
+            ".yamllint.yml",
+            ".yamllint.yaml",
+            "scripts/.yamllint",
+            "scripts/.yamllint.yaml",
+            "scripts/.yamllint.yml"
+          ]
+        }
       ],
-      "command": ["{python}", "-m", "yamllint", "."],
-      "cwd": "."
-    },
-    {
-      "id": "go-test",
-      "when": [
-        {"kind": "path-any", "value": ["go.mod"]}
+      "command": [
+        "{python}",
+        "-m",
+        "yamllint",
+        "."
       ],
-      "command": ["go", "test", "./..."],
-      "cwd": "."
-    },
-    {
-      "id": "cargo-test",
-      "when": [
-        {"kind": "path-any", "value": ["Cargo.toml"]}
-      ],
-      "command": ["cargo", "test"],
       "cwd": "."
     }
   ]

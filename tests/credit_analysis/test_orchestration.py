@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import pathlib
@@ -19,6 +20,337 @@ from tests.credit_analysis.sessions import (
     credit_analysis_session,
 )
 from tests.support.repositories import run_git
+
+
+def test_final_assembly_keeps_accepted_decisions_and_derives_new_one() -> None:
+    load_credit_analysis_workflow_module()
+    from credit_analysis.report_bookkeeping import _assemble_final_transport
+    from credit_analysis.single_thread_analysis import CreditAnalysisError
+
+    prior = {
+        "candidate_decisions": [{
+            "luna_candidate_id": "old", "disposition": "dismissed-candidate",
+            "reason": "Required work", "evidence_refs": ["e1"],
+            "finding_ids": [], "risk_ids": [],
+        }],
+        "confirmed_findings": [], "plausible_risks": [],
+        "temporary_control_reviews": [], "temporary_control_merges": [],
+        "helper_category_reviews": [],
+        "call_classifications": [{
+            "call_ids": ["c1", "c2"], "classification": "necessary",
+            "reason_code": "required_for_task", "rationale": "Required work",
+            "evidence_refs": ["e1"], "workstream": "producer",
+        }],
+    }
+    packet = {
+        "luna_candidate_ids": ["old", "new"],
+        "call_inventory": {"rows": [["x", "c1", "producer"], ["x", "c2", "producer"]]},
+        "prior_adjudication_results": [prior],
+        "recovery_result": None,
+        "deep_review_evidence": [],
+    }
+    delta = {
+        "candidate_decisions": [{
+            "luna_candidate_id": "new", "reason": "Possible repeated call",
+            "evidence_refs": ["e2"], "finding_ids": [], "risk_ids": ["risk-1"],
+        }],
+        "confirmed_findings": [],
+        "plausible_risks": [{
+            "id": "risk-1", "description": "Possible repeated call",
+            "affected_call_ids": ["c2"], "evidence_refs": ["e2"],
+            "competing_explanations": ["The call may be needed"],
+            "missing_fact": "Whether state changed", "verification_needed": ["Check state"],
+        }],
+        "temporary_control_reviews": [], "temporary_control_merges": [],
+        "helper_category_reviews": [], "call_classifications": [],
+    }
+    assembled = _assemble_final_transport(delta, packet)
+    assert [item["disposition"] for item in assembled["candidate_decisions"]] == [
+        "dismissed-candidate", "plausible-risk",
+    ]
+    assert assembled["candidate_decisions"][0]["risk_ids"] == []
+    assert assembled["plausible_risks"][0]["id"] == "risk-1"
+    assert assembled["call_classifications"][0]["call_ids"] == ["c1", "c2"]
+
+    # The saved failure was a restated dismissed candidate with a stray risk ID.
+    contradictory = {**delta, "candidate_decisions": [
+        *delta["candidate_decisions"],
+        {"luna_candidate_id": "old", "reason": "Required work",
+         "evidence_refs": ["e1"], "finding_ids": [], "risk_ids": ["risk-1"]},
+    ]}
+    with pytest.raises(CreditAnalysisError, match="new candidate exactly once"):
+        _assemble_final_transport(contradictory, packet)
+
+
+def test_final_schema_accepts_only_new_candidate_judgments() -> None:
+    workflow = load_credit_analysis_workflow_module()
+    from credit_analysis.model_response_contract import build_sol_schema
+
+    schema = build_sol_schema(
+        contract=workflow._load_contract(),
+        luna_aliases=["l0001", "l0002"],
+        call_aliases=["c0001"],
+        evidence_aliases=["e0001"],
+        final_synthesis=True,
+        final_decision_aliases=["l0002"],
+    )
+    decisions = schema["properties"]["candidate_decisions"]
+    assert decisions["minItems"] == decisions["maxItems"] == 1
+    fields = decisions["items"]["properties"]
+    assert fields["luna_candidate_id"]["enum"] == ["l0002"]
+    assert "disposition" not in fields
+    shard = build_sol_schema(
+        contract=workflow._load_contract(),
+        luna_aliases=["l0001"], call_aliases=["c0001"],
+        evidence_aliases=["e0001"],
+    )
+    assert "disposition" not in shard["properties"]["candidate_decisions"]["items"]["properties"]
+
+
+def test_restored_aliases_keep_identifier_boundaries_after_split() -> None:
+    load_credit_analysis_workflow_module()
+    from credit_analysis.model_response_contract import _holistic_restore_alias_value
+
+    restored = _holistic_restore_alias_value(
+        {"id": "l0007", "text": "l0007 and xl0007 and l0007.suffix"},
+        {"l0007": "luna.source.0007"},
+    )
+    assert restored == {
+        "id": "luna.source.0007",
+        "text": "luna.source.0007 and xl0007 and l0007.suffix",
+    }
+
+
+def test_final_assembly_merges_exact_prior_findings_without_model_copy() -> None:
+    load_credit_analysis_workflow_module()
+    from credit_analysis.report_bookkeeping import _assemble_final_transport
+    from credit_analysis.single_thread_analysis import CreditAnalysisError
+
+    def source(candidate: str, call: str, finding_id: str) -> dict[str, Any]:
+        return {
+            "candidate_decisions": [{
+                "luna_candidate_id": candidate, "disposition": "confirmed-finding",
+                "reason": "Repeated call", "evidence_refs": [f"e-{call}"],
+                "finding_ids": [finding_id], "risk_ids": [],
+            }],
+            "confirmed_findings": [{
+                "id": finding_id, "producer_owner": "same owner",
+                "proposed_durable_control": "same control",
+                "problem_summary": "same problem", "waste_kind": "model-calls",
+                "implementation_status": "unimplemented", "workstream": "producer",
+                "affected_call_ids": [call], "evidence_refs": [f"e-{call}"],
+                "recurrence": {"calls_saved_per_affected_run": 1},
+            }],
+            "plausible_risks": [], "temporary_control_reviews": [],
+            "temporary_control_merges": [], "helper_category_reviews": [],
+            "call_classifications": [{
+                "call_ids": [call], "classification": "avoidable_unimplemented",
+                "reason_code": None, "rationale": "Repeated call",
+                "evidence_refs": [f"e-{call}"], "workstream": "producer",
+            }],
+        }
+
+    packet: dict[str, Any] = {
+        "luna_candidate_ids": ["l1", "l2"],
+        "call_inventory": {"rows": [["x", "c1", "producer"], ["x", "c2", "producer"]]},
+        "prior_adjudication_results": [source("l1", "c1", "f1"), source("l2", "c2", "f2")],
+        "recovery_result": None, "deep_review_evidence": [],
+    }
+    delta: dict[str, Any] = {key: [] for key in (
+        "candidate_decisions", "confirmed_findings", "plausible_risks",
+        "temporary_control_reviews", "temporary_control_merges",
+        "helper_category_reviews", "call_classifications",
+    )}
+    assembled = _assemble_final_transport(delta, packet)
+    assert len(assembled["confirmed_findings"]) == 1
+    assert assembled["confirmed_findings"][0]["affected_call_ids"] == ["c1", "c2"]
+    assert [decision["finding_ids"] for decision in assembled["candidate_decisions"]] == [
+        ["f1"], ["f1"],
+    ]
+
+    packet["deep_review_evidence"] = [{"finding_id": "f1"}]
+    revision = {
+        **packet["prior_adjudication_results"][0]["confirmed_findings"][0],
+        "problem_summary": "More precise problem",
+        "affected_call_ids": ["c2"], "evidence_refs": ["e-c2"],
+    }
+    revised = _assemble_final_transport(
+        {**delta, "confirmed_findings": [revision]}, packet
+    )
+    assert revised["confirmed_findings"][0]["problem_summary"] == "More precise problem"
+    assert revised["confirmed_findings"][0]["affected_call_ids"] == ["c1", "c2"]
+    assert revised["confirmed_findings"][0]["evidence_refs"] == ["e-c1", "e-c2"]
+
+    # Unsupported final call overrides are rejected together while accepted
+    # findings and their original classifications remain authoritative.
+    protected = copy.deepcopy(packet)
+    protected["deep_review_evidence"] = []
+    protected["prior_adjudication_results"][1]["confirmed_findings"][0]["producer_owner"] = "second owner"
+    for result in protected["prior_adjudication_results"]:
+        result["confirmed_findings"][0]["implementation_status"] = "implemented"
+        result["call_classifications"][0]["classification"] = "avoidable_implemented"
+    conflicting = copy.deepcopy(delta)
+    conflicting["call_classifications"] = [
+        {"call_ids": [call], "classification": "avoidable_unimplemented",
+         "reason_code": None, "rationale": "Different explanation",
+         "evidence_refs": [f"e-{call}"]}
+        for call in ("c1", "c2")
+    ]
+    preserved = _assemble_final_transport(conflicting, protected)
+    assert [group["classification"] for group in preserved["call_classifications"]] == [
+        "avoidable_implemented", "avoidable_implemented",
+    ]
+    assert [finding["implementation_status"] for finding in preserved["confirmed_findings"]] == [
+        "implemented", "implemented",
+    ]
+
+    # An explicit compatible revision may supersede the earlier status.
+    protected["deep_review_evidence"] = [{"finding_id": "f1"}]
+    revision = {
+        **protected["prior_adjudication_results"][0]["confirmed_findings"][0],
+        "implementation_status": "unimplemented",
+    }
+    changed = _assemble_final_transport(
+        {**conflicting, "confirmed_findings": [revision],
+         "call_classifications": conflicting["call_classifications"][:1]}, protected,
+    )
+    assert changed["confirmed_findings"][0]["implementation_status"] == "unimplemented"
+    assert changed["call_classifications"][0]["classification"] == "avoidable_unimplemented"
+    assert changed["call_classifications"][1]["classification"] == "avoidable_implemented"
+
+    # A call move needs a source revision, one complete destination, and an
+    # explicit call judgment; partial source revisions still preserve calls.
+    move_packet = copy.deepcopy(protected)
+    move_packet["prior_adjudication_results"] = [source("l1", "c1", "f1")]
+    move_packet["prior_adjudication_results"][0]["confirmed_findings"][0]["affected_call_ids"] = ["c1", "c2"]
+    move_packet["prior_adjudication_results"][0]["confirmed_findings"][0]["implementation_status"] = "implemented"
+    move_packet["prior_adjudication_results"][0]["call_classifications"][0]["call_ids"] = ["c1", "c2"]
+    move_packet["prior_adjudication_results"][0]["call_classifications"][0]["classification"] = "avoidable_implemented"
+    moved_from = {**move_packet["prior_adjudication_results"][0]["confirmed_findings"][0], "affected_call_ids": ["c1"]}
+    moved_to = {**moved_from, "id": "f3", "affected_call_ids": ["c2"],
+                "producer_owner": "new cause", "implementation_status": "unimplemented"}
+    move_delta = {**delta,
+                  "candidate_decisions": [{"luna_candidate_id": "l2", "reason": "New cause",
+                                           "evidence_refs": ["e-c2"], "finding_ids": ["f3"], "risk_ids": []}],
+                  "plausible_risks": [], "confirmed_findings": [moved_from, moved_to],
+                  "call_classifications": conflicting["call_classifications"][1:]}
+    move_packet["luna_candidate_ids"] = ["l1", "l2"]
+    moved = _assemble_final_transport(move_delta, move_packet)
+    assert {item["id"]: item["affected_call_ids"] for item in moved["confirmed_findings"]} == {
+        "f1": ["c1"], "f3": ["c2"],
+    }
+
+    # Incompatible deep-review revisions revert together to accepted results.
+    protected["deep_review_evidence"] = [{"finding_id": "f1"}, {"finding_id": "f2"}]
+    bad_revisions = [
+        copy.deepcopy(result["confirmed_findings"][0])
+        for result in protected["prior_adjudication_results"]
+    ]
+    restored = _assemble_final_transport(
+        {**conflicting, "confirmed_findings": bad_revisions}, protected,
+    )
+    assert [item["implementation_status"] for item in restored["confirmed_findings"]] == [
+        "implemented", "implemented",
+    ]
+    assert [item["classification"] for item in restored["call_classifications"]] == [
+        "avoidable_implemented", "avoidable_implemented",
+    ]
+
+    # Exact repetitions are no-ops. Divergent final restatements all yield to
+    # earlier accepted risks, reviews, and owner/control associations.
+    repeated = copy.deepcopy(protected)
+    repeated["deep_review_evidence"] = []
+    risk = {"id": "r1", "description": "Possible issue", "affected_call_ids": ["c1"],
+            "missing_fact": "Cause", "verification_needed": ["Check cause"]}
+    review = {"id": "t1", "finding_id": "f1", "no_finding_reason": None}
+    merge = {"owning_producer": "owner", "control_key": "control",
+             "finding_id": "f1", "review_ids": ["t1"]}
+    repeated["prior_adjudication_results"][0]["plausible_risks"] = [risk]
+    repeated["prior_adjudication_results"][0]["temporary_control_reviews"] = [review]
+    repeated["prior_adjudication_results"][0]["temporary_control_merges"] = [merge]
+    duplicate_delta = {**delta,
+                       "confirmed_findings": [copy.deepcopy(repeated["prior_adjudication_results"][0]["confirmed_findings"][0])],
+                       "plausible_risks": [copy.deepcopy(risk)],
+                       "temporary_control_reviews": [copy.deepcopy(review)],
+                       "temporary_control_merges": [copy.deepcopy(merge)]}
+    duplicate = _assemble_final_transport(duplicate_delta, repeated)
+    assert len(duplicate["plausible_risks"]) == 1
+    assert len(duplicate["temporary_control_reviews"]) == 1
+    assert len(duplicate["temporary_control_merges"]) == 1
+    divergent_delta = copy.deepcopy(duplicate_delta)
+    divergent_delta["plausible_risks"][0]["description"] = "Different issue"
+    divergent_delta["temporary_control_reviews"][0]["no_finding_reason"] = "Different review"
+    divergent_delta["temporary_control_merges"][0]["finding_id"] = "f2"
+    reconciled = _assemble_final_transport(divergent_delta, repeated)
+    assert reconciled["plausible_risks"][0]["description"] == "Possible issue"
+    assert reconciled["temporary_control_reviews"][0]["no_finding_reason"] is None
+    assert reconciled["temporary_control_merges"][0]["finding_id"] == "f1"
+    conflicting_merge = _assemble_final_transport(
+        {**delta,
+         "temporary_control_reviews": [{
+             "id": "t2", "finding_id": "f2", "no_finding_reason": None,
+         }],
+         "temporary_control_merges": [{
+             **merge, "finding_id": "f2", "review_ids": ["t2"],
+         }]},
+        repeated,
+    )
+    assert conflicting_merge["temporary_control_merges"][0]["finding_id"] == "f1"
+    assert conflicting_merge["temporary_control_reviews"][1]["finding_id"] is None
+
+    # A new finding with incompatible per-call accounting is withdrawn along
+    # with its new candidate link, without changing the accepted finding.
+    new_packet = copy.deepcopy(protected)
+    new_packet["deep_review_evidence"] = []
+    new_packet["prior_adjudication_results"] = [source("l1", "c1", "f1")]
+    new_packet["luna_candidate_ids"] = ["l1", "l2"]
+    new_finding = {
+        **new_packet["prior_adjudication_results"][0]["confirmed_findings"][0],
+        "id": "f3", "producer_owner": "new cause", "affected_call_ids": ["c2"],
+    }
+    new_delta = {
+        **delta,
+        "candidate_decisions": [{
+            "luna_candidate_id": "l2", "reason": "A claimed second finding",
+            "evidence_refs": ["e-c2"], "finding_ids": ["f3"], "risk_ids": [],
+        }],
+        "confirmed_findings": [new_finding],
+        "temporary_control_reviews": [{
+            "id": "t3", "finding_id": "f3", "no_finding_reason": None,
+        }],
+        "call_classifications": [{
+            "call_ids": ["c2"], "classification": "necessary",
+            "reason_code": "required_for_task", "rationale": "Required work",
+            "evidence_refs": ["e-c2"],
+        }],
+    }
+    withdrawn = _assemble_final_transport(new_delta, new_packet)
+    assert [item["id"] for item in withdrawn["confirmed_findings"]] == ["f1"]
+    assert withdrawn["candidate_decisions"][1]["finding_ids"] == []
+    assert withdrawn["candidate_decisions"][1]["disposition"] == "dismissed-candidate"
+    assert "omitted" in withdrawn["candidate_decisions"][1]["reason"]
+    assert withdrawn["temporary_control_reviews"][0]["finding_id"] is None
+    assert "conflicted" in withdrawn["temporary_control_reviews"][0]["no_finding_reason"]
+
+    ambiguous = _assemble_final_transport(
+        {**new_delta,
+         "confirmed_findings": [new_finding, {**new_finding, "problem_summary": "Another cause"}],
+         "temporary_control_reviews": []},
+        new_packet,
+    )
+    assert [item["id"] for item in ambiguous["confirmed_findings"]] == ["f1"]
+    assert ambiguous["candidate_decisions"][1]["finding_ids"] == []
+    duplicate_call = _assemble_final_transport(
+        {**new_delta,
+         "call_classifications": [
+             *new_delta["call_classifications"],
+             {**new_delta["call_classifications"][0],
+              "classification": "avoidable_unimplemented", "reason_code": None},
+         ],
+         "temporary_control_reviews": []},
+        new_packet,
+    )
+    assert duplicate_call["candidate_decisions"][1]["finding_ids"] == []
 
 
 @pytest.mark.parametrize("outcome", ["success", "failure", "interruption"])
@@ -123,7 +455,112 @@ def test_completion_checkpoint_precedes_slow_sibling_and_replays(
     assert len(runner.calls) == call_count
 
 
-@pytest.mark.parametrize("defect", ["identifier", "reason", "judgment", "interrupted", "legacy"])
+@pytest.mark.parametrize("outcome", ["recovered", "timed-out-twice", "other-error"])
+def test_sol_timeout_retries_only_once_for_no_result(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, outcome: str,
+) -> None:
+    workflow = load_credit_analysis_workflow_module()
+    request, _, _ = credit_analysis_request(tmp_path)
+    plan = workflow.command_plan_orchestration(request, available_models=holistic_model_catalog())
+    state_path = pathlib.Path(plan["state_path"])
+    runner = FakeCreditModelRunner()
+    workflow.command_execute_orchestration(
+        state_path, runner=runner, task_limit=plan["projected_luna_calls"],
+    )
+    original_invoke = workflow._invoke_injected_runner
+    launches: list[str] = []
+
+    def invoke(runner_arg: Any, **kwargs: Any) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        raw, attempt = original_invoke(runner_arg, **kwargs)
+        if kwargs["task"]["phase"] != "sol-adjudication":
+            return raw, attempt
+        launches.append(pathlib.Path(kwargs["attempt_dir"]).name)
+        if outcome == "recovered" and len(launches) == 2:
+            return raw, attempt
+        pathlib.Path(attempt["raw_output_path"]).unlink()
+        events = pathlib.Path(attempt["events_path"])
+        events.write_text(
+            '{"type":"thread.started","thread_id":"synthetic"}\n'
+            '{"type":"turn.started"}\n',
+            encoding="utf-8", newline="\n",
+        )
+        attempt.update(
+            timed_out=outcome != "other-error",
+            terminated=True,
+            exit_code=1,
+            error="timed out after 600s" if outcome != "other-error" else "other runner error",
+            event_summary=workflow._jsonl_event_summary(events),
+        )
+        return None, attempt
+
+    monkeypatch.setattr(workflow, "_invoke_injected_runner", invoke)
+    if outcome == "recovered":
+        workflow.command_execute_orchestration(
+            state_path, runner=runner, task_limit=1, stop_on_validation_error=True,
+        )
+    else:
+        message = "timed out" if outcome == "timed-out-twice" else "other runner error"
+        with pytest.raises(workflow.CreditAnalysisError, match=message):
+            workflow.command_execute_orchestration(
+                state_path, runner=runner, task_limit=1, stop_on_validation_error=True,
+            )
+    saved = json.loads(state_path.read_text(encoding="utf-8"))
+    task_id = next(
+        task["task_id"] for task in saved["manifest"]["sol_tasks"]
+        if task["phase"] == "sol-adjudication"
+    )
+    attempts = saved["execution"][task_id]["attempts"]
+    assert len(attempts) == (1 if outcome == "other-error" else 2)
+    assert launches == [f"attempt-{index:03d}" for index in range(1, len(attempts) + 1)]
+    assert attempts[0]["outcome"] == "runner-error"
+    assert attempts[0]["artifacts"]["raw_output"] is None
+    if outcome == "recovered":
+        assert saved["execution"][task_id]["status"] == "complete"
+        assert attempts[1]["outcome"] == "accepted"
+        assert attempts[0]["input_sha256"] == attempts[1]["input_sha256"]
+        assert attempts[0]["prompt_path"] == attempts[1]["prompt_path"]
+    elif outcome == "timed-out-twice":
+        assert attempts[1]["outcome"] == "runner-error"
+        assert saved["execution"][task_id]["status"] == "pending"
+        with pytest.raises(workflow.CreditAnalysisError, match="timed out twice"):
+            workflow.command_execute_orchestration(state_path, runner=runner, task_limit=1)
+        assert len(launches) == 2
+
+
+def test_sol_timeout_is_ten_minutes_without_changing_luna(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from credit_analysis import luna_sol_analysis
+    from credit_analysis.orchestration_execution import _holistic_model_attempt
+
+    deadlines: list[int] = []
+
+    def capture(**kwargs: Any) -> None:
+        deadlines.append(kwargs["timeout_seconds"])
+        raise RuntimeError("captured child deadline")
+
+    monkeypatch.setattr(luna_sol_analysis, "_run_codex_child", capture)
+    for phase, role in (("luna-discovery", "luna"), ("sol-adjudication", "sol")):
+        task_id = f"{role}.test"
+        task = {
+            "task_id": task_id, "phase": phase,
+            "artifacts": {"attempts": str(tmp_path / task_id)},
+            "execution_cwd": str(tmp_path),
+        }
+        state = {
+            "analysis_id": "test", "execution": {task_id: {"attempts": []}},
+            "model_specs": {role: {"model": f"gpt-5.6-{role}", "reasoning_effort": "max"}},
+        }
+        with pytest.raises(RuntimeError, match="captured child deadline"):
+            _holistic_model_attempt(
+                runner=None, state=state, task=task, payload={}, input_sha="test",
+                prompt_path=tmp_path / "prompt.md", schema_path=tmp_path / "schema.json",
+                attempt_number=1,
+            )
+    assert deadlines == [1200, 600]
+
+
+@pytest.mark.parametrize("defect", ["reason", "judgment", "interrupted", "legacy"])
 def test_correction_feedback_retains_rejected_response_and_exact_errors(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, defect: str,
 ) -> None:
@@ -143,20 +580,8 @@ def test_correction_feedback_retains_rejected_response_and_exact_errors(
             if kwargs["task"]["phase"] != "sol-adjudication":
                 return raw
             if not self.responses:
-                if defect == "identifier":
-                    old = raw["confirmed_findings"][0]["id"]
-
-                    def rename(value: Any) -> Any:
-                        if isinstance(value, dict):
-                            return {key: rename(item) for key, item in value.items()}
-                        if isinstance(value, list):
-                            return [rename(item) for item in value]
-                        return "F01" if value == old else value
-
-                    raw = rename(raw)
-                else:
-                    group = next(item for item in raw["call_classifications"] if item["classification"] == "avoidable_implemented")
-                    group["reason_code"] = "ordinary-model-error"
+                group = next(item for item in raw["call_classifications"] if item["classification"] == "avoidable_implemented")
+                group["reason_code"] = "ordinary-model-error"
             elif self.feedback is None:
                 self.feedback = json.loads(kwargs["prompt"].split("\nCorrection request:\n", 1)[1])
                 assert self.feedback["prior_response"] == self.responses[0]
@@ -305,6 +730,23 @@ def test_full_analysis_uses_run_windows_parallel_tiers_and_exact_coverage(
     assert phases.count("sol-direct-evidence") == 1
     assert phases.count("sol-final") == 1
     final_call = next(call for call in runner.calls if call["phase"] == "sol-final")
+    final_task = next(
+        task
+        for task in manifest["sol_tasks"]
+        if task["phase"] == "sol-final"
+    )
+    final_prompt = pathlib.Path(final_task["artifacts"]["prompt"]).read_text(
+        encoding="utf-8"
+    )
+    final_schema = json.loads(
+        pathlib.Path(final_task["artifacts"]["schema"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert (
+        len(final_prompt.encode("utf-8")) + workflow._json_bytes(final_schema)
+        <= state["model_specs"]["sol"]["input_byte_budget"]
+    )
     assert final_call["input_payload"]["canonical_state"] == []
     assert final_call["input_payload"]["surface_contracts"] == {}
     assert all(
@@ -576,6 +1018,61 @@ def test_full_analysis_uses_run_windows_parallel_tiers_and_exact_coverage(
             mismatch_request,
             available_models=holistic_model_catalog(),
         )
+
+
+def test_final_payload_accounts_for_schema_and_prompt_overhead(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workflow = load_credit_analysis_workflow_module()
+    globals_ = workflow.command_plan_orchestration.__globals__
+    monkeypatch.setitem(
+        globals_,
+        "_holistic_sol_schema",
+        lambda **_: {"schema_padding": "s" * 300},
+    )
+    monkeypatch.setitem(
+        globals_,
+        "_holistic_prompt",
+        lambda **kwargs: (
+            "p" * 200
+            + json.dumps(
+                kwargs["input_payload"],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        ),
+    )
+    state = {
+        "model_specs": {
+            "sol": {
+                "evidence_byte_budget": 900,
+                "input_byte_budget": 1_000,
+            }
+        }
+    }
+    canonical_payload = {
+        "fixed": "x" * 100,
+        "deep_review_evidence": [{"record": "excluded-from-base"}],
+    }
+    base_payload = {**canonical_payload, "deep_review_evidence": []}
+    schema = {"schema_padding": "s" * 300}
+    expected = min(
+        900,
+        1_000 - 200 - workflow._json_bytes(schema),
+    )
+
+    budget = globals_["_final_payload_byte_budget"](
+        state=state,
+        task={},
+        contract={},
+        canonical_payload=canonical_payload,
+        luna_candidate_ids=[],
+        aliases={},
+        canonical_to_alias={},
+    )
+
+    assert budget == expected
+    assert workflow._json_bytes(base_payload) < budget < 900
 
 
 def test_removed_bounded_action_is_rejected(tmp_path: pathlib.Path) -> None:
@@ -906,7 +1403,8 @@ def test_credit_analysis_workflow_end_to_end_uses_sharded_semantic_calls(
     )
     automation_root.mkdir(parents=True)
     installed_skill_root.mkdir(parents=True)
-    (codex_home / "AGENTS.md").write_text(
+    global_rules = codex_home / "AGENTS.md"
+    global_rules.write_text(
         "CURRENT_GLOBAL_CONTROL_SENTINEL\n",
         encoding="utf-8",
         newline="\n",
@@ -923,7 +1421,8 @@ def test_credit_analysis_workflow_end_to_end_uses_sharded_semantic_calls(
     )
     alternate_cwd = tmp_path / "alternate-cwd"
     alternate_cwd.mkdir()
-    (alternate_cwd / "AGENTS.md").write_text(
+    alternate_rules = alternate_cwd / "AGENTS.md"
+    alternate_rules.write_text(
         "RUN_LOCAL_CONTROL_SENTINEL\n",
         encoding="utf-8",
         newline="\n",
@@ -1101,6 +1600,18 @@ def test_credit_analysis_workflow_end_to_end_uses_sharded_semantic_calls(
     assert [(call["model"], call["reasoning_effort"]) for call in runner.calls] == [
         ("gpt-5.6-luna", "max")
     ]
+    global_rules.write_text(
+        "LATER_GLOBAL_CONTROL_SENTINEL\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    alternate_rules.write_text(
+        "LATER_RUN_LOCAL_CONTROL_SENTINEL\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    drifted_status = workflow.command_orchestration_status(state_path)
+    assert drifted_status["completed_tasks"] == 1
     after_luna_state = json.loads(state_path.read_text(encoding="utf-8"))
     accepted_luna = json.loads(
         pathlib.Path(
@@ -1257,6 +1768,11 @@ def test_credit_analysis_workflow_end_to_end_uses_sharded_semantic_calls(
         for chain in rule_context["source_chains"]
         for item in chain["differing_from_primary"]
     )
+    assert not any(
+        "LATER_RUN_LOCAL_CONTROL_SENTINEL" in item["text"]
+        for chain in rule_context["source_chains"]
+        for item in chain["differing_from_primary"]
+    )
     final_path = pathlib.Path(completed["final_result_path"])
     final_before = final_path.read_bytes()
     final = json.loads(final_before)
@@ -1267,12 +1783,27 @@ def test_credit_analysis_workflow_end_to_end_uses_sharded_semantic_calls(
         for chain in completed_state["execution_context"]["instruction_chains"]
         for item in chain["files"]
     ]
-    global_rules = codex_home / "AGENTS.md"
     assert any(
         pathlib.Path(item["path"]) == global_rules.resolve()
-        and item["sha256"] == hashlib.sha256(global_rules.read_bytes()).hexdigest()
+        and item["text"] == "CURRENT_GLOBAL_CONTROL_SENTINEL\n"
+        and item["sha256"]
+        == hashlib.sha256(item["text"].encode("utf-8")).hexdigest()
         for item in frozen_rule_files
     )
+    assert global_rules.read_text(encoding="utf-8") == (
+        "LATER_GLOBAL_CONTROL_SENTINEL\n"
+    )
+    corrupted_context = json.loads(
+        json.dumps(completed_state["execution_context"])
+    )
+    corrupted_context["instruction_chains"][0]["files"][0]["text"] += "changed"
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="frozen instruction file identity changed",
+    ):
+        workflow.command_orchestration_status.__globals__[
+            "_validate_execution_context"
+        ](corrupted_context)
     tasks_by_id = {
         item["task_id"]: item
         for item in [
@@ -1498,31 +2029,17 @@ def test_credit_analysis_workflow_end_to_end_uses_sharded_semantic_calls(
     )
     capped_state_path = pathlib.Path(capped_plan["state_path"])
 
-    class MergedRiskRunner(FakeCreditModelRunner):
-        @staticmethod
-        def _final(packet: Mapping[str, Any]) -> dict[str, Any]:
-            result = FakeCreditModelRunner._final(packet)
-            risk = result["plausible_risks"][0]
-            original_id = risk["id"]
-            risk["id"] = "merged-prior-risks"
-            risk["description"] = "The prior risks have been consolidated and rewritten."
-            for decision in result["candidate_decisions"]:
-                decision["risk_ids"] = [
-                    risk["id"] if item == original_id else item for item in decision["risk_ids"]
-                ]
-            return result
-
-    capped_runner = MergedRiskRunner()
+    capped_runner = FakeCreditModelRunner()
     current_validator = workflow._validate_holistic_task_result
 
     def previous_validator(raw: Mapping[str, Any], **kwargs: Any) -> dict[str, Any]:
         if kwargs["task"]["phase"] == "sol-final":
-            raise workflow.CreditAnalysisError("simulated prior-risk preservation failure")
+            raise workflow.CreditAnalysisError("simulated final-result validation failure")
         return current_validator(raw, **kwargs)
 
     with monkeypatch.context() as patch:
         patch.setattr(workflow, "_validate_holistic_task_result", previous_validator)
-        with pytest.raises(workflow.CreditAnalysisError, match="simulated prior-risk preservation failure"):
+        with pytest.raises(workflow.CreditAnalysisError, match="simulated final-result validation failure"):
             workflow.command_execute_orchestration(
                 capped_state_path, runner=capped_runner,
                 available_models=capped_runner.available_models,
@@ -1569,6 +2086,181 @@ def test_credit_analysis_workflow_end_to_end_uses_sharded_semantic_calls(
     )["complete"] is True
     assert recovered_result_path.read_bytes() == final_bytes
     assert len(capped_runner.calls) == capped_call_count
+
+    mechanical_root = tmp_path / "mechanical-sol-repair"
+    mechanical_root.mkdir()
+    mechanical_request, _, _ = credit_analysis_request(
+        mechanical_root,
+        extra_completed_turns=3,
+        extra_calls_per_turn=4,
+    )
+    mechanical_plan = workflow.command_plan_orchestration(
+        mechanical_request,
+        available_models=holistic_model_catalog(),
+    )
+
+    class MechanicalSolRunner(FakeCreditModelRunner):
+        def __init__(self) -> None:
+            super().__init__()
+            self.rationale_task_id: str | None = None
+            self.review_task_id: str | None = None
+            self.invalid_review_id = "Invalid Review ID"
+
+        def _sol(
+            self,
+            task: Mapping[str, Any],
+            packet: Mapping[str, Any],
+            digest: str,
+        ) -> dict[str, Any]:
+            result = super()._sol(task, packet, digest)
+            if self.rationale_task_id is None and result["call_classifications"]:
+                self.rationale_task_id = str(task["task_id"])
+                result["call_classifications"][0]["rationale"] = "r" * 400
+            if self.review_task_id is None and result["temporary_control_reviews"]:
+                self.review_task_id = str(task["task_id"])
+                referenced = {
+                    review_id
+                    for merge in result["temporary_control_merges"]
+                    for review_id in merge["review_ids"]
+                }
+                review = next(
+                    (
+                        item
+                        for item in result["temporary_control_reviews"]
+                        if item["id"] in referenced
+                    ),
+                    result["temporary_control_reviews"][0],
+                )
+                original_id = review["id"]
+                review["id"] = self.invalid_review_id
+                for merge in result["temporary_control_merges"]:
+                    merge["review_ids"] = [
+                        self.invalid_review_id if item == original_id else item
+                        for item in merge["review_ids"]
+                    ]
+            return result
+
+    mechanical_runner = MechanicalSolRunner()
+    mechanical_state_path = pathlib.Path(mechanical_plan["state_path"])
+    mechanical_status = workflow.command_execute_orchestration(
+        mechanical_state_path,
+        runner=mechanical_runner,
+        available_models=mechanical_runner.available_models,
+    )
+    assert mechanical_status["complete"] is True
+    assert mechanical_runner.rationale_task_id is not None
+    assert mechanical_runner.review_task_id is not None
+    mechanical_state = json.loads(
+        mechanical_state_path.read_text(encoding="utf-8")
+    )
+    assert (
+        mechanical_state["model_attempts"]["sol"]
+        == mechanical_state["model_calls"]["sol"]
+    )
+    rationale_execution = mechanical_state["execution"][
+        mechanical_runner.rationale_task_id
+    ]
+    assert [item["outcome"] for item in rationale_execution["attempts"]] == [
+        "accepted"
+    ]
+    raw_rationale = json.loads(
+        pathlib.Path(
+            rationale_execution["attempts"][0]["artifacts"]["raw_output"]["path"]
+        ).read_text(encoding="utf-8")
+    )
+    accepted_rationale = json.loads(
+        pathlib.Path(rationale_execution["result"]["path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert len(raw_rationale["call_classifications"][0]["rationale"]) == 400
+    assert all(
+        len(item["rationale"]) <= 240
+        for item in accepted_rationale["call_classifications"]
+    )
+    review_execution = mechanical_state["execution"][
+        mechanical_runner.review_task_id
+    ]
+    assert [item["outcome"] for item in review_execution["attempts"]] == [
+        "accepted"
+    ]
+    raw_review = json.loads(
+        pathlib.Path(
+            review_execution["attempts"][0]["artifacts"]["raw_output"]["path"]
+        ).read_text(encoding="utf-8")
+    )
+    accepted_review = json.loads(
+        pathlib.Path(review_execution["result"]["path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert mechanical_runner.invalid_review_id in {
+        item["id"] for item in raw_review["temporary_control_reviews"]
+    }
+    accepted_review_ids = {
+        item["id"] for item in accepted_review["temporary_control_reviews"]
+    }
+    assert mechanical_runner.invalid_review_id not in accepted_review_ids
+    assert "review-0001" in accepted_review_ids
+    assert all(
+        set(merge["review_ids"]).issubset(accepted_review_ids)
+        for merge in accepted_review["temporary_control_merges"]
+    )
+
+    zero_review_root = tmp_path / "zero-accepted-reviewers"
+    zero_review_root.mkdir()
+    zero_review_request, _, _ = credit_analysis_request(zero_review_root)
+    zero_review_plan = workflow.command_plan_orchestration(
+        zero_review_request,
+        available_models=holistic_model_catalog(),
+    )
+
+    class AllInvalidSolRunner(FakeCreditModelRunner):
+        def _sol(
+            self,
+            task: Mapping[str, Any],
+            packet: Mapping[str, Any],
+            digest: str,
+        ) -> dict[str, Any]:
+            result = super()._sol(task, packet, digest)
+            result["candidate_decisions"][0]["reason"] = "x" * 321
+            return result
+
+    zero_review_runner = AllInvalidSolRunner()
+    zero_review_state_path = pathlib.Path(zero_review_plan["state_path"])
+    zero_review_status = workflow.command_execute_orchestration(
+        zero_review_state_path,
+        runner=zero_review_runner,
+        available_models=zero_review_runner.available_models,
+    )
+    assert zero_review_status["phase"] == "incomplete"
+    assert zero_review_status["complete"] is False
+    assert zero_review_status["next_task"] is None
+    assert zero_review_status["final_result_path"] is None
+    assert zero_review_status["report_path"] is None
+    assert not any(
+        call["phase"] == "sol-final" for call in zero_review_runner.calls
+    )
+    zero_review_state = json.loads(
+        zero_review_state_path.read_text(encoding="utf-8")
+    )
+    assert zero_review_state["execution"]["sol.final"]["status"] == "skipped"
+    assert not any(
+        zero_review_state["execution"][task["task_id"]]["status"] == "complete"
+        for task in zero_review_state["manifest"]["sol_tasks"]
+        if task["phase"] == "sol-adjudication"
+    )
+    assert any(
+        item["reason"] == "sol-invalid-output"
+        for item in zero_review_state["omissions"]
+    )
+    zero_review_call_count = len(zero_review_runner.calls)
+    assert workflow.command_execute_orchestration(
+        zero_review_state_path,
+        runner=zero_review_runner,
+        available_models=zero_review_runner.available_models,
+    )["phase"] == "incomplete"
+    assert len(zero_review_runner.calls) == zero_review_call_count
 
     persistent_root = tmp_path / "persistent-invalid-sol"
     persistent_root.mkdir()

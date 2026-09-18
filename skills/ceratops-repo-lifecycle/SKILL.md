@@ -10,7 +10,8 @@ description: Route Ceratops repository lifecycle work to action references for r
 Route repository compatibility, local Git, GitHub, release publication, and
 deployment lifecycle work to the narrowest action reference. Keep repository
 state transitions in the skill while `sdlc/sdlc.yml` describes repository
-setup and validation, plus deliverable validation, deployment and publication.
+setup, validation and tests, plus deliverable validation, tests, deployment
+and publication.
 
 ## Context
 
@@ -19,8 +20,8 @@ setup and validation, plus deliverable validation, deployment and publication.
 - Create or publish a repository: `references/create-or-publish.md`
 - Apply Ceratops compatibility to an existing repository:
   `references/apply-ceratops-compatibility.md`
-- Review repository-validation, GitHub, code, PR, artifact, registry,
-  and release contracts:
+- Review Ceratops compatibility, repository-validation, GitHub, code, PR,
+  artifact, registry, and release contracts:
   `references/repo-contracts-review.md`
 - Validate or apply a CodeQL alert disposition:
   `references/codeql-disposition.md`
@@ -60,26 +61,40 @@ setup and validation, plus deliverable validation, deployment and publication.
   `repository.bootstrap.runtime` or
   `deliverables.skills.deploy-local.ceratops-managed`.
   Version 1 locations use `deploy.operations.NAME` or `release.operations.NAME`.
+- For SDLC v4, select `repository.actions.ACTION` or
+  `deliverables.KIND.NAME.actions.ACTION`. Read the package prerequisites and
+  action locations returned by `--prepare-only` before a dependent action;
+  select prerequisite actions explicitly after checking their artifact state.
+  A structured `steps.handoff` is pending work for the named lifecycle, not
+  evidence that validation, installation, or publication completed.
 - Use supported SDLC formats through the shared loader without migration.
   Require an upgrade only when the requested operation cannot run safely;
   installer release-number differences alone do not establish incompatibility.
-- Materialize new SDLC contracts in the current format and preserve supported
-  existing contracts.
+- Apply current compatibility with SDLC version 3 and separate validation and
+  tests. Read v4 through the shared schema and operation adapter without
+  converting existing contracts; the compatibility producer upgrades older
+  formats only with clear operation ownership.
 - Read declared prerequisite metadata before setup; run only explicitly chosen
   bootstrap operations. Prerequisites and artifact identity are annotations,
   not inferred check or installation commands.
-- Treat handoffs as advisory routing within the requested action, not executable
-  prose, proof of deployment, or a completion-receipt protocol.
+- For SDLC version 3, run skill-owned deterministic action bindings through the
+  SDLC engine. Return unresolved routes as blockers before dependent mutation.
+  CI defers every skill handoff without claiming its action completed.
+- Require successful validation followed by separate tests before promotion
+  continuation, shipping, publication, and deployment. Invoke repository
+  runners for these gates; test runners own saved-result reuse. Explicit
+  selection cannot omit version-3 gates; a declared no-op must include its
+  reason.
 - Treat `completed` as command completion; validate retained
   `step_results[].result` independently against the producer's schema and
   status.
   Preserve those values and reuse saved results; never replay completed
   deployment
   or publication solely to recover missing output.
-- Keep ordinary repository-check failures, including `validation_failed`,
+- Keep ordinary repository-check failures, including `validation_failed` and `tests_failed`,
   inside the active action: diagnose and repair in the selected task worktree,
   commit, then repeat promotion or restart shipping for the new commit. Do not
-  perform later deployment or remote mutation before successful validation.
+  perform later deployment or remote mutation before successful validation and tests.
   Stop only when safe authorized repair cannot proceed, naming the exact cause.
 - Use `references/merge-pr.md` for standalone PR finalization. Integrated ship
   must preserve every readiness, CI, Codex-review, and exact-head gate before

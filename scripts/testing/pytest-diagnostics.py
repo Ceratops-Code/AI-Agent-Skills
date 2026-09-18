@@ -148,15 +148,25 @@ def _pytest_source_location(identity: str, section: Sequence[str]) -> str | None
 def _pytest_failure_excerpt(section: Sequence[str], fallback: str) -> str:
     """Return bounded decisive lines for one failure, or its summary reason."""
 
-    decisive = _stable_unique(
-        line
-        for line in section
-        if line.startswith(("E ", "AssertionError", "assert ", "> "))
+    # Ordinary source assertions can have passed before the reported failure.
+    # Use pytest's explanation first; the marked failing source is a fallback.
+    decisive = [line for line in section if line.startswith(("E ", "AssertionError"))]
+    if not decisive:
+        decisive = [line for line in section if line.startswith("> ")]
+    return _bounded_lines(
+        decisive or [fallback], line_limit=6,
+        byte_limit=PYTEST_FAILURE_EXCERPT_BYTES,
     )
-    return _utf8_prefix(
-        "\n".join(decisive[:6]) if decisive else fallback,
-        PYTEST_FAILURE_EXCERPT_BYTES,
-    )
+
+
+def _bounded_lines(lines: Iterable[str], *, line_limit: int, byte_limit: int) -> str:
+    """Share the byte budget so a long value cannot hide later comparison lines."""
+
+    selected = _stable_unique(lines)[:line_limit]
+    if not selected:
+        return ""
+    per_line = (byte_limit - len(selected) + 1) // len(selected)
+    return "\n".join(_utf8_prefix(line, per_line) for line in selected)
 
 
 def pytest_failure_summary(stdout: str, stderr: str) -> dict[str, object]:
@@ -168,7 +178,6 @@ def pytest_failure_summary(stdout: str, stderr: str) -> dict[str, object]:
     lines = [line.strip() for line in raw_lines if line.strip()]
     summaries: list[tuple[str, str]] = []
     seen_identities: set[str] = set()
-    decisive: list[str] = []
     for line in lines:
         if line.startswith(("FAILED ", "ERROR ")):
             summary = line.split(maxsplit=1)
@@ -177,8 +186,6 @@ def pytest_failure_summary(stdout: str, stderr: str) -> dict[str, object]:
                 if identity and identity not in seen_identities:
                     summaries.append((identity, reason if separator else ""))
                     seen_identities.add(identity)
-        if line.startswith(("E ", "AssertionError", "assert ")):
-            decisive.append(_utf8_prefix(line, 500))
 
     sections = _pytest_failure_sections(raw_lines)
     title_counts = Counter(_pytest_title(identity) for identity, _reason in summaries)
@@ -201,8 +208,9 @@ def pytest_failure_summary(stdout: str, stderr: str) -> dict[str, object]:
         "omitted_failure_count": max(0, len(summaries) - len(failures)),
         "failures": failures,
         "failed_tests": [failure["test"] for failure in failures],
-        "decisive_excerpt": _utf8_prefix(
-            "\n".join(_stable_unique(decisive)[:8]), 2_000
+        "decisive_excerpt": _bounded_lines(
+            (line for failure in failures for line in str(failure["excerpt"]).splitlines()),
+            line_limit=8, byte_limit=2_000,
         ),
         "context_excerpt": _utf8_prefix(
             "\n".join(_utf8_prefix(line, 200) for line in lines[-8:]),
