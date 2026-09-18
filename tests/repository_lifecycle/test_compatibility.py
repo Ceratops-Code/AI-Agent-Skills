@@ -1244,6 +1244,14 @@ def test_compatibility_materializes_action_assignments(tmp_path: pathlib.Path, i
 def test_generated_scripts_and_skill_owned_ci_keep_environments_and_tests_separate(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    def install_npm(target: pathlib.Path) -> None:
+        npm = "npm.cmd" if os.name == "nt" else "npm"
+        installed = subprocess.run(
+            [npm, "--prefix", "scripts", "ci"], cwd=target,
+            capture_output=True, text=True, check=False,
+        )
+        assert installed.returncode == 0, installed.stdout + installed.stderr
+
     repo = tmp_path / "independent"
     repo.mkdir()
     (repo / "scripts").mkdir()
@@ -1307,12 +1315,7 @@ def test_generated_scripts_and_skill_owned_ci_keep_environments_and_tests_separa
     assert stale.returncode != 0 and not stale.stdout.strip()
     assert (repo / "scripts/uv.lock").read_bytes() == lock_before
     project.write_bytes(project_before)
-    npm = "npm.cmd" if os.name == "nt" else "npm"
-    installed = subprocess.run(
-        [npm, "--prefix", "scripts", "ci"], cwd=repo,
-        capture_output=True, text=True, check=False,
-    )
-    assert installed.returncode == 0, installed.stdout + installed.stderr
+    install_npm(repo)
     prefix = ["uv", "run", "--locked"]
     validation = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=repo, capture_output=True, text=True, check=False)
     assert validation.returncode == 0, validation.stderr
@@ -1376,6 +1379,7 @@ def test_generated_scripts_and_skill_owned_ci_keep_environments_and_tests_separa
     (root_configured / "scripts/check_probe.py").write_text('import math\ndef value() -> int:\n    return "allowed"\n')
     created = run_compatibility_engine(REPOSITORY_LIFECYCLE_SCRIPTS, "apply", "--target-repo-root", str(root_configured))
     assert created.returncode == 0, created.stdout
+    install_npm(root_configured)
     defaults = tomllib.loads((root_configured / "scripts/pyproject.toml").read_text())["tool"]
     assert "ruff" not in defaults and "mypy" not in defaults
     root_check = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=root_configured, capture_output=True, text=True, check=False)
