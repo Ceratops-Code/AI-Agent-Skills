@@ -16,6 +16,7 @@ import pytest
 from tests.repository_lifecycle.support import (
     MANAGE_PENDING_WORK,
     OPERATION_RUNNER,
+    PR_WORKFLOW_ENTRYPOINT,
     PROMOTE_REPOSITORY,
     SHIP_REPOSITORY,
     prepare_divergent_promotion_repo,
@@ -1433,7 +1434,7 @@ def test_composed_promotion_and_shipping_each_run_their_validation_boundary(
             return original_shipping(command, **kwargs)
         if "prepare" in command:
             return 0, {"status": "ready", "pending_work_scope": "", "source_branches": []}
-        assert "github_pr_workflow" in command
+        assert pathlib.Path(command[1]) == PR_WORKFLOW_ENTRYPOINT
         assert log.read_text().splitlines() == ["checked", "checked"]
         return 0, {"status": "shipped", "commit": head, "synchronized_head": head}
 
