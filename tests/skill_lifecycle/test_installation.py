@@ -1116,6 +1116,13 @@ def test_shared_skill_python_environment_reuses_lock_and_repairs_missing_package
     runtimes = [pathlib.Path(item["python_runtime"]) for item in manifests]
     assert runtimes[0] == runtimes[1]
     assert runtimes[0].is_file()
+    assert not runtimes[0].is_symlink()
+    if os.name != "nt":
+        assert all(
+            not path.is_symlink()
+            for path in runtimes[0].parent.iterdir()
+            if path.name in {"python", "python3", "python3.14"}
+        )
     assert runtimes[0].parent.parent.parent.parent == codex_home / "runtimes/ceratops/versions"
     for name in names:
         skill = destination / name
@@ -1187,6 +1194,9 @@ def test_shared_skill_python_environment_reuses_lock_and_repairs_missing_package
     assert shared_import.returncode == 0, shared_import.stderr
     removed = subprocess.run([uv, "pip", "uninstall", "--python", str(interpreter), "jsonschema"], capture_output=True, text=True, check=False)
     assert removed.returncode == 0, removed.stderr
+    if os.name != "nt":
+        interpreter.unlink()
+        interpreter.symlink_to("python3")
     legacy_scripts = destination / names[0] / "scripts"
     (legacy_scripts / "run-skill.py").write_text("# retired launcher\n")
     legacy_project = legacy_scripts / "python-runtime"

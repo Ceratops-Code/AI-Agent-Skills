@@ -995,6 +995,55 @@ def _test_selection_phase(
         }) from exc
 
 
+def _synchronized_post_merge_resume(
+    args: argparse.Namespace, repo_root: pathlib.Path, target_commit: str | None,
+) -> bool:
+    """Recognize a recorded merge already synchronized to both local branches.
+
+    Only the GitHub ship checkpoint can waive the staged-head test selection.
+    The child ship command still rechecks that checkpoint and its PR identity.
+    """
+    head = repository_commit(repo_root)
+    if not args.commit or not target_commit or head == target_commit:
+        return False
+    repository = github_ship._repository_name(repo_root, args.repo)
+    checkpoint_path = github_ship._checkpoint_path(repo_root, repository, target_commit)
+    if not checkpoint_path.is_file():
+        return False
+    checkpoint = github_ship._read_checkpoint(checkpoint_path)
+    if (
+        checkpoint.get("repository") != repository
+        or checkpoint.get("commit") != target_commit
+        or checkpoint.get("head_branch") != args.head_branch
+        or checkpoint.get("base_branch") != args.base_branch
+        or checkpoint.get("phase") != "synchronized"
+        or checkpoint.get("synchronized_head") != head
+        or not isinstance(checkpoint.get("merge_commit"), str)
+    ):
+        return False
+    require_clean_commit(repo_root, head)
+    active = subprocess.run(
+        ["git", "branch", "--show-current"], cwd=repo_root,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False,
+    )
+    if active.returncode or active.stdout.strip() != args.base_branch:
+        return False
+    expected_branches = (
+        (args.base_branch, head),
+        (args.head_branch, head if args.reusable_head else target_commit),
+    )
+    for branch, expected in expected_branches:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", f"refs/heads/{branch}^{{commit}}"],
+            cwd=repo_root, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False,
+        )
+        if result.returncode or result.stdout.strip() != expected:
+            return False
+    return True
+
+
 def ship_repository(args: argparse.Namespace) -> dict[str, object]:
     """Run complete shipping, release publication, deployment, and cleanup."""
 
@@ -1054,7 +1103,10 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
         args, repo_root, [*release_operations, *deploy_operations],
         phase="before_remote", remote_mutation=False,
     )
-    test_selection = _test_selection_phase(args, repo_root, prepared_target_commit)
+    test_selection = (
+        None if _synchronized_post_merge_resume(args, repo_root, prepared_target_commit)
+        else _test_selection_phase(args, repo_root, prepared_target_commit)
+    )
     ship_code, shipped = _run_json(
         _ship_command(
             args,

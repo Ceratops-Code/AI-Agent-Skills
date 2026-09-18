@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import pathlib
 import runpy
 import shutil
+import stat
 import subprocess
 import sys
 from typing import Any
@@ -67,6 +69,10 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
         (directory / "artifact.txt").write_text(
             "temporary\n", encoding="utf-8", newline="\n"
         )
+    loose_object = worktree_temp / "clone" / ".git" / "objects" / "ab" / "cdef"
+    loose_object.parent.mkdir(parents=True)
+    loose_object.write_bytes(b"git object\n")
+    os.chmod(loose_object, stat.S_IREAD)
     retained_state = thread_temp / "workflow" / "skill-update-state.json"
     retained_state.parent.mkdir()
     retained_state.write_text("{}\n", encoding="utf-8", newline="\n")
@@ -943,6 +949,10 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
             assert removed.returncode == 0, removed.stderr
             selected_a.mkdir(parents=True)
             (selected_a / ".pytest_cache").mkdir()
+            loose_object = selected_a / ".git" / "objects" / "ab" / "cdef"
+            loose_object.parent.mkdir(parents=True)
+            loose_object.write_bytes(b"git object\n")
+            os.chmod(loose_object, stat.S_IREAD)
             return subprocess.CompletedProcess(
                 command,
                 1,
