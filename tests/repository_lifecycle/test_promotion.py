@@ -221,13 +221,14 @@ def test_promote_repository_requires_an_explicit_deployment_choice(
         [sys.executable, str(PROMOTE_REPOSITORY), "--repo-root", str(repo),
          "--finalize-result", "--result-file", str(result_file),
          "--task-temp-root", str(task_temp), "--expected-commit", approved_head,
-         "--verified-result-sha256", hashlib.sha256(data).hexdigest()],
+         "--verified-result-sha256", hashlib.sha256(data).hexdigest(),
+         *(["--promotion-only"] if expected_operation is None else [])],
         capture_output=True, text=True, check=False, env=environment,
     )
     if expected_operation is None:
-        assert finalized.returncode == 1
-        assert json.loads(finalized.stderr)["replay_required"] is False
-        assert result_file.read_bytes() == data
+        assert finalized.returncode == 0, finalized.stderr
+        assert finalized.stdout == "OK\n"
+        assert not result_file.exists()
         assert not log.exists()
     elif expected_handoff is not None:
         assert finalized.returncode == 1
@@ -425,6 +426,7 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
     rejected(["--expected-commit", "HEAD"], "full expected-commit")
     rejected(["--verified-result-sha256", "0" * 64], "changed since")
     rejected(["--verified-result-sha256", ""], "validating every producer receipt")
+    rejected(["--promotion-only"], "Promotion-only result is incomplete")
     rejected(["--run-operation", "deliverables.sample.deploy-local.custom-deploy"], "execution options")
     rejected(["--task-temp-root", str(tmp_path)], "one existing task directory")
 
