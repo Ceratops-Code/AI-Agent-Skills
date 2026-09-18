@@ -1004,7 +1004,7 @@ def _synchronized_post_merge_resume(
     The child ship command still rechecks that checkpoint and its PR identity.
     """
     head = repository_commit(repo_root)
-    if not args.commit or not target_commit or head == target_commit:
+    if not args.commit or not target_commit or not head or head == target_commit:
         return False
     repository = github_ship._repository_name(repo_root, args.repo)
     checkpoint_path = github_ship._checkpoint_path(repo_root, repository, target_commit)

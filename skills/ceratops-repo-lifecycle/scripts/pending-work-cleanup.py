@@ -147,9 +147,9 @@ def _remove_tree(root: pathlib.Path) -> None:
                     continue
                 if not stat.S_ISREG(child_attributes.st_mode):
                     raise PendingWorkError(f"Tree cleanup path is not a regular file: {child}")
-                if child_attributes.st_file_attributes & readonly_flag:
+                if getattr(child_attributes, "st_file_attributes", 0) & readonly_flag:
                     os.chmod(child, child_attributes.st_mode | stat.S_IWRITE)
-            if current_attributes.st_file_attributes & readonly_flag:
+            if getattr(current_attributes, "st_file_attributes", 0) & readonly_flag:
                 os.chmod(directory, current_attributes.st_mode | stat.S_IWRITE)
     shutil.rmtree(root)
 
