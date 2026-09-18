@@ -21,6 +21,7 @@ from tests.skill_lifecycle.support import (
     runtime_skill_text,
 )
 from tests.support.repositories import (
+    ROOT,
     add_skill,
     create_compatible_repo,
     run_git,
@@ -79,6 +80,28 @@ def test_runtime_installer_releases_installed_working_directory(
 
     assert result.returncode == 0, result.stderr
     assert "Repository update." in runtime_skill_text(install_root, skill)
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required for the installed Python runtime")
+def test_installed_repo_lifecycle_cleanup_helper_uses_regular_runtime(
+    tmp_path: pathlib.Path,
+) -> None:
+    install_root = tmp_path / "installed"
+    result = run_builder(ROOT, install_root, "--skill", "ceratops-repo-lifecycle")
+    assert result.returncode == 0, result.stderr
+
+    skill = install_root / "ceratops-repo-lifecycle"
+    assert (skill / "scripts" / "pending-work-cleanup.py").is_file()
+    runtime = json.loads((skill / RUNTIME_MANIFEST).read_text(encoding="utf-8"))
+    interpreter = pathlib.Path(runtime["python_runtime"])
+    assert interpreter.is_file() and not interpreter.is_symlink()
+    command = subprocess.run(
+        [str(interpreter), str(skill / "scripts" / "manage-pending-work.py"), "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert command.returncode == 0, command.stderr
 
 
 def test_full_install_removes_only_same_source_stale_skills(tmp_path: pathlib.Path) -> None:

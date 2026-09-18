@@ -96,6 +96,7 @@ def _setup(tmp_path: pathlib.Path, *, contract: bool = True) -> tuple[Any, ...]:
         "calls": 0,
         "break_after_remote": False,
         "external_failure": external_failure,
+        "target_commit_override": None,
     }
 
     def run_json(command: list[str], **kwargs: Any) -> tuple[int, dict[str, Any]]:
@@ -108,7 +109,7 @@ def _setup(tmp_path: pathlib.Path, *, contract: bool = True) -> tuple[Any, ...]:
             "status": "ready",
             "source_branches": ["selected"] if state["scope"] else [],
             "pending_work_scope": str(scope) if state["scope"] else "",
-            "target_commit": head,
+            "target_commit": state["target_commit_override"] or head,
         }
         if str(PR_WORKFLOW_ENTRYPOINT) in command:
             if state["remote_error"]:
@@ -1027,9 +1028,9 @@ def test_publish_pr_preparation_flags_are_opt_in(
     assert run_git(repo, "branch", "--show-current").stdout.strip() == "main"
     assert state["creates"] == 0
 
-@pytest.mark.parametrize("case", ["passed", "selection-failed", "fetch-failed", "missing-argument", "source-changed"])
+@pytest.mark.parametrize("case", ["passed", "selection-failed", "fetch-failed", "missing-argument", "source-changed", "post-merge-resume", "post-merge-resume-unreused", "post-merge-resume-without-checkpoint", "unverified-resume"])
 def test_repository_ship_checks_declared_test_selection_before_remote_work(
-    tmp_path: pathlib.Path, case: str,
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str,
 ) -> None:
     repo, loaded, args, _log, state, commands = _setup(tmp_path)
     remote = tmp_path / "remote.git"
@@ -1070,10 +1071,62 @@ def test_repository_ship_checks_declared_test_selection_before_remote_work(
     def checked_remote(command: list[str], **kwargs: Any) -> tuple[int, dict[str, Any]]:
         if str(PR_WORKFLOW_ENTRYPOINT) in command:
             assert json.loads(selection_log.read_text()) == [base, head]
-        return original(command, **kwargs)
+        code, payload = original(command, **kwargs)
+        if case in {"post-merge-resume", "post-merge-resume-unreused", "post-merge-resume-without-checkpoint"} and state["calls"] == 2 and str(PR_WORKFLOW_ENTRYPOINT) in command:
+            payload = {**payload, "commit": head}
+        return code, payload
 
     loaded["ship_repository"].__globals__["_run_json"] = checked_remote
-    if case == "passed":
+    if case in {"post-merge-resume", "post-merge-resume-unreused", "post-merge-resume-without-checkpoint", "unverified-resume"}:
+        state["scope"] = True
+        state["late_block"] = "post_sync"
+        args.repo = "example/repository"
+        args.reusable_head = case != "post-merge-resume-unreused"
+        first = loaded["ship_repository"](args)
+        assert first["status"] == "pending_work"
+        assert json.loads(selection_log.read_text()) == [base, head]
+        args = loaded["build_parser"]().parse_args(first["resume_action"]["argv"][2:])
+        assert run_git(repo, "checkout", "-b", args.base_branch).returncode == 0
+        (repo / "merged.txt").write_text("merged", encoding="utf-8")
+        synchronized = _commit(repo)
+        if args.reusable_head:
+            assert run_git(repo, "branch", "-f", "release/local", synchronized).returncode == 0
+        state["late_block"] = None
+        state["target_commit_override"] = head
+        if case in {"post-merge-resume-without-checkpoint", "unverified-resume"}:
+            def merged_pr(
+                _args: argparse.Namespace, _root: pathlib.Path,
+                repository: str, commit: str, _pending: dict[str, Any],
+            ) -> dict[str, Any] | None:
+                assert repository == args.repo and commit == head
+                if case == "unverified-resume":
+                    return None
+                return {
+                    "repository": repository, "commit": commit,
+                    "head_branch": args.head_branch, "base_branch": args.base_branch,
+                    "phase": "merged", "merge_commit": synchronized,
+                }
+            monkeypatch.setattr(loaded["github_ship"], "_merged_pr_checkpoint", merged_pr)
+        if case in {"post-merge-resume", "post-merge-resume-unreused", "post-merge-resume-without-checkpoint"}:
+            checkpoint = loaded["github_ship"]._checkpoint_path(repo, args.repo, head)
+            if case == "post-merge-resume-without-checkpoint":
+                assert not checkpoint.exists()
+            else:
+                checkpoint.parent.mkdir(parents=True, exist_ok=True)
+                checkpoint.write_text(json.dumps({
+                    "repository": args.repo, "commit": head, "head_branch": args.head_branch,
+                    "base_branch": args.base_branch, "phase": "synchronized",
+                    "merge_commit": synchronized, "synchronized_head": synchronized,
+                }), encoding="utf-8")
+            resumed = loaded["ship_repository"](args)
+            assert resumed["status"] == "already_shipped"
+            assert "test_selection" not in resumed
+            assert state["calls"] == 2
+        else:
+            with pytest.raises(loaded["RepositoryShipError"], match="Repository HEAD changed"):
+                loaded["ship_repository"](args)
+            assert state["calls"] == 1
+    elif case == "passed":
         result = loaded["ship_repository"](args)
         assert result["status"] == "shipped"
         assert result["test_selection"]["base"] == base
