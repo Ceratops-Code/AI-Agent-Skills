@@ -4,6 +4,7 @@ import argparse
 import json
 import pathlib
 import runpy
+import subprocess
 import sys
 from typing import Any
 
@@ -11,6 +12,7 @@ import pytest
 
 from tests.repository_lifecycle.support import (
     OPERATION_RUNNER,
+    PR_WORKFLOW_ENTRYPOINT,
     SHIP_REPOSITORY,
     load_pr_workflow_module,
 )
@@ -108,7 +110,7 @@ def _setup(tmp_path: pathlib.Path, *, contract: bool = True) -> tuple[Any, ...]:
             "pending_work_scope": str(scope) if state["scope"] else "",
             "target_commit": head,
         }
-        if "github_pr_workflow" in command:
+        if str(PR_WORKFLOW_ENTRYPOINT) in command:
             if state["remote_error"]:
                 return 1, state["remote_error"]
             assert not log.exists() or log.read_text().splitlines()[-1] == "check"
@@ -184,7 +186,14 @@ def test_repository_ship_metadata_reaches_shared_pr_producer(
         ["--repo-root", str(tmp_path), "--head-branch", "release/local", *metadata]
     )
     command = loaded["_ship_command"](args, tmp_path, None, "a" * 40)
-    parsed = ship.build_parser().parse_args(command[4:])
+    assert command[1] == str(PR_WORKFLOW_ENTRYPOINT)
+    parsed = ship.build_parser().parse_args(command[3:])
+    if not metadata:
+        smoke = subprocess.run(
+            [*command[:3], "--help"], cwd=tmp_path, capture_output=True,
+            text=True, check=False,
+        )
+        assert smoke.returncode == 0, smoke.stderr
     events: list[str] = []
     monkeypatch.setattr(ship.merge, "restore_unfinished_checkpoints", lambda root: None)
     monkeypatch.setattr(ship, "_repository_name", lambda *args: "example/repository")
@@ -237,7 +246,7 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
     assert log.read_text().splitlines() == (
         ["remote", "finalize"] if scope_present else ["remote"]
     )
-    remote = next(command for command in commands if "github_pr_workflow" in command)
+    remote = next(command for command in commands if str(PR_WORKFLOW_ENTRYPOINT) in command)
     assert ("--pending-work-check" in remote) is scope_present
     assert ("--no-pending-work-check" in remote) is not scope_present
     args.review_replies_request = tmp_path / "review-replies.json"
@@ -1030,7 +1039,7 @@ def test_repository_ship_checks_declared_test_selection_before_remote_work(
     original = loaded["ship_repository"].__globals__["_run_json"]
 
     def checked_remote(command: list[str], **kwargs: Any) -> tuple[int, dict[str, Any]]:
-        if "github_pr_workflow" in command:
+        if str(PR_WORKFLOW_ENTRYPOINT) in command:
             assert json.loads(selection_log.read_text()) == [base, head]
         return original(command, **kwargs)
 
@@ -1048,7 +1057,7 @@ def test_repository_ship_checks_declared_test_selection_before_remote_work(
         assert failure.value.payload["phase"] == "before_remote"
         assert failure.value.payload["remote_mutation"] is False
         assert state["calls"] == 0
-        assert not any("github_pr_workflow" in command for command in commands)
+        assert not any(str(PR_WORKFLOW_ENTRYPOINT) in command for command in commands)
         if case == "selection-failed":
             assert failure.value.payload["diagnostic"]["exit_code"] == 3
             assert failure.value.payload["base"] == base

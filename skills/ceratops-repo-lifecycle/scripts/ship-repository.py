@@ -40,6 +40,7 @@ from repository_operation import (
 SCRIPT_ROOT = pathlib.Path(__file__).resolve().parent
 OPERATION_RUNNER = SCRIPT_ROOT / "repository_operation.py"
 PENDING_MANAGER = SCRIPT_ROOT / "manage-pending-work.py"
+PR_WORKFLOW_ENTRYPOINT = SCRIPT_ROOT / "github_pr_workflow" / "__main__.py"
 DEFAULT_SDLC_CONTRACT = pathlib.Path("sdlc/sdlc.yml")
 RELEASE_BRANCH = "release/local"
 
@@ -552,8 +553,8 @@ def _ship_command(
 ) -> list[str]:
     command = [
         sys.executable,
-        "-m",
-        "github_pr_workflow",
+        # The child runs from repo_root, where this module is not importable by name.
+        str(PR_WORKFLOW_ENTRYPOINT),
         "ship",
         "--repo-root",
         str(repo_root),
