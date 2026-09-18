@@ -119,7 +119,7 @@ def _operation_command(
 def _run_json(
     command: list[str], *, cwd: pathlib.Path
 ) -> tuple[int, dict[str, Any]]:
-    """Run a lifecycle child outside the replaceable installed skill folder."""
+    """Run a lifecycle child and retain bounded diagnostics for invalid output."""
 
     result = subprocess.run(
         command,
@@ -132,10 +132,30 @@ def _run_json(
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise RepositoryShipError("Lifecycle helper returned invalid JSON.") from exc
-    if not isinstance(payload, dict):
-        raise RepositoryShipError("Lifecycle helper returned a non-object result.")
-    return result.returncode, payload
+        problem = "invalid JSON"
+        output_error = f"{exc.msg} at line {exc.lineno}, column {exc.colno}"
+    else:
+        if isinstance(payload, dict):
+            return result.returncode, payload
+        problem = "a non-object result"
+        output_error = f"expected an object, received {type(payload).__name__}"
+    diagnostic = {
+        # The PR body may contain user-supplied private text; keep the other
+        # arguments useful for reproducing the failing child invocation.
+        "command": [
+            "<redacted>" if index and command[index - 1] == "--body"
+            else argument[:512]
+            for index, argument in enumerate(command)
+        ],
+        "exit_code": result.returncode,
+        "stderr_tail": result.stderr[-2048:].splitlines()[-20:],
+        "stdout_tail": result.stdout[-2048:].splitlines()[-20:],
+        "output_error": output_error,
+    }
+    raise RepositoryShipError(
+        f"Lifecycle helper returned {problem} (exit code {result.returncode}).",
+        {"diagnostic": diagnostic},
+    )
 
 
 def _prepare_operation_batch(

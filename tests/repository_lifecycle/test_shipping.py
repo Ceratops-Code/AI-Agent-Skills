@@ -692,6 +692,35 @@ def test_repository_ship_child_runs_from_repository(
     assert payload == {"cwd": str(repo.resolve())}
     assert pathlib.Path.cwd() == caller
 
+    with pytest.raises(loaded["RepositoryShipError"]) as failure:
+        loaded["_run_json"](
+            [
+                sys.executable, "-c",
+                (
+                    "import sys; print('not json'); "
+                    "print('x' * 2500 + ' child import failed', file=sys.stderr); "
+                    "raise SystemExit(7)"
+                ),
+                "--body", "private PR body",
+            ],
+            cwd=repo,
+        )
+    diagnostic = failure.value.payload["diagnostic"]
+    assert "invalid JSON (exit code 7)" in failure.value.payload["message"]
+    assert diagnostic["command"][-2:] == ["--body", "<redacted>"]
+    assert diagnostic["exit_code"] == 7
+    assert diagnostic["stderr_tail"][-1].endswith("child import failed")
+    assert sum(map(len, diagnostic["stderr_tail"])) <= 2048
+    assert diagnostic["stdout_tail"] == ["not json"]
+    assert "line 1, column 1" in diagnostic["output_error"]
+
+    with pytest.raises(loaded["RepositoryShipError"]) as non_object:
+        loaded["_run_json"]([sys.executable, "-c", "print('[1]')"], cwd=repo)
+    assert "non-object" in non_object.value.payload["message"]
+    assert non_object.value.payload["diagnostic"]["output_error"] == (
+        "expected an object, received list"
+    )
+
 
 def _publish_pr_setup(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, ...]:
     """Exercise real Git preparation/push, replacing only remote GitHub responses."""
