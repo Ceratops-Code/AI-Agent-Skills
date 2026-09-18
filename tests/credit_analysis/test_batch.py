@@ -1069,6 +1069,7 @@ def _exercise_corrective_cli(
         response_correction_scope,
         validate_response_correction,
     )
+    monkeypatch.setattr(analysis, "_codex_model_catalog", holistic_model_catalog)
 
     request, _, _ = credit_analysis_request(tmp_path, extra_completed_turns=1)
     plan = workflow.command_plan_orchestration(request, available_models=holistic_model_catalog())

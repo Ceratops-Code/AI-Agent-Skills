@@ -389,8 +389,9 @@ def test_registered_skill_executor_is_portable_and_failure_is_not_completion(
     (skill / "references").mkdir(parents=True)
     (skill / "scripts").mkdir()
     python = tmp_path / "runtimes/ceratops/versions/test/.venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    created = subprocess.run(["uv", "venv", "--python", "3.14", str(python.parent.parent)], capture_output=True, text=True)
+    created = subprocess.run([sys.executable, "-m", "venv", "--copies", str(python.parent.parent)], capture_output=True, text=True)
     assert created.returncode == 0, created.stderr
+    assert not python.is_symlink()
     (skill / ".runtime-manifest.json").write_text(json.dumps({"python_runtime": str(python)}))
     script = skill / "probe.py"
     script.write_text("import pathlib, sys\npathlib.Path(sys.argv[1], 'called.txt').write_text('called')\nraise SystemExit(int(sys.argv[2]))\n")

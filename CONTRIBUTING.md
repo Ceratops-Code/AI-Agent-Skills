@@ -48,7 +48,8 @@ uv run --locked scripts/testing/run-tests.py --all
 These are the same validation and test entrypoints used by CI. The validator
 never runs tests. Its shared bootstrap selects the locked scripts environment
 before validation. Complete first-failure diagnostics go only to the selected
-evidence file. It does not invoke skill-local validators.
+evidence file. It does not invoke skill-local validators. The test suite needs
+`rg` (ripgrep) on `PATH`.
 
 Run full skill-source validation separately when skill source, metadata, shared
 sections, runtime inputs, or skill contracts change:

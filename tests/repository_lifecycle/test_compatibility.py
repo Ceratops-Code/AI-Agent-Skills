@@ -1307,6 +1307,12 @@ def test_generated_scripts_and_skill_owned_ci_keep_environments_and_tests_separa
     assert stale.returncode != 0 and not stale.stdout.strip()
     assert (repo / "scripts/uv.lock").read_bytes() == lock_before
     project.write_bytes(project_before)
+    npm = "npm.cmd" if os.name == "nt" else "npm"
+    installed = subprocess.run(
+        [npm, "--prefix", "scripts", "ci"], cwd=repo,
+        capture_output=True, text=True, check=False,
+    )
+    assert installed.returncode == 0, installed.stdout + installed.stderr
     prefix = ["uv", "run", "--locked"]
     validation = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=repo, capture_output=True, text=True, check=False)
     assert validation.returncode == 0, validation.stderr
