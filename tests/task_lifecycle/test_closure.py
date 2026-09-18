@@ -19,12 +19,12 @@ CREDIT_CONTRACT = (
     / "scripts"
     / "credit-analysis-contract.json"
 )
-CREDIT_FULL_REFERENCE = (
+CREDIT_DEEP_REFERENCE = (
     ROOT
     / "skills"
     / "ceratops-credit-savings-analysis"
     / "references"
-    / "full-analysis.md"
+    / "deep-thread-analysis.md"
 )
 
 
@@ -173,34 +173,34 @@ def test_closure_snapshot_composes_only_named_local_state(
     assert "must be provided together" in invalid.stderr
 
 
-def test_explicit_credit_analysis_defaults_to_full_analysis() -> None:
+def test_explicit_credit_analysis_routes_to_deep_thread_analysis() -> None:
     skill = CREDIT_SKILL.read_text(encoding="utf-8")
-    full = CREDIT_FULL_REFERENCE.read_text(encoding="utf-8")
+    deep = CREDIT_DEEP_REFERENCE.read_text(encoding="utf-8")
     contract = json.loads(CREDIT_CONTRACT.read_text(encoding="utf-8"))
     actions = {row["id"]: row for row in contract["public_actions"]}
 
-    assert "`full-analysis` for a generic single-thread or closure request" in skill
-    assert actions["full-analysis"] == {
-        "id": "full-analysis",
-        "reference": "references/full-analysis.md",
-        "mode": "full-analysis",
+    assert "`deep-thread-analysis` for one selected root thread" in skill
+    assert actions["deep-thread-analysis"] == {
+        "id": "deep-thread-analysis",
+        "reference": "references/deep-thread-analysis.md",
+        "mode": "deep-thread-analysis",
     }
     assert list(actions) == [
-        "full-analysis",
+        "deep-thread-analysis",
         "helper-contracts",
         "context-evidence",
         "rework-validation",
         "tool-flow",
         "instruction-reasoning",
     ]
-    assert full.startswith("# Full Analysis Action\n")
-    normalized_full = " ".join(full.split())
-    assert "every completed run as one semantic unit" in full
-    assert "assign the admitted tasks among `A = min(6," in full
-    assert "Plan at most eight" in full
-    assert "Sol calls, excluding retries and corrective attempts" in normalized_full
-    assert "allow at most sixteen" in normalized_full
-    assert "actual Sol invocations including initial calls, retries" in normalized_full
+    assert deep.startswith("# Deep Thread Analysis Action\n")
+    normalized_deep = " ".join(deep.split())
+    assert "every completed run as one semantic unit" in normalized_deep
+    assert "assign the admitted tasks among `A = min(6," in deep
+    assert "Plan at most eight" in deep
+    assert "Sol calls, excluding retries and corrective attempts" in normalized_deep
+    assert "allow at most sixteen" in normalized_deep
+    assert "actual Sol invocations including initial calls, retries" in normalized_deep
     assert contract["end_to_end_controller_commands"] == [
         "run",
         "plan",
