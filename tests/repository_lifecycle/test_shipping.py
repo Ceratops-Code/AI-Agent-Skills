@@ -416,7 +416,7 @@ def test_repository_ship_checkpoints_each_operation_before_the_next(
     category: str,
     capture_receipt: bool,
 ) -> None:
-    repo, loaded, args, log, state, _ = _setup(tmp_path)
+    repo, loaded, args, log, _state, _ = _setup(tmp_path)
     phase = "release_publication" if category == "publish" else "deployment"
     label = "publish" if category == "publish" else "deploy"
     receipt = {"schema": "test.operation-receipt.v1", "status": "OK", "kind": label}
@@ -1031,7 +1031,7 @@ def test_publish_pr_preparation_flags_are_opt_in(
 def test_repository_ship_checks_declared_test_selection_before_remote_work(
     tmp_path: pathlib.Path, case: str,
 ) -> None:
-    repo, loaded, args, log, state, commands = _setup(tmp_path)
+    repo, loaded, args, _log, state, commands = _setup(tmp_path)
     remote = tmp_path / "remote.git"
     assert run_git(tmp_path, "init", "--bare", str(remote)).returncode == 0
     args.remote_name = "ci-test"
