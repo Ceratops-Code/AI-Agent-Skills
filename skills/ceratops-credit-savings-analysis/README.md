@@ -202,15 +202,15 @@ is not split into unrelated partial findings.
 
 ### 5.1 C4 system and container view
 
-The skill has one executable system, the local credit-analysis controller. Its
-containers are Python modules and task-owned files rather than separately
-deployed services.
+The skill uses local Python helpers and task-owned files rather than separately
+deployed services. The controller runs deep analysis; the session collector
+supports ledger analysis without model orchestration.
 
 | Container | Responsibility | Implementation |
 | --- | --- | --- |
 | Public instruction layer | Selects the public action, defines policy, completion, and presentation | [SKILL.md](SKILL.md), [full-analysis.md](references/full-analysis.md), and the other action references |
 | Stable executable entry point | Keeps one script path while forwarding to modular implementation | [credit-analysis-workflow.py](scripts/credit-analysis-workflow.py) |
-| CLI dispatcher | Parses `run`, `plan`, `execute`, compatibility, and batch commands | [command_line_interface.py](scripts/credit_analysis/command_line_interface.py) |
+| CLI dispatcher | Parses `run`, `plan`, `execute`, compatibility, batch, and read-only recent-thread selection commands | [command_line_interface.py](scripts/credit_analysis/command_line_interface.py) |
 | Contract loader and evidence core | Validates the contract and requests, collects single-thread evidence, and retains the sequential compatibility controller | [single_thread_analysis.py](scripts/credit_analysis/single_thread_analysis.py) |
 | Session collector | Resolves active or archived sessions, descendant lineage, completed runs, model calls, token usage, and evidence references | [session_evidence_collector.py](scripts/credit_analysis/session_evidence_collector.py) |
 | Source execution context | Resolves run working directories, recovers identity-matched deleted worktrees, and snapshots effective `AGENTS.md` text and hashes once | [source_execution_context.py](scripts/credit_analysis/source_execution_context.py) |
@@ -227,10 +227,12 @@ deployed services.
 
 ### 5.2 Authority boundaries
 
-The JSON contract owns executable identifiers, fixed limits, models, surface
-order, classifications, and public actions. Python owns field shape,
-cross-field rules, state transitions, persistence, and failure behavior. The
-skill text owns operator-facing policy and presentation. Tests establish which
+The JSON contract owns deep-controller identifiers, fixed limits, models,
+surface order, classifications, and controller actions. `SKILL.md` owns the
+public action list; the controller actions must appear there in the same order.
+Python owns field shape, cross-field rules, state transitions, persistence,
+and failure behavior. The skill text owns operator-facing policy and
+presentation. Tests establish which
 behaviors have been exercised. This README is the authoritative explanation of
 that design; it does not override the executable sources.
 
@@ -344,6 +346,12 @@ continues a frozen plan, and `orchestration-status --state` reads public status
 without launching models.
 
 ### 6.4 Recent-thread batch
+
+`select-recent --days DAYS --output OUTPUT` uses the batch selector to write
+recent thread identities, sessions, index fingerprint, and exclusions to a
+caller-owned file. It does not prepare controller tasks or launch models.
+`--as-of` can freeze an exact UTC boundary; otherwise selection uses the
+invocation time. The action using the selection owns the output file's cleanup.
 
 `prepare-batch --request REQUEST` reads the Codex thread index at one frozen
 `as_of` timestamp. A `recent_days` selector includes entries whose index
@@ -468,6 +476,7 @@ python scripts/credit-analysis-workflow.py run --request REQUEST
 python scripts/credit-analysis-workflow.py plan --request REQUEST
 python scripts/credit-analysis-workflow.py execute --state STATE
 python scripts/credit-analysis-workflow.py orchestration-status --state STATE
+python scripts/credit-analysis-workflow.py select-recent --days DAYS --output OUTPUT [--as-of UTC]
 python scripts/credit-analysis-workflow.py prepare-batch --request REQUEST
 python scripts/credit-analysis-workflow.py status-batch --state STATE
 python scripts/credit-analysis-workflow.py advance-batch --state STATE --result RESULT
@@ -475,9 +484,9 @@ python scripts/credit-analysis-workflow.py finalize-batch --state STATE
 ```
 
 The compatibility interface adds `start`, `submit`, `prepare`, `advance`,
-`status`, and `finalize`. The exact command set and accepted artifact versions
-are registered in the contract; the CLI parser is the executable command
-authority.
+`status`, and `finalize`. The CLI parser owns the exact command set. The JSON
+contract governs controller request and result versions, not the independent
+recent-thread selection command.
 
 Requests and results are local files. There is no remote service API or
 authentication exchange. Child Codex processes use the host's existing Codex

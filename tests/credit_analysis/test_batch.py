@@ -449,6 +449,39 @@ def test_credit_analysis_batch_selects_recent_threads_and_projects_once(
             + "\n"
         )
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    quick_selection = tmp_path / "quick-selection.json"
+    quick_result = run_credit_analysis_workflow(
+        "select-recent",
+        "--days",
+        "3",
+        "--as-of",
+        "2026-08-07T18:00:00Z",
+        "--output",
+        str(quick_selection),
+    )
+    assert quick_result.returncode == 0, quick_result.stderr
+    quick_payload = json.loads(quick_selection.read_text(encoding="utf-8"))
+    assert quick_payload["schema"] == "ceratops-credit-quick-selection.v1"
+    assert [item["thread_id"] for item in quick_payload["threads"]] == [
+        thread_ids[name]
+        for name in (
+            "alpha_new",
+            "beta_new",
+            "alpha_old",
+            "gamma_mid",
+            "beta_old",
+            "gamma_edge",
+            "boundary",
+        )
+    ]
+    assert quick_payload["thread_index_fingerprint"]
+    assert json.loads(quick_result.stdout)["selected"] == 7
+    invalid_selection = tmp_path / "quick-selection-invalid.json"
+    invalid_result = run_credit_analysis_workflow(
+        "select-recent", "--days", "0", "--output", str(invalid_selection)
+    )
+    assert invalid_result.returncode == 2
+    assert not invalid_selection.exists()
     cases: list[tuple[str, dict[str, Any], list[str]]] = [
         (
             "count-overall",

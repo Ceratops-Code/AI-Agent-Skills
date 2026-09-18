@@ -5,7 +5,62 @@ from __future__ import annotations
 
 from .luna_sol_analysis import *
 from .multi_thread_analysis import *
+from .multi_thread_analysis import _select_batch_candidates
 from .single_thread_analysis import *
+from .single_thread_analysis import _exclusive_json, _load_evidence_collector
+
+
+def command_select_recent(
+    days: int, as_of_text: str | None, output_path: pathlib.Path
+) -> dict[str, Any]:
+    """Freeze recent thread identities for a read-only, non-controller scan."""
+
+    if days < 1:
+        raise CreditAnalysisError("days must be positive")
+    collector = _load_evidence_collector()
+    try:
+        as_of = (
+            collector.parse_utc_timestamp(as_of_text, "as_of")
+            if as_of_text is not None
+            else dt.datetime.now(dt.timezone.utc)
+        )
+    except RuntimeError as exc:
+        raise CreditAnalysisError(str(exc)) from exc
+    if as_of > dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5):
+        raise CreditAnalysisError("as_of cannot be in the future")
+    index, candidates, exclusions = _select_batch_candidates(
+        {
+            "as_of": as_of,
+            "selector": {
+                "kind": "recent_days",
+                "count": None,
+                "days": days,
+                "project": None,
+            },
+        },
+        collector,
+    )
+    target = output_path.expanduser().absolute()
+    if not target.parent.is_dir():
+        raise CreditAnalysisError("selection output directory does not exist")
+    _exclusive_json(
+        target,
+        {
+            "schema": "ceratops-credit-quick-selection.v1",
+            "as_of": as_of.isoformat().replace("+00:00", "Z"),
+            "days": days,
+            "thread_index_fingerprint": index["fingerprint"],
+            "threads": candidates,
+            "exclusions": exclusions,
+        },
+        "quick selection",
+    )
+    return {
+        "selected": len(candidates),
+        "excluded": len(exclusions),
+        "output": str(target),
+    }
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -43,6 +98,10 @@ def build_parser() -> argparse.ArgumentParser:
     status_batch.add_argument("--state", required=True, type=pathlib.Path)
     finalize_batch = commands.add_parser("finalize-batch")
     finalize_batch.add_argument("--state", required=True, type=pathlib.Path)
+    select_recent = commands.add_parser("select-recent")
+    select_recent.add_argument("--days", required=True, type=int)
+    select_recent.add_argument("--as-of")
+    select_recent.add_argument("--output", required=True, type=pathlib.Path)
     return parser
 
 
@@ -83,6 +142,8 @@ def main(argv: list[str] | None = None) -> int:
             output = command_advance_batch(args.state, args.result)
         elif args.command == "status-batch":
             output = command_status_batch(args.state)
+        elif args.command == "select-recent":
+            output = command_select_recent(args.days, args.as_of, args.output)
         else:
             command_finalize_batch(args.state)
             output = "OK"
