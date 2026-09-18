@@ -1008,6 +1008,7 @@ def _synchronized_post_merge_resume(
         return False
     repository = github_ship._repository_name(repo_root, args.repo)
     checkpoint_path = github_ship._checkpoint_path(repo_root, repository, target_commit)
+    checkpoint: dict[str, Any] | None
     if checkpoint_path.is_file():
         checkpoint = github_ship._read_checkpoint(checkpoint_path)
         synchronized = (
