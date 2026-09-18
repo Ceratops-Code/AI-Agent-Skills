@@ -1000,24 +1000,40 @@ def _synchronized_post_merge_resume(
 ) -> bool:
     """Recognize a recorded merge already synchronized to both local branches.
 
-    Only the GitHub ship checkpoint can waive the staged-head test selection.
-    The child ship command still rechecks that checkpoint and its PR identity.
+    A synchronized checkpoint or the exact merged PR can waive staged-head
+    test selection. The child independently reconciles the merged PR.
     """
     head = repository_commit(repo_root)
     if not args.commit or not target_commit or not head or head == target_commit:
         return False
     repository = github_ship._repository_name(repo_root, args.repo)
     checkpoint_path = github_ship._checkpoint_path(repo_root, repository, target_commit)
-    if not checkpoint_path.is_file():
+    if checkpoint_path.is_file():
+        checkpoint = github_ship._read_checkpoint(checkpoint_path)
+        synchronized = (
+            checkpoint.get("phase") == "synchronized"
+            and checkpoint.get("synchronized_head") == head
+        )
+    else:
+        # The child removes its terminal checkpoint before wrapper publication,
+        # deployment, and finalization; recover from its exact-PR evidence.
+        try:
+            checkpoint = github_ship._merged_pr_checkpoint(
+                args, repo_root, repository, target_commit, {},
+            )
+        except github_ship.ShipError as exc:
+            raise RepositoryShipError(str(exc)) from exc
+        synchronized = (
+            checkpoint is not None and checkpoint.get("merge_commit") == head
+        )
+    if checkpoint is None:
         return False
-    checkpoint = github_ship._read_checkpoint(checkpoint_path)
     if (
         checkpoint.get("repository") != repository
         or checkpoint.get("commit") != target_commit
         or checkpoint.get("head_branch") != args.head_branch
         or checkpoint.get("base_branch") != args.base_branch
-        or checkpoint.get("phase") != "synchronized"
-        or checkpoint.get("synchronized_head") != head
+        or not synchronized
         or not isinstance(checkpoint.get("merge_commit"), str)
     ):
         return False
