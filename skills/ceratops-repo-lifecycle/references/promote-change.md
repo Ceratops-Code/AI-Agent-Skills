@@ -139,6 +139,12 @@ ROOT must be one task directory under `<repo-parent>/tmp/<repo-name>/`.
 The digest binds cleanup to the exact saved bytes. Ordinary command receipts
 still require caller validation against their producer contracts.
 
+For a promotion run with `--no-run-operation`, add `--promotion-only` and supply
+the verified digest. Validate the saved promotion status, release head, selected
+branches, and pending-work scope before finalization. The helper requires a
+ready result for the expected commit with no deployment operations or evidence.
+Without `--promotion-only`, deployment completion checks still apply.
+
 For a completed handoff, add `--deployment-evidence FILE` or pass its JSON on
 stdin with `--deployment-evidence -`. Bound evidence permits omission of the
 caller digest when every outcome uses this protocol. The receipt must bind the

@@ -1054,6 +1054,23 @@ def _completed_deployment(result: object, commit: str, *, repo_root: pathlib.Pat
         raise PromotionError("Completion evidence names an unselected deployment operation.")
 
 
+def _completed_promotion_only(result: object, commit: str) -> None:
+    """Accept only the saved ready result of an operation-free promotion."""
+    if not isinstance(result, dict) or result.get("status") != "ready":
+        raise PromotionError("Result is not a successful promotion-only outcome.")
+    if result.get("head") != commit:
+        raise PromotionError("Result head does not match expected-commit.")
+    if ("operations" not in result or result["operations"] is not None
+            or result.get("release_branch") != RELEASE_BRANCH
+            or not isinstance(result.get("merged_branches"), list)
+            or not result["merged_branches"]
+            or not all(isinstance(branch, str) and branch for branch in result["merged_branches"])
+            or not isinstance(result.get("pending_work_scope"), str)
+            or not result["pending_work_scope"]
+            or result.get("validation_handoffs") or result.get("handoffs")):
+        raise PromotionError("Promotion-only result is incomplete; retain the result.")
+
+
 def finalize_result(args: argparse.Namespace) -> None:
     """Remove only a caller-validated receipt; never invoke lifecycle operations.
 
@@ -1077,7 +1094,9 @@ def finalize_result(args: argparse.Namespace) -> None:
     verified_digest = args.verified_result_sha256
     if verified_digest is not None:
         verified_digest = verified_digest.lower()
-    if not getattr(args, "deployment_evidence", None) and not re.fullmatch(r"[0-9a-f]{64}", verified_digest or ""):
+    if args.promotion_only and args.deployment_evidence:
+        raise PromotionError("Promotion-only cleanup cannot use deployment evidence.")
+    if (args.promotion_only or not args.deployment_evidence) and not re.fullmatch(r"[0-9a-f]{64}", verified_digest or ""):
         raise PromotionError("Supply verified-result-sha256 only after validating every producer receipt.")
     repo_root = args.repo_root.expanduser().resolve(strict=True)
     common_dir = pathlib.Path(require_output(
@@ -1129,11 +1148,14 @@ def finalize_result(args: argparse.Namespace) -> None:
         if not isinstance(operation, str) or not operation or operation in external:
             raise PromotionError("Completion evidence operation is missing or duplicated.")
         external[operation] = value
-    _completed_deployment(result, args.expected_commit, repo_root=repo_root, external=external,
-                          record_binding={"result_file": str(path), "sha256": digest,
-                                          "identity": [getattr(original_stat, key) for key in
-                                                       ("st_dev", "st_ino", "st_mtime_ns", "st_size", "st_mode", "st_nlink")]},
-                          caller_verified=bool(verified_digest))
+    if args.promotion_only:
+        _completed_promotion_only(result, args.expected_commit)
+    else:
+        _completed_deployment(result, args.expected_commit, repo_root=repo_root, external=external,
+                              record_binding={"result_file": str(path), "sha256": digest,
+                                              "identity": [getattr(original_stat, key) for key in
+                                                           ("st_dev", "st_ino", "st_mtime_ns", "st_size", "st_mode", "st_nlink")]},
+                              caller_verified=bool(verified_digest))
     for evidence_path, evidence in evidence_files.items():
         _cleanup_path(evidence_path)
         if evidence_path.stat().st_nlink != 1 or evidence_path.read_bytes() != evidence:
@@ -1161,10 +1183,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--result-file", type=pathlib.Path,
                         help="Retain the exact JSON outcome until verified-result finalization.")
     parser.add_argument("--finalize-result", action="store_true",
-                        help="Delete an explicitly validated deployment result without running operations.")
+                        help="Delete an explicitly validated promotion result without running operations.")
+    parser.add_argument("--promotion-only", action="store_true",
+                        help="Finalize a verified promotion result that ran no deployment operations.")
     parser.add_argument("--task-temp-root", type=pathlib.Path,
                         help="Finalization boundary: <repo-parent>/tmp/<repo-name>/<task>.")
-    parser.add_argument("--expected-commit", help="Full deployed commit for result finalization.")
+    parser.add_argument("--expected-commit", help="Full promoted commit for result finalization.")
     parser.add_argument("--verified-result-sha256",
                         help="Digest of the exact saved result after caller validation of every producer receipt.")
     parser.add_argument("--deployment-evidence", action="append",
@@ -1243,8 +1267,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print("OK")
         return 0
-    if any(value is not None for value in (args.task_temp_root, args.expected_commit,
-                                          args.verified_result_sha256, args.deployment_evidence)):
+    if args.promotion_only or any(value is not None for value in (args.task_temp_root, args.expected_commit,
+                                                                 args.verified_result_sha256, args.deployment_evidence)):
         parser.error("result cleanup arguments require --finalize-result")
     started = time.monotonic()
     timings: dict[str, float] = {}
