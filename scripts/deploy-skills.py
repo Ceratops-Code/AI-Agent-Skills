@@ -99,6 +99,42 @@ def validate_tree(root: pathlib.Path) -> None:
             raise ValueError(f"unsafe staged tree entry: {path}")
 
 
+def materialize_python_interpreters(interpreter: pathlib.Path) -> None:
+    """Keep POSIX venv entrypoints as regular files inside one runtime version.
+
+    The caller removes the new version if conversion fails. Existing versions
+    are never modified; a linked or damaged interpreter gets a fresh version.
+    """
+
+    if os.name == "nt":
+        return
+    source = interpreter.resolve(strict=True)
+    aliases = sorted(
+        path for path in interpreter.parent.iterdir()
+        if path != interpreter and re.fullmatch(r"python(?:3(?:\.\d+)?)?", path.name)
+    )
+    if not source.is_file() or any(
+        not alias.is_file() or alias.resolve(strict=True) != source
+        for alias in aliases
+    ):
+        raise ValueError("shared skill runtime Python aliases disagree")
+    if interpreter.is_symlink():
+        scratch = interpreter.with_name(f".{interpreter.name}-{uuid.uuid4().hex}.tmp")
+        try:
+            shutil.copy2(source, scratch)
+            os.replace(scratch, interpreter)
+        finally:
+            scratch.unlink(missing_ok=True)
+    for alias in aliases:
+        if alias.is_symlink():
+            scratch = alias.with_name(f".{alias.name}-{uuid.uuid4().hex}.tmp")
+            try:
+                os.link(interpreter, scratch)
+                os.replace(scratch, alias)
+            finally:
+                scratch.unlink(missing_ok=True)
+
+
 def prepare_python_runtime(repo_root: pathlib.Path, install_root: pathlib.Path) -> pathlib.Path | None:
     """Build a new locked venv version without changing one used by a helper.
 
@@ -160,7 +196,7 @@ def prepare_python_runtime(repo_root: pathlib.Path, install_root: pathlib.Path) 
             [uv, "sync", "--quiet", "--project", str(project), "--locked", "--check", "--no-active"],
             env=environment, capture_output=True, text=True, check=False,
         )
-        if checked.returncode or not interpreter(version).is_file():
+        if checked.returncode or not interpreter(version).is_file() or unsafe_link(interpreter(version)):
             version = digest[:24] + "-" + uuid.uuid4().hex[:8]
             selected = versions / version
             environment["UV_PROJECT_ENVIRONMENT"] = str(selected / ".venv")
@@ -174,6 +210,18 @@ def prepare_python_runtime(repo_root: pathlib.Path, install_root: pathlib.Path) 
             if selected.exists():
                 shutil.rmtree(selected)
             raise ValueError("shared skill runtime setup failed: " + (result.stderr or result.stdout).strip()[-1000:])
+        if os.name != "nt":
+            try:
+                materialize_python_interpreters(interpreter(version))
+                checked = subprocess.run(
+                    [uv, "sync", "--quiet", "--project", str(project), "--locked", "--check", "--no-active"],
+                    env=environment, capture_output=True, text=True, check=False,
+                )
+                if checked.returncode:
+                    raise ValueError("shared skill runtime health check failed: " + (checked.stderr or checked.stdout).strip()[-1000:])
+            except (OSError, ValueError):
+                shutil.rmtree(selected)
+                raise
     temporary: pathlib.Path | None = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=root, prefix=".current-", suffix=".tmp", delete=False) as handle:

@@ -1068,7 +1068,14 @@ def test_contract_review_adoption_and_all_managed_output(tmp_path: pathlib.Path)
         for skill in manifest["skills"]:
             runtime = json.loads((destination / skill / ".runtime-manifest.json").read_text())
             if skill in manifest["python_runtime_skills"]:
-                assert pathlib.Path(runtime["python_runtime"]).is_file()
+                interpreter = pathlib.Path(runtime["python_runtime"])
+                assert interpreter.is_file() and not interpreter.is_symlink()
+                if os.name != "nt":
+                    assert all(
+                        not path.is_symlink()
+                        for path in interpreter.parent.iterdir()
+                        if path.name in {"python", "python3", "python3.14"}
+                    )
             else:
                 assert "python_runtime" not in runtime
         for skill, refs in expected.items():
