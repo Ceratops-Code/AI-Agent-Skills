@@ -38,7 +38,7 @@ Contributions should keep skills practical, current, and safe.
 Run before opening a pull request:
 
 ```powershell
-npm ci
+npm --prefix scripts ci
 uv sync --project scripts --locked
 $validationEvidence = Join-Path $env:TEMP "repository-validation.log"
 uv run --locked scripts/validate-repository.py --evidence-file $validationEvidence
