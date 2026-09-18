@@ -10,7 +10,7 @@ dependencies = [
   "mypy==2.3.1",
   "packaging==26.3",
   "pytest==9.1.1",
-  "ruff==0.16.5",
+  "ruff==0.16.7",
   "tzdata==2026.3",
   "yamllint==1.38.0"
 ]
