@@ -799,7 +799,7 @@ class UrlLibFetcher:
             requested,
             headers={
                 "Accept": "text/markdown,text/plain,text/html;q=0.9",
-                "User-Agent": "openai-docs-managed/1.0",
+                "User-Agent": "ceratops-openai-docs-managed/1.0",
             },
             method="GET",
         )
