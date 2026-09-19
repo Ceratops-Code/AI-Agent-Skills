@@ -8,7 +8,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 OPENAI_DOCS_SCRIPT = (
     ROOT
     / "skills"
-    / "openai-docs-managed"
+    / "ceratops-openai-docs-managed"
     / "scripts"
     / "openai_docs_retrieval.py"
 )

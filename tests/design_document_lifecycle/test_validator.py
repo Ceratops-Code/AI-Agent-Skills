@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-SKILL = ROOT / "skills/design-document-lifecycle"
+SKILL = ROOT / "skills/ceratops-design-document-lifecycle"
 SCRIPT = SKILL / "scripts/validate_design_document.py"
 SPEC = importlib.util.spec_from_file_location("design_document_validator", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None

@@ -1,9 +1,9 @@
 ---
-name: openai-docs-managed
+name: ceratops-openai-docs-managed
 description: Retrieve and answer current official OpenAI product, API, model, ChatGPT, and Codex documentation through a deterministic allowlisted helper. Use for OpenAI documentation questions, Codex setup or troubleshooting, model selection or migration, and explicit independent synthesis from retrieved official evidence.
 ---
 
-# Managed OpenAI Docs
+# Ceratops OpenAI Docs Managed
 
 ## Goal
 
