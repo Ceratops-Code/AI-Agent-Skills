@@ -229,7 +229,8 @@ prerequisites through `--prepare-only`. Registered v4 skill validation and
 deployment handoffs pass the exact selected skill to the lifecycle CLI, retain
 completion receipts, and stop on source changes or unsupported inputs. CI still
 defers every handoff; package prerequisites never imply an automatic build.
-Tools built directly from source may declare no package prerequisite. The compatibility producer and this
+Tools built directly from source may declare no package prerequisite. The
+compatibility producer and this
 repository's live declaration remain v3; v4 is not automatically migrated or
 installed.
 
