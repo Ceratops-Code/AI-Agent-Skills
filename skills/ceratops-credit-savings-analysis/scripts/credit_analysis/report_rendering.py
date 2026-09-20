@@ -1,6 +1,6 @@
 """Render human reports without filtering or changing retained machine evidence.
 
-Full-analysis reports contain only run accounting. The caller selects useful
+Deep-thread reports contain only run accounting. The caller selects useful
 chat findings from the complete machine result under the skill's current Output
 Contract; report rendering never treats a safeguard's existence as resolution.
 """
@@ -145,41 +145,3 @@ def _render_holistic_report(final: Mapping[str, Any]) -> str:
     if final.get("mode") == "standalone":
         return _standalone_scope(final) + "\n"
     return _render_runs_table(final["run_accounting"])
-
-
-def _render_final_report(
-    final: Mapping[str, Any], evidence: Mapping[str, Any],
-) -> str:
-    """Render direct-result delivery using retained, already-classified evidence.
-
-    Legacy final results retain per-call classifications and a separate evidence
-    file instead of holistic run rows. Join those inputs for display only; do not
-    recollect sessions, classify missing calls, or discard any findings.
-    """
-
-    if final.get("mode") != "full-analysis":
-        return _standalone_scope(final) + "\n"
-    classification_by_call = {
-        item["call_id"]: item["classification"]
-        for item in final["primary_call_mappings"]
-    }
-    runs = []
-    for run in evidence["runs"]:
-        calls = run["calls"]
-        classifications = Counter(
-            classification_by_call[call["call_id"]]
-            for call in calls if call["call_id"] in classification_by_call
-        )
-        tokens: Counter[str] = Counter()
-        for call in calls:
-            tokens.update({key: int(call["tokens"].get(key, 0)) for key in TOKEN_FIELDS})
-        runs.append({
-            "started_at": run.get("started_at"),
-            "total_model_calls": len(calls),
-            "reviewed_model_calls": sum(classifications.values()),
-            "avoidable_calls_fix_implemented": classifications["avoidable_implemented"],
-            "avoidable_calls_fix_unimplemented": classifications["avoidable_unimplemented"],
-            "unassessed_calls": classifications["unassessed"],
-            "tokens": tokens,
-        })
-    return _render_runs_table(runs)

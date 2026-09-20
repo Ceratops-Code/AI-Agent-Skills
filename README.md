@@ -11,7 +11,7 @@ or another governing contract.
 | Skill | Purpose |
 | --- | --- |
 | `codex-desktop-upgrade` | Assess official Codex desktop updates, reconcile patches and route requested qualification through the patcher helpers. |
-| `design-document-lifecycle` | Create or review an authoritative software design document using a tailored arc42 contract, C4 views, scoped implementation evidence, and mechanical validation. |
+| `ceratops-design-document-lifecycle` | Create or review an authoritative software design document using a tailored arc42 contract, C4 views, scoped implementation evidence, and mechanical validation. |
 | `ceratops-repo-lifecycle` | Route repository lifecycle work across compatibility, local promotion, structured deployment, guarded shipping, GitHub creation and inspection, PR publication, review follow-up, CI repair, contracts, health, dependencies, and PR merge actions. |
 | `ceratops-governance-lifecycle` | Route prompt optimization, advisory skill optimization, regression-safe instruction updates, and cross-scope governance consistency audits across action references. |
 | [`ceratops-credit-savings-analysis`](skills/ceratops-credit-savings-analysis/README.md) | Analyze one credit-waste surface or run fixed per-thread analyses for the current, named, or recent project-filtered threads while preserving every confirmed finding. |
@@ -19,9 +19,9 @@ or another governing contract.
 | `ceratops-skill-lifecycle` | Route skill-domain work across create, source-validate, deploy, preferred eligible fast-change, update, skills-contract-review, and skills-consistency-review actions. |
 | `ceratops-tool-lifecycle` | Create and package local Python tools, bootstrap the deployment manager, install exact releases, update tools, and inspect versions. |
 | `ceratops-automation-run` | Run recurring automations with shared Ceratops alert, memory, and completion policy. |
-| `ceratops-task-lifecycle` | Route failed-fix-loop breaks, same-thread task resume, whole-task handoff, and closure checks across action references. |
+| `ceratops-task-lifecycle` | Route failed-fix-loop breaks, same-thread task resume, whole-task handoff, repository status tables, and closure checks across action references. |
 | `ceratops-code-consistency-audit` | Audit merged refactors for contradictions, docs drift, comment sufficiency, stale follow-through, and merged-only edge cases. |
-| `openai-docs-managed` | Retrieve cited official OpenAI documentation through an allowlisted helper with zero routine child-model calls. |
+| `ceratops-openai-docs-managed` | Retrieve cited official OpenAI documentation through an allowlisted helper with zero routine child-model calls. |
 
 ## Layout
 
@@ -121,7 +121,7 @@ without repository deduplication.
 
 | Script | Caller And Timing |
 | --- | --- |
-| `skills/design-document-lifecycle/scripts/validate_design_document.py` | Validates document metadata, mapped sections, fences, local paths, and Mermaid through an existing official CLI; generates the human contract and minimal template from its skill-owned JSON contract. Mermaid checks require the CLI/browser and a caller-selected task temp root. |
+| `skills/ceratops-design-document-lifecycle/scripts/validate_design_document.py` | Validates document metadata, mapped sections, fences, local paths, and Mermaid through an existing official CLI; generates the human contract and minimal template from its skill-owned JSON contract. Mermaid checks require the CLI/browser and a caller-selected task temp root. |
 | `hooks/bounded-source-search.py` | Runs bounded two-phase ripgrep searches and replaces oversized successful ripgrep hook output with a compact per-file projection. |
 | `hooks/preserve-eol-for-apply-patch-tool.py` | Preserves each updated text file's existing encoding and uniform line-ending convention around `apply_patch`. |
 | `hooks/windows-shell-sanity.py` | Repository-owned source for the user-global Windows PowerShell preflight; rewrites exact command defects, annotates ordinary failures, and blocks unreliable or policy-prohibited forms. |
@@ -159,7 +159,7 @@ without repository deduplication.
 | `skills/ceratops-governance-lifecycle/scripts/rule_graph.py` | Parses canonical AGENTS rules and rejects structural syntax or rule-local explicit-user override escape clauses. |
 | `skills/ceratops-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for compact local audit snapshots, contract evaluation, shared GitHub API access, sanitized evidence, and evidence-gated CodeQL disposition. |
 | `skills/ceratops-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for individual PR operations, opt-in scoped branch/stage/commit preparation and checked draft or fork PR publication in `ensure_pr.py`, bounded standalone review and CI inspectors with caller-owned evidence files, shared readiness-owned CI diagnostics, one-call retry-safe review replies and resolutions, decision-complete gate blockers, single-snapshot terminal Actions outage detection, exact-commit checkpointed shipping, four-proof obsolete-prepared-checkpoint cleanup before automatic resume, scoped pending-work checks, concurrent gates, integrated admin merge, reusable-branch restoration, and terminal cleanup. |
-| `skills/ceratops-repo-lifecycle/scripts/promote-repository.py` | Prepares `release/local`; promotes selected branches with no deployment or an explicit ordered operation selection; or composes promotion into exact-head shipping with ordered release and deploy selections, finalization, and cleanup; checks live publication before rebasing only task commits while preserving shared history; records outcomes and finalizes verified promotion-only or bound deployment results within the task temp root without replay. |
+| `skills/ceratops-repo-lifecycle/scripts/promote-repository.py` | Prepares `release/local`; promotes selected branches with no deployment or an explicit ordered operation selection; or composes promotion into exact-head shipping with ordered release and deploy selections, finalization, and cleanup; checks live publication before rebasing only task commits while preserving shared history; records outcomes, recreating the output directory at save time when needed, and finalizes verified promotion-only or bound deployment results within the task temp root without replay. |
 | `skills/ceratops-repo-lifecycle/scripts/manage-pending-work.py` | Records, checks, automatically resumes the retained target commit, and progressively finalizes the exact selected scope; preflight preserves and reports non-cleanup-eligible worktrees, while eligible residual-worktree and identity-matched task-temp cleanup delegates bounded removal to `pending-work-cleanup.py`. |
 | `skills/ceratops-repo-lifecycle/scripts/pending-work-cleanup.py` | Checks named directory boundaries, preserves active skill-update state, and removes selected residual and task-temp trees after clearing read-only Windows files and directories without traversing links. |
 | `skills/ceratops-repo-lifecycle/scripts/action.yml` | GitHub composite action that runs declared validation and tests using the skill-owned SDLC engine; CI defers skill handoffs and retains failure evidence. |
@@ -225,8 +225,12 @@ the generic template declares repository validation and an explicit test no-op.
 SDLC v4 also supports separate packages, tools, skills, and hooks. Its schema
 lives at `skills/ceratops-repo-lifecycle/references/schemas/sdlc.v4.schema.json`;
 `scripts/repository_operation.py` resolves action locations and returns package
-prerequisites through `--prepare-only`. Tools built directly from source may
-declare no package prerequisite. The compatibility producer and this
+prerequisites through `--prepare-only`. Registered v4 skill validation and
+deployment handoffs pass the exact selected skill to the lifecycle CLI, retain
+completion receipts, and stop on source changes or unsupported inputs. CI still
+defers every handoff; package prerequisites never imply an automatic build.
+Tools built directly from source may declare no package prerequisite. The
+compatibility producer and this
 repository's live declaration remain v3; v4 is not automatically migrated or
 installed.
 
@@ -383,7 +387,10 @@ Each repository owns one lifecycle contract:
 - `skills/ceratops-repo-lifecycle/references/contracts/code-repo-deterministic-contract.json`
   defines deterministic repository-content checks for files, workflow text,
   Dependabot config, CODEOWNERS, local git state, local path references, and
-  secret-pattern scans.
+  secret-pattern scans. Dependabot checks parse YAML and match detected manifest
+  directories to update entries, including directory globs, GitHub Actions' root,
+  and declared workspace/module membership. Unresolved dynamic build membership
+  requires explicit directory coverage.
 - `skills/ceratops-repo-lifecycle/references/contracts/artifact-deterministic-contract.json`
   defines external artifact checks for PyPI, npm, DockerHub or OCI registries,
   GitHub Container Registry, GitHub releases, docs sites, and other package

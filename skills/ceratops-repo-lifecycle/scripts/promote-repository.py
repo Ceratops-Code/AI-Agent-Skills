@@ -910,6 +910,9 @@ def _timed_phase(timings: dict[str, float], phase: str):
 
 def _save_result(path: pathlib.Path, result: dict[str, object]) -> None:
     """Atomically retain the exact outcome; own and always clean its staging file."""
+    # A long operation may outlive cleanup of its initially empty result
+    # directory. Recreate that directory without replaying the operation.
+    path.parent.mkdir(parents=True, exist_ok=True)
     staging = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,

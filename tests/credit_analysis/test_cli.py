@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import sys
 
+import pytest
+
 from tests.credit_analysis.models import (
     load_credit_analysis_workflow_module,
 )
@@ -276,9 +278,9 @@ def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
 
 def _assert_execution_outcome_boundaries() -> None:
     from credit_analysis import execution_outcomes as outcomes
-    from credit_analysis import luna_sol_analysis as controller
     from credit_analysis import model_input_preparation as preparation
     from credit_analysis import session_evidence_collector as collector
+    from credit_analysis import thread_review_orchestration as controller
 
     def returned(value):
         return {"type": "function_call_output", "output": json.dumps(value)}
@@ -1369,3 +1371,34 @@ def test_model_call_ledger_closure_mode_is_artifact_free(
     )
     assert ambiguous.returncode == 2
     assert "multiple sessions found for thread ID" in ambiguous.stderr
+
+
+def test_noncontroller_skill_action_preserves_controller_contract(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workflow = load_credit_analysis_workflow_module()
+    source_skill = workflow.SKILL_DIR
+    skill_root = tmp_path / "credit-skill"
+    shutil.copytree(source_skill / "references", skill_root / "references")
+    skill_text = (source_skill / "SKILL.md").read_text(encoding="utf-8")
+    skill_text = skill_text.replace(
+        "### Action References\n",
+        "### Action References\n\n- Quick analysis: `references/quick-analysis.md`\n",
+        1,
+    )
+    (skill_root / "SKILL.md").write_text(skill_text, encoding="utf-8")
+    (skill_root / "references" / "quick-analysis.md").write_text(
+        "# Quick Analysis Action\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(workflow, "SKILL_DIR", skill_root)
+    assert workflow._load_contract()["public_actions"][0]["id"] == "deep-thread-analysis"
+
+    (skill_root / "SKILL.md").write_text(
+        skill_text.replace(
+            "`references/deep-thread-analysis.md`", "`references/renamed-analysis.md`"
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(workflow.CreditAnalysisError, match="parent action references"):
+        workflow._load_contract()

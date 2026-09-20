@@ -2,6 +2,7 @@
 
 ## Goal
 
+Run this surface alone for one selected root thread and its retained descendants.
 Detect deterministic work that an existing or missing helper, script, caller,
 or direct composition chain should have owned more completely or reliably.
 

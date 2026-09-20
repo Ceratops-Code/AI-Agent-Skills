@@ -11,7 +11,7 @@ import copy
 from typing import Any, Mapping, Sequence
 
 from .model_input_preparation import FINAL_ADJUDICATION_FIELDS
-from .single_thread_analysis import CreditAnalysisError
+from .single_surface_analysis import CreditAnalysisError
 
 
 def _closed_result(value: Mapping[str, Any], fields: set[str], label: str) -> None:
@@ -491,7 +491,7 @@ def _holistic_category_reviews(
     The caller validates each record's fields, evidence, boolean, and reason.
     Child reviewers must return one record per category. Final model transport
     contributes no category judgment: an empty current response and a retained
-    legacy response without controller provenance both resolve from the accepted
+    earlier response without controller provenance both resolve from the accepted
     reviewer records. Applicability across reviewed portions is existential,
     never a vote.
 
@@ -773,7 +773,7 @@ def _assemble_final_transport(
         return "avoidable_unimplemented" not in labels
 
     # An unchanged accepted finding constrains its calls. Restore conflicting
-    # final overrides in a batch; a deep-review revision gets its own check.
+    # final overrides together; a deep-review revision gets its own check.
     protected = [
         finding for identity, finding in findings.items()
         if identity in accepted_finding_ids and identity not in revised_finding_ids

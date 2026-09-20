@@ -1,16 +1,9 @@
 {
   "schema": "ceratops-credit-analysis-contract.v1",
-  "surface_contract_version": 8,
-  "source_selection_contract_version": 1,
+  "surface_contract_version": 9,
   "request_schema": "ceratops-credit-analysis-request.v1",
-  "batch_request_schema": "ceratops-credit-analysis-batch-request.v1",
-  "batch_manifest_schema": "ceratops-credit-analysis-batch-manifest.v1",
   "evidence_schema": "ceratops-credit-analysis-evidence.v3",
   "canonical_state_schema": "ceratops-credit-analysis-canonical-state.v1",
-  "surface_result_schema": "ceratops-credit-analysis-surface-result.v1",
-  "synthesis_result_schema": "ceratops-credit-analysis-synthesis-result.v1",
-  "final_result_schema": "ceratops-credit-analysis-final-result.v1",
-  "single_controller_commands": ["prepare", "advance", "status", "finalize"],
   "end_to_end_controller_commands": ["run", "plan", "execute"],
   "orchestration_state_schema": "ceratops-credit-analysis-orchestration-state.v5",
   "chunk_manifest_schema": "ceratops-credit-analysis-chunk-manifest.v5",
@@ -85,12 +78,6 @@
     "durable-control-missing",
     "final-state-unclear"
   ],
-  "batch_controller_commands": [
-    "prepare-batch",
-    "advance-batch",
-    "status-batch",
-    "finalize-batch"
-  ],
   "source_selectors": [
     {
       "id": "current-thread",
@@ -107,21 +94,13 @@
     {
       "id": "thread-name",
       "cardinality": "single"
-    },
-    {
-      "id": "recent-threads",
-      "cardinality": "batch"
-    },
-    {
-      "id": "recent-days",
-      "cardinality": "batch"
     }
   ],
   "public_actions": [
     {
-      "id": "full-analysis",
-      "reference": "references/full-analysis.md",
-      "mode": "full-analysis"
+      "id": "deep-thread-analysis",
+      "reference": "references/deep-thread-analysis.md",
+      "mode": "deep-thread-analysis"
     },
     {
       "id": "helper-contracts",
@@ -156,14 +135,6 @@
     "tool-flow",
     "instruction-reasoning"
   ],
-  "full_queue": [
-    "helper-contracts",
-    "context-evidence",
-    "rework-validation",
-    "tool-flow",
-    "instruction-reasoning",
-    "synthesis"
-  ],
   "surfaces": [
     {
       "id": "helper-contracts",
@@ -194,10 +165,6 @@
   "internal_phases": [
     {
       "id": "synthesis",
-      "public": false
-    },
-    {
-      "id": "batch-summary",
       "public": false
     }
   ],

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "suites": {
-    "design-document-lifecycle": {
+    "ceratops-design-document-lifecycle": {
       "pytest": [
         "tests/design_document_lifecycle"
       ],
@@ -58,12 +58,12 @@
   },
   "rules": [
     {
-      "id": "design-document-lifecycle-source",
+      "id": "ceratops-design-document-lifecycle-source",
       "paths": [
-        "skills/design-document-lifecycle/**"
+        "skills/ceratops-design-document-lifecycle/**"
       ],
       "suites": [
-        "design-document-lifecycle"
+        "ceratops-design-document-lifecycle"
       ]
     },
     {
@@ -104,7 +104,7 @@
     {
       "id": "openai-docs-source",
       "paths": [
-        "skills/openai-docs-managed/**"
+        "skills/ceratops-openai-docs-managed/**"
       ],
       "suites": [
         "openai-docs"
@@ -185,6 +185,8 @@
         ".github/CODEOWNERS",
         ".github/ISSUE_TEMPLATE/**",
         ".github/pull_request_template.md",
+        "Ceratops-Logo/*.png",
+        "Ceratops-Logo/resized/*.png",
         "CHANGELOG.md",
         "CONTRIBUTING.md",
         "docs/design-draft.md",
@@ -192,7 +194,7 @@
         "README.md",
         "hooks/README.md"
       ],
-      "reason": "These files contain repository documentation or contribution metadata and cannot change executable behavior."
+      "reason": "These files contain repository documentation, branding assets, or contribution metadata and cannot change executable behavior."
     }
   ],
   "unmapped_production": "error"

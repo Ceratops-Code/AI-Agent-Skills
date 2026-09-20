@@ -1,6 +1,6 @@
 ---
 name: ceratops-credit-savings-analysis
-description: Analyze one credit-waste surface or every completed run in one or more threads while preserving every confirmed finding without modifying the analyzed producer or workflow.
+description: Analyze avoidable credit spend with quick scans or deep and standalone surface reviews of one root thread and its retained descendants without modifying the analyzed work.
 ---
 
 # Ceratops Credit Savings Analysis
@@ -8,9 +8,10 @@ description: Analyze one credit-waste surface or every completed run in one or m
 ## Goal
 
 Analyze completed model-call evidence for avoidable credit spend. Use
-`full-analysis` for a generic single-thread or closure request, and one named
-surface only when the user names it. This skill recommends controls but never
-applies them.
+`quick-analysis` for a requested quick or recent-thread scan,
+`deep-thread-analysis` for one selected root thread and its retained
+descendants, and one named surface alone when the user names it. This skill
+recommends controls but never applies them.
 
 ## Design Reference
 
@@ -22,33 +23,43 @@ retry, recovery, or deployment behavior.
 
 ### Action References
 
-- Run the all-run fixed-surface analysis:
-  `references/full-analysis.md`
-- Analyze deterministic helper contracts: `references/helper-contracts.md`
-- Analyze context and evidence reuse: `references/context-evidence.md`
-- Analyze rework and validation: `references/rework-validation.md`
-- Analyze tool and handoff flow: `references/tool-flow.md`
-- Analyze instructions and reasoning flow: `references/instruction-reasoning.md`
+- Run a bounded ledger analysis of one or more recent threads:
+  `references/quick-analysis.md`
+- Run deep analysis of one selected root thread and its retained descendants:
+  `references/deep-thread-analysis.md`
+- Analyze helper contracts alone for one selected root thread and its retained
+  descendants: `references/helper-contracts.md`
+- Analyze context and evidence alone for one selected root thread and its retained
+  descendants: `references/context-evidence.md`
+- Analyze rework and validation alone for one selected root thread and its
+  retained descendants: `references/rework-validation.md`
+- Analyze tool flow alone for one selected root thread and its retained
+  descendants: `references/tool-flow.md`
+- Analyze instruction reasoning alone for one selected root thread and its
+  retained descendants: `references/instruction-reasoning.md`
+
+The next three sections govern `deep-thread-analysis` and the five named surfaces.
+`quick-analysis` uses its own evidence, classification, and completion rules.
 
 ## Shared Evidence And Controller Invariants
 
-- Resolve one exact source or one controller-frozen per-thread source set. The
-  current thread is only the valid `CODEX_THREAD_ID`; never infer it from
-  recency. Exact-name and recent-thread selection use the versioned source
-  contract. An incremental closure begins strictly after the previous completed
-  closure; active runs and the boundary run are excluded.
-- For a single-thread full or standalone analysis, run
+- Resolve one exact root thread. The current thread is only the valid
+  `CODEX_THREAD_ID`; never infer it from recency. Resolve an exact thread name
+  against the thread index and reject zero or multiple matches. An incremental
+  closure begins strictly after the previous completed closure; active runs and
+  the boundary run are excluded.
+- For deep analysis or one named surface alone, run
   `python scripts/credit-analysis-workflow.py run --request REQUEST`.
-- On every fresh single-thread or per-thread-batch plan, validate the installed
+- On every fresh plan, validate the installed
   contract and bind its version and hash to controller state. Resume only from
   state whose immutable artifacts still validate. Require mutation authority
   `false`, use a task root under `<repo-parent>/tmp/<repo-name>/<thread-name>`,
   and keep retained evidence inside it.
-  Analyze every available retained descendant discovered from source lineage as
-  ordinary source runs; report unavailable references and exclude only
-  descendants created by the current analysis.
+  Analyze every available retained descendant discovered from that root's source
+  lineage as ordinary source runs; report unavailable references and exclude
+  only descendants created by the current analysis.
 - Planning retains complete protected evidence and read-only canonical
-  snapshots. Full analysis treats every completed run as one semantic unit,
+  snapshots. Deep analysis treats every completed run as one semantic unit,
   freezes run order and UTF-8 byte counts, and divides only an oversized run
   into
   the minimum ordered input parts that each fit Luna. Calls remain attached to
@@ -161,14 +172,6 @@ retry, recovery, or deployment behavior.
 - Keep session evidence, accepted surface results, the append-only index, and
   the final machine result at their controller-retained paths. Do not echo raw
   session material or caller-local paths unnecessarily.
-- Preserve the existing `prepare-batch`, `advance-batch`, `status-batch`, and
-  `finalize-batch` compatibility interface for recent-thread selection and
-  aggregation. `prepare-batch` plans one ordinary holistic controller per
-  selected thread. Execute each pending child with `execute`, then pass its
-  retained final result to `advance-batch`; never prepare or collect through a
-  parallel child workflow. The batch-summary contract remains a lower-level
-  interface; group similar findings for presentation while preserving each
-  thread's findings and totals.
 
 ## Common Classification And ROI Rules
 
@@ -223,10 +226,11 @@ retry, recovery, or deployment behavior.
   plausible risk for that lens remains in the final result, and every capacity
   omission is explicit. Do not require a semantic dismissal record for every
   call-surface pair.
-- `full-analysis` is complete only after the frozen manifest accounts for every
-  completed run as reviewed or exactly omitted, proves ordered non-overlapping
-  parts and candidate routing, and records immutable Luna, Sol-reviewer,
-  direct-evidence-reviewer, and final-task identities and hashes.
+- `deep-thread-analysis` is complete only after the frozen manifest
+  accounts for every completed run as reviewed or exactly omitted,
+  proves ordered non-overlapping parts and candidate routing, and records
+  immutable Luna, Sol-reviewer, direct-evidence-reviewer, and final-task
+  identities and hashes.
   Temporary-control contributions are merged once by owner/control; every
   retained candidate has one disposition;
   every confirmed finding remains; every reviewed source call has one primary
@@ -285,7 +289,7 @@ retry, recovery, or deployment behavior.
   it. In chat, surface a risk only when it materially changes
   the recommendation or the reliability of the conclusions. State its unknown
   and the exact check needed; exclude it from confirmed savings.
-- For full analysis, the saved human report contains only the runs table
+- For deep analysis, the saved human report contains only the runs table
   defined by the action. Retain complete accounting and detailed findings in
   machine evidence; disclose consequential coverage gaps briefly in chat.
   Never imply omitted evidence was reviewed. For a standalone action, state
@@ -313,6 +317,6 @@ retry, recovery, or deployment behavior.
   chunking, consolidation, `collect`, `reconcile`, `synthesis`, `apply`, or
   `modify` as public actions.
 - Stop blocked when a selected source cannot be resolved, the completed-run
-  selection is invalid, controller evidence is stale or mismatched, or required
-  semantic evidence is unavailable. Do not substitute visible conversation
-  context for controller evidence.
+  selection is invalid, or required semantic evidence is unavailable. For
+  controller actions, stale or mismatched controller evidence also blocks.
+  Do not substitute visible conversation context for collected evidence.

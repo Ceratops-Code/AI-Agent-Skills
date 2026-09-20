@@ -3,12 +3,13 @@ import json
 import pathlib
 import sys
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 OPENAI_DOCS_SCRIPT = (
     ROOT
     / "skills"
-    / "openai-docs-managed"
+    / "ceratops-openai-docs-managed"
     / "scripts"
     / "openai_docs_retrieval.py"
 )
@@ -78,6 +79,19 @@ class FakeDocumentationModel:
 
 class ManagedOpenAIDocsRetrievalTests(unittest.TestCase):
     GOOD_URL = "https://developers.openai.com/api/docs/models/example.md"
+
+    def test_http_request_uses_prefixed_skill_identity(self):
+        with mock.patch.object(OPENAI_DOCS.urllib.request, "build_opener") as build:
+            opener = build.return_value
+            opener.open.side_effect = OPENAI_DOCS.urllib.error.URLError("offline fixture")
+            result = OPENAI_DOCS.UrlLibFetcher()(self.GOOD_URL)
+        opener.open.assert_called_once()
+        request = opener.open.call_args.args[0]
+        self.assertEqual(request.full_url, self.GOOD_URL)
+        self.assertEqual(request.get_method(), "GET")
+        self.assertEqual(request.get_header("User-agent"), "ceratops-openai-docs-managed/1.0")
+        self.assertEqual(request.get_header("Accept"), "text/markdown,text/plain,text/html;q=0.9")
+        self.assertIsNotNone(result.error)
 
     @staticmethod
     def request(

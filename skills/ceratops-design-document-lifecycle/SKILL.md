@@ -1,9 +1,9 @@
 ---
-name: design-document-lifecycle
+name: ceratops-design-document-lifecycle
 description: Create or review a repository's authoritative software design document using implementation evidence, a tailored arc42 structure, C4 views, and an IEEE 1016 completeness reference. Use create for document authoring or updates and review for evidence-backed architectural inconsistencies and coverage gaps.
 ---
 
-# Design Document Lifecycle
+# Ceratops Design Document Lifecycle
 
 ## Goal
 

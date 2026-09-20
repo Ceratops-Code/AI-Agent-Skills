@@ -591,7 +591,7 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
     for shard_task in active["manifest"]["sol_tasks"][:6]:
         record = active["execution"][shard_task["task_id"]]["result"]
         if record is not None:
-            prior_results.append(workflow._luna_sol_analysis._namespaced_adjudication_result(
+            prior_results.append(workflow._thread_review_orchestration._namespaced_adjudication_result(
                 json.loads(pathlib.Path(record["path"]).read_text(encoding="utf-8")),
                 shard_task["task_id"],
             ))
@@ -618,7 +618,7 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
     with pytest.raises(workflow.CreditAnalysisError, match="source records changed"):
         validate_report(omitted_source)
 
-    preserve_findings = workflow._luna_sol_analysis._holistic_preserve_finding_sources
+    preserve_findings = workflow._thread_review_orchestration._holistic_preserve_finding_sources
 
     def preserve_report_findings(report: dict[str, Any]) -> list[dict[str, Any]]:
         return preserve_findings(report["confirmed_findings"], report["candidate_decisions"], prior_results)
@@ -650,10 +650,10 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
 
     source = expected_findings[next(iter(expected_findings))]
     with pytest.raises(workflow.CreditAnalysisError, match="unknown source_findings"):
-        workflow._luna_sol_analysis._validate_holistic_finding(
+        workflow._thread_review_orchestration._validate_holistic_finding(
             {**source, "source_findings": []}, contract=contract,
             call_order=active["manifest"]["call_ids"],
-            workstreams=workflow._luna_sol_analysis._holistic_workstream_by_call(compact),
+            workstreams=workflow._thread_review_orchestration._holistic_workstream_by_call(compact),
             surface_order=active["manifest"]["surface_order"], label="non-final finding",
         )
 
@@ -801,7 +801,7 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
         "affected_call_ids": source_risk["affected_call_ids"][:1],
         "evidence_refs": source_risk["evidence_refs"][:1],
     }
-    preserve_risks = workflow._luna_sol_analysis._holistic_preserve_risk_sources
+    preserve_risks = workflow._thread_review_orchestration._holistic_preserve_risk_sources
     source_risk_results = [{
         "plausible_risks": [source_risk],
         "candidate_decisions": [{"luna_candidate_id": "risk-candidate", "risk_ids": ["source-risk"]}],
@@ -881,7 +881,7 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
     finally:
         snapshot.write_bytes(original_contract)
 
-    implementation = workflow._luna_sol_analysis
+    implementation = workflow._thread_review_orchestration
     build_audit = implementation._holistic_audit_input
     for reject_all in (False, True):
         routing_state = json.loads(json.dumps(active))
@@ -928,7 +928,7 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
     for shard_task in active["manifest"]["sol_tasks"][:6]:
         record = active["execution"][shard_task["task_id"]]["result"]
         if record is not None:
-            prior = workflow._luna_sol_analysis._namespaced_adjudication_result(
+            prior = workflow._thread_review_orchestration._namespaced_adjudication_result(
                 json.loads(pathlib.Path(record["path"]).read_text(encoding="utf-8")), shard_task["task_id"]
             )
             expected_reviews.update({review["id"]: review for review in prior["temporary_control_reviews"]})

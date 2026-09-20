@@ -1,6 +1,6 @@
 ---
 name: ceratops-task-lifecycle
-description: Route Ceratops repeated failed-fix-loop breaks, same-thread resume, whole-task new-thread handoff, and closure checks. Use fixloop-break after repeated fixes fail. Use manual-resume when an interrupted current-thread task should continue from current state. Use closure-check when the user asks whether anything remains, whether we are done, or what remains.
+description: Route Ceratops repeated failed-fix-loop breaks, same-thread resume, whole-task new-thread handoff, closure checks, and repository branch/worktree status tables. Use fixloop-break after repeated fixes fail. Use manual-resume when an interrupted current-thread task should continue from current state. Use repository-status for the requested repository table. Use closure-check when the user asks whether anything remains, whether we are done, or what remains.
 ---
 
 # Ceratops Task Lifecycle
@@ -8,9 +8,10 @@ description: Route Ceratops repeated failed-fix-loop breaks, same-thread resume,
 ## Goal
 
 Route repeated-fix-loop breaks, interrupted-thread resume, whole-task thread
-handoff, and closure-check work to the narrowest action reference. Keep one
-task-workflow skill instead of separate skill identities for fix-loop analysis,
-same-thread resume, task handoff, and closure assessment.
+handoff, repository-status reporting, and closure-check work to the narrowest
+action reference. Keep one task-workflow skill instead of separate skill
+identities for fix-loop analysis, same-thread resume, task handoff, repository
+state reporting, and closure assessment.
 
 ## Context
 
@@ -20,21 +21,22 @@ same-thread resume, task handoff, and closure assessment.
 - Resume an interrupted current-thread task: `references/manual-resume.md`
 - Create a whole-task new-thread handoff: `references/task-handoff.md`
 - Check whether required work remains: `references/closure-check.md`
+- Show repository branch and worktree status: `references/repository-status.md`
 
 ### Inputs To Capture
 
 - Target task, current thread state, desired completion state, and any
   user-stated action.
 - Whether the work is fix-loop break, same-thread resume, whole-task handoff,
-  or closure check.
+  repository status, or closure check.
 - Current local or external entities that constrain the selected action.
 
 ## Constraints
 
 ### Skill-Specific Rules
 
-- Keep fix-loop break, same-thread resume, task handoff, and closure check
-  inside this multi-action skill and its `references/` files.
+- Keep fix-loop break, same-thread resume, task handoff, repository status, and
+  closure check inside this multi-action skill and its `references/` files.
 
 ### Boundaries
 
@@ -46,6 +48,9 @@ same-thread resume, task handoff, and closure assessment.
   different thread.
 - Use `closure-check` when the user asks whether anything is left to do at the
   end of a thread, session, or task.
+- Use `repository-status` when the user requests the branch, worktree,
+  promotion, shipping, active-task, salvage, and implementation table for a
+  repository.
 
 ### Workflow
 
@@ -60,6 +65,8 @@ same-thread resume, task handoff, and closure assessment.
 - Select `closure-check` when the output should be a concise evidence-based
   answer about required work, blockers, retained state, unverified claims, and
   reasonable next actions.
+- Select `repository-status` when the output should be the fixed Markdown table
+  defined by that action for one requested repository.
 
 #### 2. Close From Action Evidence
 
@@ -70,8 +77,9 @@ same-thread resume, task handoff, and closure assessment.
 
 ### Completion Gate
 
-- Completion, resume, handoff, and closure claims are limited to evidence
-  actually checked or fresh same-task evidence that still applies.
+- Completion, resume, handoff, repository-status, and closure claims are
+  limited to evidence actually checked or fresh same-task evidence that still
+  applies.
 
 ### Output Contract
 

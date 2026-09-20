@@ -3,4 +3,4 @@ interface:
   short_description: "Create and review software design documents"
   icon_small: "./assets/ceratops-logo-500.png"
   icon_large: "./assets/ceratops-logo-500.png"
-  default_prompt: "Use $design-document-lifecycle to create or review the repository design document."
+  default_prompt: "Use $ceratops-design-document-lifecycle to create or review the repository design document."

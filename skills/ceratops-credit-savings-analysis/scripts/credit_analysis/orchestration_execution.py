@@ -11,7 +11,7 @@ import json
 import pathlib
 from typing import Any, Mapping
 
-from . import luna_sol_analysis as analysis
+from . import thread_review_orchestration as analysis
 from .model_response_contract import (
     apply_response_correction,
     correction_response_schema,
@@ -19,7 +19,7 @@ from .model_response_contract import (
     project_response_correction,
     response_correction_scope,
 )
-from .single_thread_analysis import CreditAnalysisError
+from .single_surface_analysis import CreditAnalysisError
 
 
 def _order_omissions(state: dict[str, Any]) -> None:
@@ -51,7 +51,7 @@ def _schema_rejection(attempt: Mapping[str, Any]) -> str | None:
     """Read permanent API schema failures from retained, integrity-bound events.
 
     CLI startup diagnostics may hide the actual API error. Only error events with
-    the provider's exact code stop the batch; ordinary model failures retain their
+    the provider's exact code stop this analysis; ordinary model failures retain their
     existing handling. Reusing this check on resume prevents a paid retry against
     the same rejected request. Already running siblings still finish and checkpoint.
     """

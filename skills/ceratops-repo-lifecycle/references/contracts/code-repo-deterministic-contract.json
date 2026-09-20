@@ -185,6 +185,20 @@
           "level": "WARN"
         },
         {
+          "path": "/repository/content/dependabot/missing_manifest_directories",
+          "operator": "empty",
+          "level": "WARN"
+        },
+        {
+          "path": "/repository/content/dependabot/unmatched_configured_directories",
+          "operator": "empty",
+          "level": "WARN"
+        },
+        {
+          "path": "/repository/content/dependabot/config_errors",
+          "operator": "empty"
+        },
+        {
           "path": "/repository/content/dependabot/updates_present",
           "operator": "equal",
           "expected": true

@@ -34,8 +34,8 @@
     "ceratops-skill-lifecycle": [
       "skills/sections/*.md"
     ],
-    "openai-docs-managed": [
-      "skills/openai-docs-managed/scripts/openai_docs_retrieval.py"
+    "ceratops-openai-docs-managed": [
+      "skills/ceratops-openai-docs-managed/scripts/openai_docs_retrieval.py"
     ],
     "*": []
   },
@@ -46,14 +46,14 @@
     "ceratops-repo-lifecycle",
     "ceratops-skill-lifecycle",
     "ceratops-task-lifecycle",
-    "design-document-lifecycle",
-    "openai-docs-managed"
+    "ceratops-design-document-lifecycle",
+    "ceratops-openai-docs-managed"
   ],
   "skills": {
     "codex-desktop-upgrade": [
       "core"
     ],
-    "design-document-lifecycle": [
+    "ceratops-design-document-lifecycle": [
       "core",
       "multi-action-skill"
     ],
@@ -78,7 +78,7 @@
       "core",
       "evidence-analysis"
     ],
-    "openai-docs-managed": [
+    "ceratops-openai-docs-managed": [
       "core",
       "bounded-model-analysis"
     ],

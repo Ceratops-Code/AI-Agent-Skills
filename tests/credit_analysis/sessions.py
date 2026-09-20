@@ -339,7 +339,7 @@ def credit_analysis_session(
 def credit_analysis_request(
     tmp_path: pathlib.Path,
     *,
-    action: str = "full-analysis",
+    action: str = "deep-thread-analysis",
     extra_completed_turns: int = 0,
     extra_calls_per_turn: int = 1,
     oversized_user_message_chars: int = 0,
@@ -361,13 +361,13 @@ def credit_analysis_request(
         {
             "schema": "ceratops-credit-analysis-request.v1",
             "action": action,
-            "mode": "full-analysis" if action == "full-analysis" else "standalone",
+            "mode": "deep-thread-analysis" if action == "deep-thread-analysis" else "standalone",
             "source": {"thread_id": None, "session": str(session)},
             "window": {"mode": "full_thread", "last_runs": None, "turn_ids": []},
             "task_temp_root": str(task_root),
             "evidence_output": str(evidence),
             "pricing_profile": None,
-            "expected_surface_contract_version": 8,
+            "expected_surface_contract_version": 9,
             "mutation_authority": False,
         },
     )
@@ -411,36 +411,6 @@ def indexed_credit_analysis_session(
             + "\n"
         )
     return session
-
-
-def credit_analysis_batch_request(
-    tmp_path: pathlib.Path,
-    *,
-    selector: dict[str, Any],
-    name: str,
-    as_of: str = "2026-08-07T18:00:00Z",
-) -> pathlib.Path:
-    """Create one caller-bounded per-thread batch request."""
-
-    task_root = canonical_credit_task_root(tmp_path, f"batch-{name}")
-    request = tmp_path / f"batch-request-{name}.json"
-    write_json_file(
-        request,
-        {
-            "schema": "ceratops-credit-analysis-batch-request.v1",
-            "action": "full-analysis",
-            "mode": "per-thread-batch",
-            "selector": selector,
-            "as_of": as_of,
-            "task_temp_root": str(task_root),
-            "manifest_output": str(task_root / "manifest.json"),
-            "pricing_profile": None,
-            "expected_surface_contract_version": 8,
-            "expected_source_selection_contract_version": 1,
-            "mutation_authority": False,
-        },
-    )
-    return request
 
 
 def canonical_credit_task_root(

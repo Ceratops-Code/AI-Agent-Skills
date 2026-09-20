@@ -14,17 +14,15 @@ if _ADDED_ENTRY_DIR:
     sys.path.insert(0, _ENTRY_DIR_TEXT)
 try:
     from credit_analysis import command_line_interface as _command_line_interface
-    from credit_analysis import luna_sol_analysis as _luna_sol_analysis
-    from credit_analysis import multi_thread_analysis as _multi_thread_analysis
-    from credit_analysis import single_thread_analysis as _single_thread_analysis
+    from credit_analysis import thread_review_orchestration as _thread_review_orchestration
+    from credit_analysis import single_surface_analysis as _single_surface_analysis
 finally:
     if _ADDED_ENTRY_DIR:
         sys.path.remove(_ENTRY_DIR_TEXT)
 
 _IMPLEMENTATION_MODULES = (
-    _single_thread_analysis,
-    _multi_thread_analysis,
-    _luna_sol_analysis,
+    _single_surface_analysis,
+    _thread_review_orchestration,
     _command_line_interface,
 )
 for _module in _IMPLEMENTATION_MODULES:

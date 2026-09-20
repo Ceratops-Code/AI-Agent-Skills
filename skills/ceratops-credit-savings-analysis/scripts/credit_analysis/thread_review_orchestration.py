@@ -17,9 +17,8 @@ from .model_response_contract import (
 from .model_input_preparation import *
 from .model_prompting import _holistic_prompt, _holistic_prompt_prefix
 from .model_capacity_planning import *
-from .multi_thread_analysis import *
 from .persistent_subthread_analysis import *
-from .single_thread_analysis import *
+from .single_surface_analysis import *
 from .source_execution_context import *
 from .orchestration_execution import command_execute_orchestration
 from .report_rendering import _presentation_contract, _render_holistic_report
@@ -124,7 +123,7 @@ def _codex_model_catalog() -> dict[str, dict[str, Any]]:
 def _surface_order_for_request(
     request: Mapping[str, Any], contract: Mapping[str, Any]
 ) -> list[str]:
-    if request["mode"] == "full-analysis":
+    if request["mode"] == "deep-thread-analysis":
         return list(contract["surface_order"])
     return [str(request["action"])]
 
@@ -2236,7 +2235,7 @@ def _validate_holistic_manifest(
 
 
 def _holistic_scope_label(state: Mapping[str, Any]) -> str:
-    if state.get("mode") == "full-analysis":
+    if state.get("mode") == "deep-thread-analysis":
         return "full all-run analysis"
     return f"standalone {state.get('action')} analysis"
 
@@ -2290,13 +2289,8 @@ def command_plan_orchestration(
     request_path: pathlib.Path,
     *,
     available_models: set[str] | Mapping[str, Mapping[str, Any]] | None = None,
-    task_root_boundary: pathlib.Path | None = None,
 ) -> dict[str, Any]:
-    """Collect once and freeze the finite holistic Luna-plus-Sol plan.
-
-    ``task_root_boundary`` is an internal batch-owner handoff; public CLI calls
-    omit it and must provide a canonical repository-bound task root directly.
-    """
+    """Collect once and freeze the finite Luna-plus-Sol plan for one root."""
 
     contract = _load_contract()
     catalog = _codex_model_catalog() if available_models is None else available_models
@@ -2306,7 +2300,6 @@ def command_plan_orchestration(
         request_path,
         contract,
         collector,
-        task_root_boundary=task_root_boundary,
     )
     surface_order = _surface_order_for_request(request, contract)
     analysis_id = secrets.token_hex(12)
@@ -2720,11 +2713,11 @@ def _holistic_read_state(
         raise CreditAnalysisError("holistic state identity changed")
     if state.get("mutation_authority") is not False:
         raise CreditAnalysisError("holistic state mutation authority changed")
-    if state.get("mode") not in {"full-analysis", "standalone"}:
+    if state.get("mode") not in {"deep-thread-analysis", "standalone"}:
         raise CreditAnalysisError("holistic state mode changed")
     contract = _load_contract()
     expected_action = (
-        state["mode"] if state["mode"] == "full-analysis" else None
+        state["mode"] if state["mode"] == "deep-thread-analysis" else None
     )
     if (
         (expected_action is not None and state.get("action") != expected_action)
@@ -5977,18 +5970,12 @@ def _finalize_holistic(
 
 def _orchestration_state_path_from_request(
     request_path: pathlib.Path,
-    *,
-    task_root_boundary: pathlib.Path | None = None,
 ) -> pathlib.Path:
     """Resolve the one controller state path without collecting source evidence."""
 
     request = _read_json(request_path, "request")
     _closed(request, REQUEST_FIELDS, "request")
-    task_root = _task_directory(
-        request.get("task_temp_root"),
-        "task_temp_root",
-        canonical_boundary=task_root_boundary,
-    )
+    task_root = _task_directory(request.get("task_temp_root"), "task_temp_root")
     return task_root / "state.json"
 
 
@@ -5998,15 +5985,11 @@ def command_run_orchestration(
     runner: Any | None = None,
     available_models: set[str] | Mapping[str, Mapping[str, Any]] | None = None,
     task_limit: int | None = None,
-    task_root_boundary: pathlib.Path | None = None,
 ) -> dict[str, Any]:
     """Plan once, then execute or resume the request-owned finite queue."""
 
     request = request_path.expanduser().resolve(strict=True)
-    state_path = _orchestration_state_path_from_request(
-        request,
-        task_root_boundary=task_root_boundary,
-    )
+    state_path = _orchestration_state_path_from_request(request)
     if state_path.exists() or state_path.is_symlink():
         return command_execute_orchestration(
             state_path,
@@ -6026,7 +6009,6 @@ def command_run_orchestration(
     planned = command_plan_orchestration(
         request,
         available_models=catalog,
-        task_root_boundary=task_root_boundary,
     )
     planned_state = pathlib.Path(str(planned["state_path"])).resolve(strict=True)
     if planned_state != state_path.resolve(strict=True):

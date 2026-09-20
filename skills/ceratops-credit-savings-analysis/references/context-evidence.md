@@ -2,6 +2,7 @@
 
 ## Goal
 
+Run this surface alone for one selected root thread and its retained descendants.
 Detect avoidable evidence rediscovery and context loading without treating
 required freshness or safety work as waste.
 
