@@ -325,6 +325,60 @@ def test_v4_app_install_can_run_standalone_script(tmp_path: pathlib.Path) -> Non
     assert (tmp_path / "app-installed.txt").read_text() == "done"
 
 
+def test_v4_declared_operation_result_is_validated(tmp_path: pathlib.Path) -> None:
+    fixture = _v4_fixture()
+    action = fixture["deliverables"]["apps"]["claims-mobile"]["actions"]["install"]
+    action["result-schema"] = "ceratops-deployment-result.v1"
+    payload = {
+        "schema": "ceratops-deployment-result.v1",
+        "status": "passed",
+        "target": "tablet:37111",
+        "artifact": {
+            "type": "android-apk",
+            "path": "app/build/app.apk",
+            "sha256": "0" * 64,
+            "size": 1,
+        },
+    }
+    action["steps"] = [{"run": [
+        sys.executable, "-c", f"import json; print(json.dumps({payload!r}))",
+    ]}]
+    assert contracts.validation_errors(fixture) == []
+    (tmp_path / "sdlc").mkdir()
+    (tmp_path / "sdlc/sdlc.yml").write_text(json.dumps(fixture))
+    prepared = runner.prepare_operations(tmp_path, [runner.OperationRequest(
+        "deliverables.apps.claims-mobile.actions.install",
+    )])[0]
+    assert prepared.result_schema == "ceratops-deployment-result.v1"
+    result = runner.execute_prepared_operation(prepared)
+    assert result["status"] == "completed"
+    assert result["step_results"] == [{"step": 1, "result": payload}]
+
+
+def test_v4_invalid_required_result_retains_completed_side_effect(
+    tmp_path: pathlib.Path,
+) -> None:
+    fixture = _v4_fixture()
+    action = fixture["deliverables"]["apps"]["claims-mobile"]["actions"]["install"]
+    action["result-schema"] = "ceratops-deployment-result.v1"
+    action["steps"] = [{"run": [
+        sys.executable,
+        "-c",
+        "from pathlib import Path; Path('installed.txt').write_text('done'); print('{}')",
+    ]}]
+    assert contracts.validation_errors(fixture) == []
+    (tmp_path / "sdlc").mkdir()
+    (tmp_path / "sdlc/sdlc.yml").write_text(json.dumps(fixture))
+    prepared = runner.prepare_operations(tmp_path, [runner.OperationRequest(
+        "deliverables.apps.claims-mobile.actions.install",
+    )])[0]
+    result = runner.execute_prepared_operation(prepared)
+    assert result["status"] == "result_invalid"
+    assert result["steps"] == [1]
+    assert "Do not replay" in result["message"]
+    assert (tmp_path / "installed.txt").read_text() == "done"
+
+
 @pytest.mark.parametrize("mode", ["skill", "ci", "return"])
 def test_v4_runs_commands_then_returns_structured_handoff(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, mode: str,
@@ -389,6 +443,12 @@ def test_v4_package_build_waits_for_declared_test_gate(tmp_path: pathlib.Path) -
      "capability uv version-from.file must be repository-relative"),
     (lambda x: x["repository"]["capabilities"]["uv"].update(
         version="1.0", channel="stable"), "multiple version authorities"),
+    (lambda x: x["deliverables"]["apps"]["claims-mobile"]["actions"]["install"].update(
+        **{"result-schema": "ceratops-build-result.v1"}),
+     "result-schema must be ceratops-deployment-result.v1"),
+    (lambda x: x["deliverables"]["skills"]["claims-catalog-invoice"]["actions"]["install"].update(
+        **{"result-schema": "ceratops-deployment-result.v1"}),
+     "result-schema requires a final run step"),
 ])
 def test_v4_rejects_invalid_dependency_or_lifecycle_boundary(change, expected: str) -> None:
     fixture = _v4_fixture()

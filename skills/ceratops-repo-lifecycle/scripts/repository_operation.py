@@ -35,14 +35,14 @@ from ceratops_repo_compatibility_engine.sdlc_contract_validation import (
     operation_category as contract_operation_category,
 )
 from github_pr_workflow.command import failure_excerpt
-from sdlc_results import capture_step_result
+from sdlc_results import StepResultError, capture_step_result
 
 DEFAULT_CONTRACT = pathlib.Path("sdlc/sdlc.yml")
 PARAMETER_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 PLACEHOLDER_RE = re.compile(r"^\{(?P<name>[a-z][a-z0-9_]*)\}$")
 FAILURE_TAIL_LINES = 8
 FAILURE_TAIL_CHARS = 4096
-FAILED_STATUSES = frozenset({"operation_failed", "validation_failed", "tests_failed", "state_changed", "handoff_required", "error"})
+FAILED_STATUSES = frozenset({"operation_failed", "validation_failed", "tests_failed", "result_invalid", "state_changed", "handoff_required", "error"})
 MUTATION_CATEGORIES = frozenset({"build", "deploy-local", "publish"})
 
 
@@ -82,6 +82,7 @@ class PreparedOperation:
     contract_path: pathlib.Path | None = None
     parameters: tuple[tuple[str, str], ...] = ()
     test_context: Mapping[str, str] | None = None
+    result_schema: str | None = None
 
 
 class OperationError(RuntimeError):
@@ -425,6 +426,7 @@ def prepare_operations(
                 context if contract.get("version", 2) >= 3 or context == "ci" else "legacy",
                 contract_path,
                 tuple(sorted(parameters.items())),
+                result_schema=selected.get("result-schema"),
             )
         )
     return prepared
@@ -617,7 +619,34 @@ def _execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object
                 },
             }
         completed.append(step.position)
-        captured = capture_step_result(stdout)
+        expected_schema = (
+            prepared.result_schema
+            if step is prepared.steps[-1]
+            else None
+        )
+        expected_stage = {
+            "validate": "validation",
+            "tests": "tests",
+        }.get(prepared.category)
+        try:
+            captured = capture_step_result(
+                stdout,
+                expected_schema=expected_schema,
+                expected_stage=expected_stage if expected_schema else None,
+            )
+        except StepResultError as exc:
+            return {
+                **base,
+                "status": "result_invalid",
+                "message": (
+                    f"SDLC step completed but its required result is invalid: "
+                    f"{prepared.operation} step {step.position}. Do not replay a "
+                    "side effect solely to recover this result."
+                ),
+                "steps": completed,
+                "failed_step": step.position,
+                "diagnostic": {"message": str(exc)},
+            }
         if captured:
             step_results.append({"step": step.position, **captured})
             # The shared list also preserves earlier receipts on later failures

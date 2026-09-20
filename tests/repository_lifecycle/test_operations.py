@@ -26,6 +26,7 @@ runner = importlib.import_module("repository_operation")
 contracts = importlib.import_module(
     "ceratops_repo_compatibility_engine.sdlc_contract_validation"
 )
+results = importlib.import_module("sdlc_results")
 
 DEPLOY = "deliverables.sample.deploy-local."
 CHECK = "repository.validate."
@@ -41,6 +42,90 @@ RECEIPT = {
     "activeGeneration": "running-generation",
     "activeGenerationUnchanged": True,
 }
+
+
+@pytest.mark.parametrize(
+    ("schema", "stage", "payload"),
+    [
+        (
+            "ceratops-repository-stage-result.v1",
+            "validation",
+            {
+                "schema": "ceratops-repository-stage-result.v1",
+                "stage": "validation",
+                "status": "passed",
+                "source": {"contentSha256": "0" * 64, "sourceCommit": "1" * 40},
+                "checks": [{"id": "lint", "status": "passed", "exitCode": 0}],
+                "evidence": None,
+            },
+        ),
+        (
+            "ceratops-repository-stage-result.v1",
+            "tests",
+            {
+                "schema": "ceratops-repository-stage-result.v1",
+                "stage": "tests",
+                "status": "passed",
+                "source": {"contentSha256": "0" * 64, "sourceCommit": "1" * 40},
+                "groups": [
+                    {
+                        "id": "unit",
+                        "status": "passed",
+                        "path": ".test-results/groups/unit.json",
+                        "sha256": "2" * 64,
+                    }
+                ],
+            },
+        ),
+        (
+            "ceratops-build-result.v1",
+            None,
+            {
+                "schema": "ceratops-build-result.v1",
+                "status": "passed",
+                "artifact": {
+                    "type": "android-apk",
+                    "path": "app/build/app.apk",
+                    "sha256": "3" * 64,
+                    "size": 1,
+                },
+            },
+        ),
+        (
+            "ceratops-deployment-result.v1",
+            None,
+            {
+                "schema": "ceratops-deployment-result.v1",
+                "status": "passed",
+                "target": "tablet:37111",
+                "artifact": {
+                    "type": "android-apk",
+                    "path": "app/build/app.apk",
+                    "sha256": "4" * 64,
+                    "size": 1,
+                },
+            },
+        ),
+    ],
+)
+def test_canonical_operation_results_are_enforced(
+    schema: str, stage: str | None, payload: dict[str, object],
+) -> None:
+    assert results.capture_step_result(
+        json.dumps(payload), expected_schema=schema, expected_stage=stage,
+    ) == {"result": payload}
+
+
+def test_canonical_operation_result_rejects_incomplete_artifact() -> None:
+    payload = {
+        "schema": "ceratops-build-result.v1",
+        "status": "passed",
+        "artifact": {"path": "app/build/app.apk"},
+    }
+    with pytest.raises(results.StepResultError, match="canonical schema"):
+        results.capture_step_result(
+            json.dumps(payload), expected_schema="ceratops-build-result.v1",
+        )
 
 
 def test_live_sdlc_v3_selects_validation_and_tests_for_every_deploy() -> None:

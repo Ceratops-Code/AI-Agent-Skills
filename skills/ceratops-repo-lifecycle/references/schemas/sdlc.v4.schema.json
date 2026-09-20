@@ -191,6 +191,14 @@
             "$ref": "#/$defs/parameter"
           }
         },
+        "result-schema": {
+          "description": "Required structured stdout from the final run step. The repository operation runner validates the complete object and requires a passed terminal status.",
+          "enum": [
+            "ceratops-repository-stage-result.v1",
+            "ceratops-build-result.v1",
+            "ceratops-deployment-result.v1"
+          ]
+        },
         "steps": {
           "type": "array",
           "minItems": 1,

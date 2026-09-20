@@ -58,6 +58,12 @@ V4_ACTION_CATEGORIES = {
     "publish": "publish",
     "verify-publish": "verify-publish",
 }
+V4_RESULT_SCHEMAS = {
+    "validate": "ceratops-repository-stage-result.v1",
+    "test": "ceratops-repository-stage-result.v1",
+    "build": "ceratops-build-result.v1",
+    "install": "ceratops-deployment-result.v1",
+}
 
 
 class SdlcContractError(RuntimeError):
@@ -283,6 +289,24 @@ def _v4_semantic_errors(value: Mapping[str, Any]) -> list[str]:
                 errors.append(
                     f"handoff must be the single final step at {owner}.actions.{action_name}"
                 )
+            declared_result = action.get("result-schema")
+            if declared_result is not None:
+                expected_result = V4_RESULT_SCHEMAS.get(action_name)
+                if expected_result is None:
+                    errors.append(
+                        f"result-schema is not supported at {owner}.actions.{action_name}"
+                    )
+                elif declared_result != expected_result:
+                    errors.append(
+                        f"{owner}.actions.{action_name} result-schema must be "
+                        f"{expected_result}"
+                    )
+                steps = action.get("steps", [])
+                if not steps or "run" not in steps[-1]:
+                    errors.append(
+                        f"result-schema requires a final run step at "
+                        f"{owner}.actions.{action_name}"
+                    )
     path_fields = {
         "packages": ("source", "project"),
         "apps": ("source", "manifest"),
