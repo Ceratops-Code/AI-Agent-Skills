@@ -266,8 +266,8 @@
         {
           "kind": "path-any",
           "value": [
-            ".github/workflows/*.yml",
-            ".github/workflows/*.yaml"
+            ".github/workflows/**/*.yml",
+            ".github/workflows/**/*.yaml"
           ]
         }
       ],

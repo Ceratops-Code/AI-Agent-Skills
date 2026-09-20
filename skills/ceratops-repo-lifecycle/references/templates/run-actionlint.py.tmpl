@@ -47,6 +47,10 @@ ARCHITECTURES = {
     "x86": "386",
     "x86_64": "amd64",
 }
+WORKFLOW_PATTERNS = (
+    ".github/workflows/**/*.yml",
+    ".github/workflows/**/*.yaml",
+)
 
 
 def release_asset(system: str, machine: str) -> tuple[str, str, str]:
@@ -176,17 +180,33 @@ def provision_actionlint() -> pathlib.Path:
     return target
 
 
-def main() -> int:
-    """Provision actionlint, then check all workflows from the repository root."""
+def workflow_files(repository: pathlib.Path) -> list[str]:
+    """Return each regular direct or nested workflow YAML file exactly once."""
 
+    return sorted(
+        {
+            path.relative_to(repository).as_posix()
+            for pattern in WORKFLOW_PATTERNS
+            for path in repository.glob(pattern)
+            if path.is_file() and not path.is_symlink()
+        }
+    )
+
+
+def main() -> int:
+    """Provision actionlint, then check the explicit recursive workflow set."""
+
+    repository = pathlib.Path(__file__).resolve().parents[1]
+    workflows = workflow_files(repository)
+    if not workflows:
+        return 0
     try:
         binary = provision_actionlint()
     except (OSError, RuntimeError, tarfile.TarError, zipfile.BadZipFile) as exc:
         print(f"actionlint setup failed: {exc}", file=sys.stderr)
         return 3
-    repository = pathlib.Path(__file__).resolve().parents[1]
     result = subprocess.run(
-        [str(binary), "-shellcheck=", "-pyflakes="],
+        [str(binary), "-shellcheck=", "-pyflakes=", *workflows],
         cwd=repository,
         check=False,
     )

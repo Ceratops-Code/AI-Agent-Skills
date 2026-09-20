@@ -39,7 +39,9 @@ def test_actionlint_runner_pins_assets_and_rejects_bad_downloads(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runner = tmp_path / "run-actionlint.py"
+    repository = tmp_path / "repository"
+    runner = repository / "scripts" / "run-actionlint.py"
+    runner.parent.mkdir(parents=True)
     shutil.copy2(
         REPOSITORY_LIFECYCLE_SOURCE / "references/templates/run-actionlint.py.tmpl",
         runner,
@@ -78,6 +80,67 @@ def test_actionlint_runner_pins_assets_and_rejects_bad_downloads(
         ),
     )
     assert namespace["expected_version"](binary) is True
+
+    workflows = repository / ".github" / "workflows"
+    nested = workflows / "shared"
+    nested.mkdir(parents=True)
+    (workflows / "validate.yml").write_text("name: direct\n", encoding="utf-8")
+    (nested / "reusable.yaml").write_text("name: nested\n", encoding="utf-8")
+    (nested / "ignored.txt").write_text("ignored\n", encoding="utf-8")
+    assert namespace["workflow_files"](repository) == [
+        ".github/workflows/shared/reusable.yaml",
+        ".github/workflows/validate.yml",
+    ]
+    invocations: list[tuple[list[str], pathlib.Path, bool]] = []
+
+    def record_run(
+        arguments: list[str], *, cwd: pathlib.Path, check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        invocations.append((arguments, cwd, check))
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    monkeypatch.setitem(
+        namespace["main"].__globals__, "provision_actionlint", lambda: binary
+    )
+    monkeypatch.setattr(namespace["subprocess"], "run", record_run)
+    assert namespace["main"]() == 0
+    assert invocations == [
+        (
+            [
+                str(binary),
+                "-shellcheck=",
+                "-pyflakes=",
+                ".github/workflows/shared/reusable.yaml",
+                ".github/workflows/validate.yml",
+            ],
+            repository,
+            False,
+        )
+    ]
+
+
+def test_actionlint_contract_selects_recursive_workflows_once(
+    tmp_path: pathlib.Path,
+) -> None:
+    materializer = importlib.import_module(
+        "ceratops_repo_compatibility_engine.apply_ceratops_compatibility"
+    )
+    repository = tmp_path / "repository"
+    nested = repository / ".github" / "workflows" / "shared"
+    nested.mkdir(parents=True)
+    (nested / "reusable.yaml").write_text("name: nested\n", encoding="utf-8")
+    (nested.parent / "validate.yml").write_text("name: direct\n", encoding="utf-8")
+
+    selected = materializer.contract_checks(repository)
+    assert [check["id"] for check in selected].count("actionlint") == 1
+
+    generated = tmp_path / "generated"
+    generated.mkdir()
+    planned = materializer.contract_checks(
+        generated,
+        planned_paths={".github/workflows/validate.yml"},
+    )
+    assert [check["id"] for check in planned].count("actionlint") == 1
 
 
 def test_compatibility_materializer_supplies_target_identity_and_assignments(

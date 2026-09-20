@@ -37,7 +37,7 @@
   "$defs": {
     "text": {"type": "string", "minLength": 1},
     "path": {
-      "description": "Repository-relative path or glob; the contract loader also rejects absolute paths, drives, and parent traversal.",
+      "description": "Repository-relative path or Python glob; ** matches zero or more complete directory levels. The contract loader also rejects absolute paths, drives, and parent traversal.",
       "type": "string",
       "minLength": 1
     },

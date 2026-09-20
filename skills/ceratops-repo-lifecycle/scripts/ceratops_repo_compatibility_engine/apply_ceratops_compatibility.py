@@ -151,6 +151,24 @@ def _safe_validation_path(value: object, label: str) -> pathlib.PurePosixPath:
     return path
 
 
+def _planned_path_matches(path: str, pattern: str) -> bool:
+    """Match a planned file with the zero-directory ``**/`` semantics of glob."""
+
+    variants = {pattern}
+    pending = [pattern]
+    while pending:
+        candidate = pending.pop()
+        marker = "**/"
+        if marker not in candidate:
+            continue
+        collapsed = candidate.replace(marker, "", 1)
+        if collapsed not in variants:
+            variants.add(collapsed)
+            pending.append(collapsed)
+    planned = pathlib.PurePosixPath(path)
+    return any(planned.match(candidate) for candidate in variants)
+
+
 def _package_root(repo_root: pathlib.Path) -> pathlib.Path:
     """Preserve root application ownership; default standalone tooling to scripts."""
     return repo_root if (repo_root / "package.json").exists() else repo_root / "scripts"
@@ -237,7 +255,7 @@ def _validation_condition_matches(
             for pattern in patterns
             for candidate in repo_root.glob(pattern)
         ) or any(
-            pathlib.PurePosixPath(path).match(pattern)
+            _planned_path_matches(path, pattern)
             for path in (planned_files or {})
             for pattern in patterns
         )
