@@ -87,17 +87,36 @@ class OperationError(RuntimeError):
     """A malformed selection or unsafe repository boundary."""
 
 
-def execute_handoff(route: str, repo_root: pathlib.Path) -> dict[str, object]:
+def execute_handoff(
+    route: str, repo_root: pathlib.Path, *, inputs: Mapping[str, Any] | None = None,
+    expected_commit: str | None = None,
+) -> dict[str, object]:
     """Execute an installed-authorized skill action in its declared order.
 
     SDLC names only a skill and action. The installed binding authorizes an
     identical source binding when one exists; CI callers never invoke this
     function. Installed Python steps use their pinned immutable runtime.
+    Structured skill inputs adapt only the registered lifecycle's existing
+    selection flags. Unknown inputs or commands remain pending rather than
+    broadening a selected skill to a repository-wide deployment. Package names
+    are validated SDLC prerequisites; this adapter never builds them implicitly.
     """
 
     if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*", route):
         return {"status": "handoff_required", "handoff": route, "message": "No deterministic skill/action binding."}
     skill, action = route.split("/")
+    selected_skill = None
+    if inputs is not None:
+        selected_skill = inputs.get("skill")
+        packages = inputs.get("prerequisite-packages", [])
+        if (skill != "ceratops-skill-lifecycle" or action not in {"source-validate", "deploy"}
+                or set(inputs) - {"skill", "prerequisite-packages"}
+                or not isinstance(selected_skill, str)
+                or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", selected_skill)
+                or not isinstance(packages, list)
+                or not all(isinstance(name, str) and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name) for name in packages)):
+            return {"status": "handoff_required", "handoff": route,
+                    "message": "No deterministic binding for these lifecycle inputs."}
     skills = pathlib.Path(os.environ.get("CODEX_HOME", str(pathlib.Path.home() / ".codex"))) / "skills"
     installed_root = skills / skill
     installed_binding = installed_root / "references" / "action-executors.json"
@@ -149,6 +168,19 @@ def execute_handoff(route: str, repo_root: pathlib.Path) -> dict[str, object]:
                 for token, value in values.items():
                     argument = argument.replace(token, value)
                 argv.append(argument)
+            if selected_skill is not None:
+                # Binding identity was checked above. Adapt only the public
+                # selected-skill interfaces, before running any action step.
+                script = step["run"][1] if len(step["run"]) > 1 else ""
+                if "--skill" in argv:
+                    return {**evidence, "status": "handoff_required", "message": "Binding already selects a skill."}
+                if script == "{skill_root}/scripts/skills-consistency-source-validator.py":
+                    if "--mode" not in argv or argv[argv.index("--mode") + 1:] != ["full"]:
+                        return {**evidence, "status": "handoff_required", "message": "Source validator binding has an unsupported selection interface."}
+                    argv[argv.index("--mode") + 1] = "skill"
+                elif script != "{skill_root}/scripts/runtime/install-managed-skills.py" or action != "deploy":
+                    return {**evidence, "status": "handoff_required", "message": "Binding command does not support structured skill selection."}
+                argv.extend(["--skill", selected_skill])
             if step["run"][0] == "{python}" and not uses_source_bundle:
                 uv = shutil.which("uv")
                 metadata = installed_root / ".runtime-manifest.json"
@@ -170,6 +202,11 @@ def execute_handoff(route: str, repo_root: pathlib.Path) -> dict[str, object]:
                 argv = [uv, "run", "--no-project", "--python", str(python), "python", *argv[1:]]
             commands.append(argv)
         for position, argv in enumerate(commands, 1):
+            if expected_commit is not None:
+                try:
+                    require_clean_commit(repo_root, expected_commit)
+                except OperationError as exc:
+                    return {**evidence, "status": "state_changed", "message": str(exc)}
             result = subprocess.run(argv, cwd=repo_root, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
             if result.returncode:
                 return {**evidence, "status": "operation_failed", "step": position, "exit_code": result.returncode, "stderr_tail": result.stderr[-4096:], "stdout_tail": result.stdout[-4096:]}
@@ -178,6 +215,8 @@ def execute_handoff(route: str, repo_root: pathlib.Path) -> dict[str, object]:
             if captured:
                 receipts.append({"step": position, **captured})
                 evidence["step_results"] = receipts
+            if expected_commit is not None and repository_commit(repo_root) != expected_commit:
+                return {**evidence, "status": "state_changed", "message": "HEAD changed during the skill action."}
     except (OSError, ValueError, TypeError, AttributeError) as exc:
         return {**evidence, "status": "operation_failed", "message": str(exc)}
     return {**evidence, "status": "completed"}
@@ -476,14 +515,39 @@ def _execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object
                         "status": "state_changed",
                         "message": str(exc),
                     }
-            return {
-                **base,
-                "steps": completed,
-                "status": "deferred_handoff"
-                if prepared.handoff_mode == "ci"
-                else "handoff_required",
-                "handoff": dict(step.handoff),
-            }
+            if prepared.handoff_mode != "skill":
+                return {
+                    **base, "steps": completed,
+                    "status": "deferred_handoff" if prepared.handoff_mode == "ci" else "handoff_required",
+                    "handoff": dict(step.handoff),
+                }
+            route = f"{step.handoff['lifecycle']}/{step.handoff['action']}"
+            inputs = dict(step.handoff.get("inputs", {}))
+            outcome = execute_handoff(
+                route, prepared.repo_root, inputs=inputs,
+                expected_commit=prepared.commit if prepared.category in MUTATION_CATEGORIES else None,
+            )
+            # A structured handoff is the final SDLC step. Preserve preceding
+            # command evidence and number each executed lifecycle step in order
+            # so the existing finalizer can bind the actual deployment receipt.
+            offset = len(completed)
+            action_steps = outcome.get("steps", [])
+            action_receipts = outcome.get("step_results", [])
+            assert isinstance(action_steps, list) and isinstance(action_receipts, list)
+            combined = [*completed, *(offset + position for position in action_steps)]
+            receipts = [*step_results, *(
+                {**item, "step": offset + item["step"]} for item in action_receipts
+            )]
+            handoff_result = {**base, **outcome, "steps": combined,
+                      "handoff": route if outcome["status"] == "completed" else dict(step.handoff),
+                      "handoff_inputs": inputs}
+            if receipts:
+                handoff_result["step_results"] = receipts
+            if outcome["status"] == "completed":
+                handoff_result["handoff_completed"] = True
+            if repository_commit(prepared.repo_root) != prepared.commit:
+                handoff_result.update(status="state_changed", message="HEAD changed during the skill action.")
+            return handoff_result
         if prepared.commit and prepared.category in MUTATION_CATEGORIES:
             try:
                 require_clean_commit(prepared.repo_root, prepared.commit)

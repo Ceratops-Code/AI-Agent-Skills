@@ -282,8 +282,9 @@ def test_v4_tool_install_can_run_standalone_script(tmp_path: pathlib.Path) -> No
 
 @pytest.mark.parametrize("mode", ["skill", "ci", "return"])
 def test_v4_runs_commands_then_returns_structured_handoff(
-    tmp_path: pathlib.Path, mode: str,
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, mode: str,
 ) -> None:
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "unregistered"))
     fixture = _v4_fixture()
     action = fixture["deliverables"]["skills"]["claims-catalog-invoice"]["actions"]["install"]
     action["steps"].insert(0, {"run": [
@@ -483,3 +484,142 @@ def test_tool_install_binding_uses_checkout_metadata_and_propagates_failures(
                            "install", "--source", str(repo)]
     assert calls[0][1]["cwd"] == repo
     assert not calls[0][1].get("shell", False)
+
+
+def _registered_skill_fixture(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> pathlib.Path:
+    """Use real subprocesses with fixture lifecycle CLIs that enforce selection."""
+    repo = tmp_path / "source"
+    source = repo / "skills/ceratops-skill-lifecycle"
+    installed = tmp_path / "codex/skills/ceratops-skill-lifecycle"
+    binding = (ROOT / "skills/ceratops-skill-lifecycle/references/action-executors.json").read_bytes()
+    for skill in (source, installed):
+        (skill / "references").mkdir(parents=True)
+        (skill / "references/action-executors.json").write_bytes(binding)
+    (source / "scripts/runtime").mkdir(parents=True)
+    probe = """import argparse, json, pathlib, subprocess
+parser = argparse.ArgumentParser()
+parser.add_argument('--repo-root', type=pathlib.Path, required=True)
+parser.add_argument('--mode')
+parser.add_argument('--skill', required=True)
+args = parser.parse_args()
+with (args.repo_root / 'calls.jsonl').open('a') as stream:
+    stream.write(json.dumps({'mode': args.mode, 'skill': args.skill}) + chr(10))
+if args.mode is not None:
+    assert args.mode == 'skill'
+else:
+    commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=args.repo_root, text=True).strip()
+    print(json.dumps({'schema': 'ceratops-deployment-completion.v1',
+        'producer': 'ceratops-skill-lifecycle/deploy', 'status': 'completed',
+        'repo_root': str(args.repo_root), 'commit': commit,
+        'install_root': str(args.repo_root.parent / 'installed'),
+        'deployed': [args.skill], 'removed': [], 'transaction_id': 'a' * 32,
+        'cleanup_debt': [], 'promotion': None}))
+"""
+    for script in ("scripts/skills-consistency-source-validator.py", "scripts/runtime/install-managed-skills.py"):
+        (source / script).write_text(probe)
+    fixture = _v4_fixture()
+    skill = fixture["deliverables"]["skills"]["claims-catalog-invoice"]
+    for action in skill["actions"].values():
+        action["steps"][-1]["handoff"]["inputs"]["prerequisite-packages"] = ["claims"]
+    (repo / "sdlc").mkdir()
+    (repo / "sdlc/sdlc.yml").write_text(json.dumps(fixture))
+    (repo / ".gitignore").write_text("calls.jsonl\nran.txt\n")
+    _repository(repo)
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    return repo
+
+
+@pytest.mark.parametrize("mode", ["skill", "ci", "return"])
+@pytest.mark.parametrize("action", ["validate", "install"])
+def test_v4_registered_skill_handoff_preserves_selection_prerequisites_and_receipt(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, mode: str, action: str,
+) -> None:
+    repo = _registered_skill_fixture(tmp_path, monkeypatch)
+    location = f"deliverables.skills.claims-catalog-invoice.actions.{action}"
+    prepared = runner.prepare_operations(repo, [runner.OperationRequest(location)], context=mode)[0]
+    result = runner.execute_prepared_operation(prepared)
+    assert list(result["prerequisites"]["packages"]) == ["core", "claims"]
+    if mode != "skill":
+        assert result["status"] == ("deferred_handoff" if mode == "ci" else "handoff_required")
+        assert not (repo / "calls.jsonl").exists()
+        return
+    assert result["status"] == "completed", result
+    calls = [json.loads(line) for line in (repo / "calls.jsonl").read_text().splitlines()]
+    expected: list[dict[str, str | None]] = [{"mode": "skill", "skill": "claims-catalog-invoice"}]
+    if action == "install":
+        expected.append({"mode": None, "skill": "claims-catalog-invoice"})
+    assert calls == expected
+    assert result["handoff_completed"] is True
+    assert result["handoff_inputs"] == {"skill": "claims-catalog-invoice", "prerequisite-packages": ["claims"]}
+    if action == "install":
+        assert result["steps"] == [1, 2]
+        assert result["step_results"][-1]["step"] == 2
+        receipt = result["step_results"][-1]["result"]
+        assert receipt["deployed"] == ["claims-catalog-invoice"]
+        # The public finalizer must recognize the same completion protocol.
+        import runpy
+
+        from tests.repository_lifecycle.support import PROMOTE_REPOSITORY
+        promote = runpy.run_path(str(PROMOTE_REPOSITORY))
+        promote["_completed_deployment"]({"status": "ready", "head": prepared.commit,
+            "operations": {"status": "completed", "pending_operations": [],
+                "completed_operations": [location], "results": [result]}},
+            prepared.commit, repo_root=repo)
+
+
+@pytest.mark.parametrize("problem", ["unknown_input", "unknown_route", "changed_binding", "dirty_source", "head_changes"])
+def test_v4_skill_handoff_rejects_unsafe_or_unhandled_work_before_deployment(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, problem: str,
+) -> None:
+    repo = _registered_skill_fixture(tmp_path, monkeypatch)
+    location = "deliverables.skills.claims-catalog-invoice.actions.install"
+    prepared = runner.prepare_operations(repo, [runner.OperationRequest(location)], context="skill")[0]
+    if problem == "unknown_input":
+        prepared.steps[-1].handoff["inputs"]["unexpected"] = "do-not-ignore"
+    elif problem == "unknown_route":
+        prepared.steps[-1].handoff["action"] = "unknown"
+    elif problem == "changed_binding":
+        binding = repo / "skills/ceratops-skill-lifecycle/references/action-executors.json"
+        binding.write_bytes(binding.read_bytes() + b"\n")
+        run_git(repo, "add", ".")
+        run_git(repo, "commit", "-m", "Different source authorization")
+        prepared = runner.prepare_operations(repo, [runner.OperationRequest(location)], context="skill")[0]
+    elif problem == "dirty_source":
+        (repo / "uncommitted.txt").write_text("must not deploy")
+    else:
+        original = runner.subprocess.run
+        def changing(argv, **kwargs):
+            result = original(argv, **kwargs)
+            if any(str(part).endswith("skills-consistency-source-validator.py") for part in argv):
+                original(["git", "commit", "--allow-empty", "-m", "Concurrent change"], cwd=repo, capture_output=True, check=True)
+            return result
+        monkeypatch.setattr(runner.subprocess, "run", changing)
+    result = runner.execute_prepared_operation(prepared)
+    assert result["status"] == ("state_changed" if problem in {"dirty_source", "head_changes"} else "handoff_required"), result
+    calls = (repo / "calls.jsonl")
+    if calls.exists():
+        assert [json.loads(line)["mode"] for line in calls.read_text().splitlines()] == ["skill"]
+
+
+def test_completed_handoff_record_survives_removed_result_directory(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An output directory removed during delivery must not require replay."""
+    import runpy
+
+    from tests.repository_lifecycle.support import PROMOTE_REPOSITORY
+    module = runpy.run_path(str(PROMOTE_REPOSITORY))
+    namespace = module["main"].__globals__
+    result_file = tmp_path / "records/promotion.json"
+    result = {"status": "ready", "head": "a" * 40, "operations": {"status": "completed"}}
+    calls = []
+    def promote(args, *, timings):
+        assert result_file.parent.is_dir()
+        result_file.parent.rmdir()
+        calls.append("completed")
+        return result
+    monkeypatch.setitem(namespace, "promote", promote)
+    assert module["main"](["--repo-root", str(tmp_path / "repo"), "--result-file", str(result_file), "--no-run-operation"]) == 0
+    assert calls == ["completed"]
+    assert json.loads(result_file.read_text()) == json.loads(capsys.readouterr().out)
+    assert not list(result_file.parent.glob("*.tmp"))
