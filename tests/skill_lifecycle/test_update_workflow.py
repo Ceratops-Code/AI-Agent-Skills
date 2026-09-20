@@ -890,7 +890,7 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
     request_path = task_temp_root / "request.json"
     state_path = task_temp_root / "state.json"
     evidence_path = task_temp_root / "evidence.json"
-    request = {
+    request: dict[str, Any] = {
         "schema": "ceratops-skill-update-request.v2",
         "repo_root": str(worktree),
         "task_temp_root": str(task_temp_root),
