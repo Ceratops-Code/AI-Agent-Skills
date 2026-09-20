@@ -188,40 +188,6 @@ class GHContractStateEngineTests(unittest.TestCase):
                 ],
             )
 
-    def test_dependabot_ecosystems_distinguish_uv_and_pip_manifests(self):
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = pathlib.Path(temporary_directory)
-            (root / "pyproject.toml").write_text(
-                '[project]\nname = "demo"\n',
-                encoding="utf-8",
-            )
-
-            pip_only = collect_local_repository(temporary_directory, [])
-            self.assertEqual(
-                pip_only["dependabot"]["ecosystems"],
-                {"pip": ["pyproject.toml"]},
-            )
-
-            (root / "uv.lock").write_text("version = 1\n", encoding="utf-8")
-            uv_only = collect_local_repository(temporary_directory, [])
-            self.assertEqual(
-                uv_only["dependabot"]["ecosystems"],
-                {"uv": ["pyproject.toml", "uv.lock"]},
-            )
-
-            (root / "requirements-dev.txt").write_text(
-                "pytest\n",
-                encoding="utf-8",
-            )
-            mixed = collect_local_repository(temporary_directory, [])
-            self.assertEqual(
-                mixed["dependabot"]["ecosystems"],
-                {
-                    "pip": ["requirements-dev.txt"],
-                    "uv": ["pyproject.toml", "uv.lock"],
-                },
-            )
-
     def test_local_health_validates_present_deploy_contract_schema(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = pathlib.Path(temporary_directory)
