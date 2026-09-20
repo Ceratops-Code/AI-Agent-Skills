@@ -410,12 +410,23 @@ def validate_ceratops_compatibility(repo_root: pathlib.Path) -> CompatibilityRes
                 ["uv", "run", "--locked", surfaces["validator"]["path"]],
                 ["uv", "run", "--project", expected, "--locked", "python", surfaces["validator"]["path"]],
             ]
-            commands = [step["run"] for name, entry in entries.items() if ".validate." in name for step in entry.get("steps", [])]
+            commands = [
+                step["run"]
+                for name, entry in entries.items()
+                if operation_category(name) == "validate"
+                for step in entry.get("steps", [])
+                if "run" in step
+            ]
             if not any(command in commands for command in validator_commands):
                 errors.append("SDLC must invoke the repository validator through its locked uv project")
-            if not sdlc.get("repository", {}).get("tests"):
+            tests = [
+                entry
+                for name, entry in entries.items()
+                if operation_category(name) == "tests"
+            ]
+            if not tests:
                 errors.append("SDLC must declare repository tests or an explicit no-op")
-            if python_tests and not any(".tests." in name and (entry.get("steps") or entry.get("handoff")) for name, entry in entries.items()):
+            if python_tests and not any(entry.get("steps") for entry in tests):
                 errors.append("detected Python tests require an executable SDLC tests operation")
     errors.extend(_environment_errors(root, contract, has_python_skills=bool(python_skills)))
     errors.extend(_skill_runtime_errors(root, contract, has_python_skills=bool(python_skills)))

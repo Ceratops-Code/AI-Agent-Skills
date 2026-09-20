@@ -99,11 +99,11 @@ def test_ci_runs_repository_validator_that_owns_both_mypy_platforms() -> None:
     assert gate["with"] == {"repo-root": ".", "evidence-file": "${{ runner.temp }}/sdlc-validation.json"}
     assert steps.index(installation_step) < steps.index(gate)
     contract = yaml.safe_load((ROOT / "sdlc/sdlc.yml").read_text(encoding="utf-8"))
-    assert contract["version"] == 3
-    assert contract["repository"]["validate"]["repository"]["steps"] == [
+    assert contract["version"] == 4
+    assert contract["repository"]["actions"]["validate"]["steps"] == [
         {"run": ["uv", "run", "--locked", "scripts/validate-repository.py"]},
     ]
-    assert contract["repository"]["tests"]["python"]["steps"] == [
+    assert contract["repository"]["actions"]["test"]["steps"] == [
         {"run": ["uv", "run", "--locked", "scripts/testing/run-tests.py", "--auto"]},
     ]
     upload = next(step for step in steps if step.get("name") == "Upload validation evidence")

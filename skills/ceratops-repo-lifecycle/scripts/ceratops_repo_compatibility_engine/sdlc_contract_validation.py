@@ -19,10 +19,10 @@ import yaml
 
 SKILL_ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCHEMA = SKILL_ROOT / "references" / "schemas" / "sdlc.yml.schema.json"
-# Compatibility application still owns v3. V4 is an independently supported
-# typed-deliverable format and must not silently convert existing contracts.
+# Compatibility application owns v4. Older supported formats remain readable
+# and executable, but must not be converted without explicit action ownership.
 V4_SCHEMA = SCHEMA.with_name("sdlc.v4.schema.json")
-CURRENT_VERSION = 3
+CURRENT_VERSION = 4
 VERSION_SCHEMAS = {
     1: SCHEMA.with_name("sdlc.v1.schema.json"),
     2: SCHEMA.with_name("sdlc.v2.schema.json"),
@@ -172,8 +172,8 @@ def migration_proposal(
         "current_version": version,
         "recommended_version": CURRENT_VERSION,
         "reason": (
-            "Version 3 separates validation and tests, requires deliverable tests, "
-            "and supports explicit no-op operations; versions 1 and 2 remain executable."
+            "Version 4 uses typed deliverables and explicit action ownership while "
+            "keeping validation and tests separate; versions 1 through 3 remain executable."
         ),
     }
 

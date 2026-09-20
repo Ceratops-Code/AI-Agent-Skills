@@ -70,20 +70,20 @@ and publication.
 - Use supported SDLC formats through the shared loader without migration.
   Require an upgrade only when the requested operation cannot run safely;
   installer release-number differences alone do not establish incompatibility.
-- Apply current compatibility with SDLC version 3 and separate validation and
-  tests. Read v4 through the shared schema and operation adapter without
-  converting existing contracts; the compatibility producer upgrades older
-  formats only with clear operation ownership.
+- Apply current compatibility with SDLC version 4 and separate validation and
+  tests. Read supported older formats through the shared schema and operation
+  adapter without converting existing contracts; the compatibility producer
+  upgrades them only with clear operation ownership.
 - Read declared prerequisite metadata before setup; run only explicitly chosen
   bootstrap operations. Prerequisites and artifact identity are annotations,
   not inferred check or installation commands.
-- For SDLC version 3, run skill-owned deterministic action bindings through the
+- For SDLC version 4, run skill-owned deterministic action bindings through the
   SDLC engine. Return unresolved routes as blockers before dependent mutation.
   CI defers every skill handoff without claiming its action completed.
 - Require successful validation followed by separate tests before promotion
   continuation, shipping, publication, and deployment. Invoke repository
   runners for these gates; test runners own saved-result reuse. Explicit
-  selection cannot omit version-3 gates; a declared no-op must include its
+  selection cannot omit version-4 gates; a declared no-op must include its
   reason.
 - Treat `completed` as command completion; validate retained
   `step_results[].result` independently against the producer's schema and

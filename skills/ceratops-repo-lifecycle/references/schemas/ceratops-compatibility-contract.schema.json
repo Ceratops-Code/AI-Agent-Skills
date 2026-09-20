@@ -91,27 +91,23 @@
     },
     "managed_skill_operations": {
       "type": "object",
-      "description": "Executable: generator supplies undeclared skill operations and removes only exact owned definitions when source skills disappear; loader validates against the SDLC schema.",
+      "description": "Executable: generator supplies named v4 skill actions and removes only exact owned definitions when source skills disappear; loader validates materialized actions against the SDLC schema.",
       "additionalProperties": false,
       "required": [
         "validate",
-        "deploy-local",
-        "tests"
+        "install"
       ],
       "properties": {
         "validate": {
-          "$ref": "#/$defs/operations"
+          "$ref": "#/$defs/managed_skill_action"
         },
-        "deploy-local": {
-          "$ref": "#/$defs/operations"
-        },
-        "tests": {
-          "$ref": "#/$defs/operations"
+        "install": {
+          "$ref": "#/$defs/managed_skill_action"
         }
       }
     },
     "sdlc_version": {
-      "const": 3,
+      "const": 4,
       "description": "Executable: generated SDLC version and current-compatibility checker requirement."
     },
     "runtime": {
@@ -324,12 +320,24 @@
         }
       }
     },
-    "operations": {
+    "managed_skill_action": {
       "type": "object",
-      "minProperties": 1,
-      "additionalProperties": {
-        "oneOf": [
-          {
+      "additionalProperties": false,
+      "required": [
+        "requires",
+        "steps"
+      ],
+      "properties": {
+        "requires": {
+          "const": {
+            "capabilities": []
+          }
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
             "type": "object",
             "additionalProperties": false,
             "required": [
@@ -337,58 +345,40 @@
             ],
             "properties": {
               "handoff": {
-                "type": "string",
-                "pattern": "^[a-z0-9-]+/[a-z0-9-]+$",
-                "description": "Executable: SDLC skill/action route supplied by the generator."
-              }
-            }
-          },
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "steps"
-            ],
-            "properties": {
-              "steps": {
-                "type": "array",
-                "minItems": 1,
-                "description": "Executable: SDLC command sequence supplied by the generator.",
-                "items": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": [
-                    "run"
-                  ],
-                  "properties": {
-                    "run": {
-                      "type": "array",
-                      "minItems": 1,
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "description": "Executable: command argv passed to the SDLC runner."
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "lifecycle",
+                  "action",
+                  "inputs"
+                ],
+                "properties": {
+                  "lifecycle": {
+                    "const": "ceratops-skill-lifecycle"
+                  },
+                  "action": {
+                    "enum": [
+                      "source-validate",
+                      "deploy"
+                    ]
+                  },
+                  "inputs": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "skill"
+                    ],
+                    "properties": {
+                      "skill": {
+                        "const": "{skill}"
+                      }
                     }
                   }
                 }
               }
             }
-          },
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "no-op"
-            ],
-            "properties": {
-              "no-op": {
-                "type": "string",
-                "minLength": 1
-              }
-            }
           }
-        ]
+        }
       }
     }
   }

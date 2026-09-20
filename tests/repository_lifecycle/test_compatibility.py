@@ -19,6 +19,7 @@ import yaml
 from tests.repository_lifecycle.support import (
     REPOSITORY_LIFECYCLE_SCRIPTS,
     REPOSITORY_LIFECYCLE_SOURCE,
+    SDLC_CONTRACT_TEMPLATE,
     SECTION_MANIFEST_TEMPLATE,
 )
 from tests.skill_lifecycle.support import add_action_sections
@@ -143,15 +144,36 @@ def test_actionlint_contract_selects_recursive_workflows_once(
     assert [check["id"] for check in planned].count("actionlint") == 1
 
 
+def _write_current_sdlc(
+    repo: pathlib.Path,
+    *,
+    deliverables: dict[str, object] | None = None,
+) -> None:
+    """Replace the intentionally legacy shared fixture with the current template."""
+
+    document = yaml.safe_load(SDLC_CONTRACT_TEMPLATE.read_text(encoding="utf-8"))
+    if deliverables is not None:
+        document["deliverables"] = deliverables
+    target = repo / "sdlc" / "sdlc.yml"
+    target.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+
 def test_compatibility_materializer_supplies_target_identity_and_assignments(
     tmp_path: pathlib.Path,
 ) -> None:
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "stale/source", ["alpha-tool", "beta-tool"], skill_runtime=True)
-    write_sdlc_contract(
+    _write_current_sdlc(
         repo,
-        deliverables={"tools": {"publish": {
-            "public": {"steps": [{"run": [sys.executable, "-V"]}]}
+        deliverables={"tools": {"custom-tool": {
+            "source": "tools/custom-tool",
+            "manifest": "tools/custom-tool/tool.json",
+            "prerequisites": [],
+            "actions": {
+                "validate": {"requires": {"capabilities": []}, "no-op": "Covered by repository validation."},
+                "install": {"requires": {"capabilities": []}, "steps": [{"run": [sys.executable, "-V"]}]},
+                "publish": {"requires": {"capabilities": []}, "steps": [{"run": [sys.executable, "-V"]}]},
+            },
         }}},
     )
     (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
@@ -224,23 +246,20 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         (repo / "sdlc" / "sdlc.yml").read_text(encoding="utf-8")
     )
     assert contract["kind"] == "ceratops-sdlc"
-    assert contract["deliverables"]["skills"]["validate"] == {
-        "ceratops-managed": {"handoff": "ceratops-skill-lifecycle/source-validate"}
+    alpha_actions = contract["deliverables"]["skills"]["alpha-tool"]["actions"]
+    assert alpha_actions["validate"]["steps"][0]["handoff"] == {
+        "lifecycle": "ceratops-skill-lifecycle",
+        "action": "source-validate",
+        "inputs": {"skill": "alpha-tool"},
     }
-    assert contract["deliverables"]["skills"]["deploy-local"]["ceratops-managed"] == {
-        "handoff": "ceratops-skill-lifecycle/deploy"
+    assert alpha_actions["install"]["steps"][0]["handoff"] == {
+        "lifecycle": "ceratops-skill-lifecycle",
+        "action": "deploy",
+        "inputs": {"skill": "alpha-tool"},
     }
-    assert contract["deliverables"]["skills"]["deploy-local"]["standalone"] == {
-        "steps": [
-            {
-                "run": ["uv", "run", "--locked", "scripts/deploy-skills.py"],
-            }
-        ]
-    }
-    assert contract["deliverables"]["tools"]["publish"] == {
-        "public": {
-            "steps": [{"run": [sys.executable, "-V"]}]
-        }
+    assert contract["deliverables"]["tools"]["custom-tool"]["actions"]["publish"] == {
+        "requires": {"capabilities": []},
+        "steps": [{"run": [sys.executable, "-V"]}],
     }
     assert manifest["runtime_payloads"] == {}
     assert not (repo / "skills/sections/scripts/run-skill.py").exists()
@@ -255,34 +274,28 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     )
     # Current generated entries are idempotent and retire with their skill source.
     assert materializer.build_sdlc_contract_candidate(
-        repo, has_skills=True, apply_contract=True,
+        repo, skill_names=["alpha-tool", "beta-tool"], apply_contract=True,
     ) == contract
     skillless = materializer.build_sdlc_contract_candidate(
-        repo, has_skills=False, apply_contract=True,
+        repo, skill_names=[], apply_contract=True,
     )
     assert skillless["deliverables"] == {"tools": contract["deliverables"]["tools"]}
 
     # A target's custom definitions survive even under a producer-owned name.
-    custom = {"handoff": "target-owned/validation"}
-    contract["deliverables"]["skills"]["validate"] = {
-        "ceratops-managed": custom, "custom-check": custom,
+    contract["deliverables"]["skills"]["alpha-tool"]["actions"]["test"] = {
+        "requires": {"capabilities": []},
+        "no-op": "Target-owned skill tests remain separate.",
     }
-    contract["deliverables"]["skills"]["deploy-local"]["ceratops-managed"] = {
-        "handoff": "target-owned/deployment"
-    }
+    custom = contract["deliverables"]["skills"]["alpha-tool"]
     sdlc = repo / "sdlc" / "sdlc.yml"
     sdlc.write_text(yaml.safe_dump(contract, sort_keys=False), encoding="utf-8")
     assert materializer.build_sdlc_contract_candidate(
-        repo, has_skills=True, apply_contract=True,
+        repo, skill_names=["alpha-tool", "beta-tool"], apply_contract=True,
     ) == contract
     skillless = materializer.build_sdlc_contract_candidate(
-        repo, has_skills=False, apply_contract=True,
+        repo, skill_names=[], apply_contract=True,
     )
-    assert skillless["deliverables"]["skills"] == {
-        "validate": {"ceratops-managed": custom, "custom-check": custom},
-        "deploy-local": {"ceratops-managed": {"handoff": "target-owned/deployment"}},
-        "tests": {"none": {"no-op": "No deliverable-specific test operation is declared; repository tests remain separately selectable."}},
-    }
+    assert skillless["deliverables"]["skills"] == {"alpha-tool": custom}
     assert (repo / "scripts" / "deploy-skills.py").is_file()
     assert (repo / "scripts" / "validate-repository.py").is_file()
     assert (repo / "scripts" / "run-actionlint.py").is_file()
@@ -394,8 +407,6 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     defaults = json.loads(contract_path.read_text(encoding="utf-8"))
     defaults["surfaces"]["skill_bootstrap"]["path"] = "scripts/bootstrap-skills.py"
     defaults["surfaces"]["skill_bootstrap"]["template"] = "bootstrap-skills.py.tmpl"
-    defaults["managed_skill_operations"]["validate"]["ceratops-managed"]["handoff"] = "target-lifecycle/source-check"
-    defaults["managed_skill_operations"]["deploy-local"]["standalone"]["steps"][0]["run"][-1] = "scripts/bootstrap-skills.py"
     templates = bundle / "references/templates"
     (templates / "deploy-skills.py.tmpl").rename(templates / "bootstrap-skills.py.tmpl")
     contract_path.write_text(json.dumps(defaults), encoding="utf-8")
@@ -405,17 +416,16 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     (alternate / "scripts/deploy-skills.py").unlink()
     # Keep target-owned operation preservation separate from generated defaults.
     (alternate / "sdlc/sdlc.yml").unlink()
-    write_sdlc_contract(alternate)
+    _write_current_sdlc(alternate)
     changed = run_compatibility_engine(bundle / "scripts", "apply", "--target-repo-root", str(alternate))
     assert changed.returncode == 0, changed.stdout + changed.stderr
     assert (alternate / "scripts/bootstrap-skills.py").is_file()
     assert not (alternate / "scripts/deploy-skills.py").exists()
     actual = yaml.safe_load((alternate / "sdlc/sdlc.yml").read_text(encoding="utf-8"))
-    assert actual["deliverables"]["skills"]["deploy-local"]["standalone"]["steps"][0]["run"] == [
-        "uv", "run", "--locked", "scripts/bootstrap-skills.py",
-    ]
-    assert actual["deliverables"]["skills"]["validate"]["ceratops-managed"] == {
-        "handoff": "target-lifecycle/source-check"
+    assert actual["deliverables"]["skills"]["alpha-tool"]["actions"]["validate"]["steps"][0]["handoff"] == {
+        "lifecycle": "ceratops-skill-lifecycle",
+        "action": "source-validate",
+        "inputs": {"skill": "alpha-tool"},
     }
 
 
@@ -490,6 +500,7 @@ def test_non_python_skill_needs_no_shared_skill_runtime(
 ) -> None:
     repo = tmp_path / "non-python"
     create_compatible_repo(repo, "example/non-python", ["alpha-tool"])
+    _write_current_sdlc(repo)
     (repo / ".git").write_text("gitdir: test\n", encoding="utf-8")
 
     result = run_compatibility_engine(
@@ -631,7 +642,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert output["skill_manifest"] == "not_configured"
     assert not (repo / "skills").exists()
     contract = yaml.safe_load((repo / "sdlc" / "sdlc.yml").read_text())
-    assert contract["repository"]["validate"]["repository"]["steps"] == [
+    assert contract["repository"]["actions"]["validate"]["steps"] == [
         {"run": ["uv", "run", "--locked", "scripts/validate-repository.py"]}
     ]
     assert "deliverables" not in contract
@@ -1049,7 +1060,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
             "npm-markdown-lint", "ruff", "mypy", "actionlint"
         ]
         assert (config_repo / "scripts/run-tests.py").is_file()
-        assert "python" in yaml.safe_load((config_repo / "sdlc/sdlc.yml").read_text())["repository"]["tests"]
+        assert yaml.safe_load((config_repo / "sdlc/sdlc.yml").read_text())["repository"]["actions"]["test"]["steps"]
 
     # Contract validation covers entries which do not match the target and
     # rejects broken metadata or evidence links before target mutation.
@@ -1105,6 +1116,7 @@ def test_compatibility_materializer_preserves_existing_validator_and_ci(
 ) -> None:
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "preserved/source", ["alpha-tool"])
+    _write_current_sdlc(repo)
     (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
     validator = repo / "scripts" / "validate-repository.py"
     validator.write_text(
@@ -1168,6 +1180,7 @@ def test_compatibility_materializer_preserves_existing_identity_and_custom_secti
 ) -> None:
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "preserved/source", ["alpha-tool"])
+    _write_current_sdlc(repo)
     (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
     markdown_config = repo / configuration
     configuration_bytes = {
@@ -1269,6 +1282,7 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
     engine_scripts = lifecycle_bundle / "scripts"
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "preserved/source", ["alpha-tool"])
+    _write_current_sdlc(repo)
     (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
     ignore = repo / ".gitignore"
     if existing_ignore:
@@ -1322,6 +1336,7 @@ def test_compatibility_materializer_blocks_invalid_assignments_before_writes(
 ) -> None:
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "preserved/source", ["alpha-tool"])
+    _write_current_sdlc(repo)
     (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
     manifest_path = repo / "skills" / "skill-sections.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -1416,6 +1431,7 @@ def test_compatibility_materializer_blocks_invalid_assignments_before_writes(
 def test_compatibility_materializes_action_assignments(tmp_path: pathlib.Path, invalid: bool) -> None:
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "example/actions", ["alpha-tool"])
+    _write_current_sdlc(repo)
     (repo / ".git").write_text("gitdir: test\n", encoding="utf-8")
     manifest = add_action_sections(repo)
     if invalid:
@@ -1530,7 +1546,7 @@ def test_generated_scripts_and_skill_owned_ci_keep_environments_and_tests_separa
     assert failed.returncode == 1, failed.stdout + failed.stderr
     result = json.loads(evidence.read_text())
     assert result["status"] == "tests_failed"
-    assert result["operation"] == "repository.tests.python"
+    assert result["operation"] == "repository.actions.test"
     assert any("test-gate-evidence" in line for line in result["diagnostic"]["stdout_tail"])
     collector = importlib.import_module("github_contract_engine.collectors.local_repository")
     facts = collector._repository_validation_facts(
@@ -1542,7 +1558,7 @@ def test_generated_scripts_and_skill_owned_ci_keep_environments_and_tests_separa
     passed = run_ci_action(repo, evidence, bundle)
     assert passed.returncode == 0, passed.stdout + passed.stderr
     assert not evidence.exists()
-    assert json.loads(passed.stdout)["completed_operations"] == ["repository.validate.repository", "repository.tests.python"]
+    assert json.loads(passed.stdout)["completed_operations"] == ["repository.actions.validate", "repository.actions.test"]
     lock = (repo / "scripts/uv.lock").read_bytes()
     reapplied = run_compatibility_engine(REPOSITORY_LIFECYCLE_SCRIPTS, "apply", "--target-repo-root", str(repo))
     assert reapplied.returncode == 0, reapplied.stdout
