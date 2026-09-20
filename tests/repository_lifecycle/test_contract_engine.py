@@ -1198,6 +1198,47 @@ class GHContractStateEngineTests(unittest.TestCase):
         )
         self.assertTrue(condition_matches("artifact_type contains npm_package", states))
 
+    def test_docs_site_workflow_requirement_is_github_pages_specific(self):
+        rule = next(
+            item
+            for item in self.contracts["artifact"]["checks"]
+            if item["id"] == "docs_site.publish_and_live_check"
+        )
+        workflow_assertion = next(
+            assertion
+            for assertion in rule["assertions"]
+            if assertion["path"] == "/local/workflows/text"
+        )
+        condition = workflow_assertion["when"]
+
+        self.assertFalse(
+            condition_matches(
+                condition,
+                {
+                    "artifact_type": ["static_docs_site"],
+                    "repository": {"pages": {"build_type": "none"}},
+                },
+            )
+        )
+        self.assertFalse(
+            condition_matches(
+                condition,
+                {
+                    "artifact_type": ["github_pages_site"],
+                    "repository": {"pages": {"build_type": "legacy"}},
+                },
+            )
+        )
+        self.assertTrue(
+            condition_matches(
+                condition,
+                {
+                    "artifact_type": ["github_pages_site"],
+                    "repository": {"pages": {"build_type": "workflow"}},
+                },
+            )
+        )
+
     def test_artifact_categories_are_contract_driven(self):
         type_system = {
             "categories": [
