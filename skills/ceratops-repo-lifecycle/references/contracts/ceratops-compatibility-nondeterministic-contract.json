@@ -19,8 +19,8 @@
     },
     {
       "id": "ND.COMPATIBILITY.TESTS",
-      "applies_when": "The repository declares deliverables or contains Python tests.",
-      "review_required": "Repository validation never executes tests. SDLC declares separate tests for each deliverable, with explicit no-op reasons when appropriate; repository tests may cover shared behavior. Python test repositories have the template-created run-tests.py and SDLC wiring. Review ambiguous detection and preserve repository-owned framework, test cases, custom commands, and application dependencies. Generated Python tests use the scripts project; confirm it declares all dependencies those tests import. Promotion, shipping and CI require their applicable validation and test results separately.",
+      "applies_when": "The repository declares deliverables or contains supported test sources, including Python tests or Android JVM tests under a module's src/test source set.",
+      "review_required": "Repository validation never executes tests. SDLC declares separate tests for each deliverable, with explicit no-op reasons when appropriate; repository tests may cover shared behavior. Each SDLC test operation invokes a repository-owned runner that owns framework task selection and retained results, so local and CI workflows do not duplicate commands. Python test repositories have the template-created scripts/run-tests.py and SDLC wiring. Android JVM tests use the module's conventional src/test source set, such as app/src/test, and an existing repository-owned runner; compatibility preserves ecosystem-specific frameworks, tasks, test cases, and application dependencies rather than generating a Python runner. Review ambiguous detection. Generated Python tests use the scripts project; confirm it declares all dependencies those tests import. Promotion, shipping and CI require their applicable validation and test results separately.",
       "evidence_keys": [
         "repository.test_configuration",
         "sdlc.tests",
