@@ -55,6 +55,13 @@ def runtime_files(
             raise RuntimeError("existing validator project must declare: " + ", ".join(sorted(missing)))
     if not project.is_file() or project.read_text(encoding="utf-8") != rendered:
         files[project] = rendered
+    surface = contract["surfaces"]["actionlint_runner"]
+    runner = root / surface["path"]
+    if runner.is_symlink() or (runner.exists() and not runner.is_file()):
+        raise RuntimeError("existing actionlint runner must be a regular file")
+    if not runner.is_file():
+        template = bundle / "references/templates" / surface["template"]
+        files[runner] = template.read_text(encoding="utf-8")
     ignore = root / runtime["project"] / ".gitignore"
     existing_ignore = ignore.read_text(encoding="utf-8") if ignore.is_file() else ""
     missing_ignore = [value for value in runtime["ignored_paths"] if value not in existing_ignore.splitlines()]

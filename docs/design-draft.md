@@ -54,10 +54,11 @@ with their generators and consumers so other repositories receive the same
 behavior.
 
 The recorded template set includes `validate-repository.py.tmpl`,
-`run-tests.py.tmpl`, `deploy-skills.py.tmpl`, `sdlc.yml.tmpl`, and
-`skill-sections.json.tmpl`. Python test detection is deterministic where
-possible; repositories with Python tests receive the required runner from a
-template. Test bodies and their implementation remain repository-specific.
+`run-actionlint.py.tmpl`, `run-tests.py.tmpl`, `deploy-skills.py.tmpl`,
+`sdlc.yml.tmpl`, and `skill-sections.json.tmpl`. Compatible repositories receive
+the pinned actionlint runner, while repositories with Python tests receive the
+required test runner. Python test detection is deterministic where possible;
+test bodies and their implementation remain repository-specific.
 
 | Environment | Declarations | Execution and ownership |
 | --- | --- | --- |

@@ -259,6 +259,23 @@
         "."
       ],
       "cwd": "."
+    },
+    {
+      "id": "actionlint",
+      "when": [
+        {
+          "kind": "path-any",
+          "value": [
+            ".github/workflows/*.yml",
+            ".github/workflows/*.yaml"
+          ]
+        }
+      ],
+      "command": [
+        "{python}",
+        "scripts/run-actionlint.py"
+      ],
+      "cwd": "."
     }
   ]
 }

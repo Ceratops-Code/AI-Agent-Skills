@@ -38,6 +38,11 @@
       "path": "scripts/run-tests.py",
       "template": "run-tests.py.tmpl",
       "required": "with_python_tests"
+    },
+    "actionlint_runner": {
+      "path": "scripts/run-actionlint.py",
+      "template": "run-actionlint.py.tmpl",
+      "required": "always"
     }
   },
   "manifest_profiles": [

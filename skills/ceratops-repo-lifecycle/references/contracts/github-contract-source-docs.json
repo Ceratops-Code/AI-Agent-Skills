@@ -1,7 +1,7 @@
 {
   "source_docs_version": 1,
   "name": "ceratops_github_contract_source_docs",
-  "captured_on": "2026-09-20",
+  "captured_on": "2026-09-21",
   "policy": {
     "use_order": [
       "official_docs",
@@ -670,6 +670,27 @@
         "repository_validation"
       ],
       "url": "https://yamllint.readthedocs.io/en/stable/configuration.html"
+    },
+    {
+      "id": "validation.actionlint.usage",
+      "scope": [
+        "repository_validation"
+      ],
+      "url": "https://github.com/rhysd/actionlint/blob/main/docs/usage.md"
+    },
+    {
+      "id": "validation.actionlint.installation",
+      "scope": [
+        "repository_validation"
+      ],
+      "url": "https://github.com/rhysd/actionlint/blob/main/docs/install.md"
+    },
+    {
+      "id": "validation.actionlint.release_1_7_12",
+      "scope": [
+        "repository_validation"
+      ],
+      "url": "https://github.com/rhysd/actionlint/releases/tag/v1.7.12"
     },
     {
       "id": "validation.android.lint",

@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import importlib
+import hashlib
 import io
 import json
 import os
 import pathlib
+import runpy
 import shutil
 import subprocess
 import sys
 import tomllib
+import zipfile
 
 import pytest
 import yaml
@@ -30,6 +33,51 @@ from tests.support.repositories import (
     run_ci_action,
     write_sdlc_contract,
 )
+
+
+def test_actionlint_runner_pins_assets_and_rejects_bad_downloads(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = tmp_path / "run-actionlint.py"
+    shutil.copy2(
+        REPOSITORY_LIFECYCLE_SOURCE / "references/templates/run-actionlint.py.tmpl",
+        runner,
+    )
+    namespace = runpy.run_path(str(runner))
+    archive, digest, executable = namespace["release_asset"]("Windows", "AMD64")
+    assert archive == "actionlint_1.7.12_windows_amd64.zip"
+    assert digest == "6e7241b51e6817ea6a047693d8e6fed13b31819c9a0dd6c5a726e1592d22f6e9"
+    assert executable == "actionlint.exe"
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as package:
+        package.writestr("actionlint.exe", b"verified actionlint")
+    payload = buffer.getvalue()
+    monkeypatch.setattr(
+        namespace["urllib"].request,
+        "urlopen",
+        lambda _request, timeout: io.BytesIO(payload),
+    )
+    downloaded = namespace["download_archive"](
+        archive,
+        hashlib.sha256(payload).hexdigest(),
+    )
+    assert namespace["extract_executable"](downloaded, archive, executable) == (
+        b"verified actionlint"
+    )
+    with pytest.raises(RuntimeError, match="SHA-256 mismatch"):
+        namespace["download_archive"](archive, "0" * 64)
+    binary = tmp_path / "actionlint.exe"
+    binary.write_bytes(b"test executable")
+    monkeypatch.setattr(
+        namespace["subprocess"],
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 0, "1.7.12\ninstalled from the release page\n", ""
+        ),
+    )
+    assert namespace["expected_version"](binary) is True
 
 
 def test_compatibility_materializer_supplies_target_identity_and_assignments(
@@ -174,9 +222,10 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     }
     assert (repo / "scripts" / "deploy-skills.py").is_file()
     assert (repo / "scripts" / "validate-repository.py").is_file()
+    assert (repo / "scripts" / "run-actionlint.py").is_file()
     assert (repo / ".github" / "workflows" / "validate.yml").is_file()
     assert output["repository_validation"] == {
-        "checks": ["npm-markdown-lint", "ruff", "mypy"],
+        "checks": ["npm-markdown-lint", "ruff", "mypy", "actionlint"],
         "validator": "applied",
         "workflow": "applied",
     }
@@ -525,12 +574,23 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert "deliverables" not in contract
     assert not (repo / "scripts" / "deploy-skills.py").exists()
     assert output["repository_validation"] == {
-        "checks": ["npm-lint", "ruff", "mypy"],
+        "checks": ["npm-lint", "ruff", "mypy", "actionlint"],
         "validator": "applied",
         "workflow": "applied",
     }
     assert (repo / "scripts" / "validate-repository.py").is_file()
+    actionlint_runner = repo / "scripts" / "run-actionlint.py"
+    assert actionlint_runner.is_file()
     assert (repo / ".github" / "workflows" / "validate.yml").is_file()
+    actionlint_marker = repo / "scripts" / ".actionlint-invoked"
+    actionlint_runner.write_text(
+        '"""Record actionlint orchestration without using the network."""\n\n'
+        "import pathlib\n\n"
+        "marker = pathlib.Path(__file__).with_name('.actionlint-invoked')\n"
+        "marker.write_text('OK', encoding='utf-8')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     validation_evidence = tmp_path / "zero-skill-validation.log"
     validation_evidence.write_text("stale failure evidence\n", encoding="utf-8")
     validation_temporary = validation_evidence.with_name(
@@ -551,6 +611,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     )
     assert validation.returncode == 0, validation.stdout
     assert validation.stdout == "OK\n"
+    assert actionlint_marker.read_text(encoding="utf-8") == "OK"
     assert not validation_evidence.exists()
     assert not validation_temporary.exists()
     assert not [path for path in repo.rglob("__pycache__") if ".venv" not in path.parts]
@@ -659,6 +720,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         "pnpm-build",
         "ruff",
         "mypy",
+        "actionlint",
     ]
     pnpm_workflow = (
         pnpm_repo / ".github" / "workflows" / "validate.yml"
@@ -705,6 +767,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         "ruff",
         "mypy",
         "yaml-lint",
+        "actionlint",
     ]
     uv_workflow = (uv_repo / ".github" / "workflows" / "validate.yml").read_text(
         encoding="utf-8"
@@ -769,6 +832,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         "npm-markdown-lint",
         "ruff",
         "mypy",
+        "actionlint",
         "powershell-lint",
     ]
     powershell_workflow = (
@@ -803,6 +867,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         "npm-markdown-lint",
         "ruff",
         "mypy",
+        "actionlint",
     ]
 
     docs_repo = empty_repository("docs-compatible")
@@ -829,6 +894,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         "npm-markdown-lint",
         "ruff",
         "mypy",
+        "actionlint",
     ]
     docs_workflow = (
         docs_repo / ".github" / "workflows" / "validate.yml"
@@ -917,7 +983,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         )
         assert configured.returncode == 0, configured.stdout
         assert json.loads(configured.stdout)["repository_validation"]["checks"] == [
-            "npm-markdown-lint", "ruff", "mypy"
+            "npm-markdown-lint", "ruff", "mypy", "actionlint"
         ]
         assert (config_repo / "scripts/run-tests.py").is_file()
         assert "python" in yaml.safe_load((config_repo / "sdlc/sdlc.yml").read_text())["repository"]["tests"]
@@ -1180,6 +1246,7 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
     assert not (repo / ".github" / "workflows" / "validate.yml").exists()
     assert all(not (repo / name).exists() for name in (
         "scripts/package.json", "scripts/package-lock.json", "scripts/.markdownlint.json",
+        "scripts/run-actionlint.py",
     ))
     if existing_ignore:
         assert ignore.read_bytes() == b"build/\r\n"

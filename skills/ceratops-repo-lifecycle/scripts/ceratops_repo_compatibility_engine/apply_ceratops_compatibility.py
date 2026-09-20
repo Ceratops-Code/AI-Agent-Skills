@@ -236,6 +236,10 @@ def _validation_condition_matches(
             candidate.is_file() and not candidate.is_symlink()
             for pattern in patterns
             for candidate in repo_root.glob(pattern)
+        ) or any(
+            pathlib.PurePosixPath(path).match(pattern)
+            for path in (planned_files or {})
+            for pattern in patterns
         )
     if kind == "file-contains" and set(condition) == {"kind", "path", "value"}:
         relative = _safe_validation_path(condition["path"], "repository-validation contract condition path")
@@ -254,7 +258,8 @@ def _validation_condition_matches(
 
 
 def contract_checks(
-    repo_root: pathlib.Path, *, package: dict[str, object] | None = None
+    repo_root: pathlib.Path, *, package: dict[str, object] | None = None,
+    planned_paths: set[str] | None = None,
 ) -> list[dict[str, object]]:
     """Select checks only after validating the complete shared contract."""
 
@@ -267,6 +272,7 @@ def contract_checks(
             repo_root, template_path("validation_project"),
         ),
     }
+    planned_files.update({path: "" for path in planned_paths or set()})
     selected: list[dict[str, object]] = []
     for check in contract["checks"]:
         if any(
@@ -467,7 +473,10 @@ def validation_surfaces(
         if path.is_symlink() or (path.exists() and not path.is_file()):
             raise RuntimeError(f"existing {label} must be a regular file: {path}")
 
-    checks = contract_checks(repo_root)
+    planned_paths = (
+        {surface_path("workflow").as_posix()} if not workflow.is_file() else set()
+    )
+    checks = contract_checks(repo_root, planned_paths=planned_paths)
     markdown_files = (
         default_markdown_files(repo_root)
         if not validator.is_file() and not workflow.is_file()
@@ -475,7 +484,11 @@ def validation_surfaces(
         else {}
     )
     if markdown_files:
-        checks = contract_checks(repo_root, package=json.loads(markdown_files["scripts/package.json"]))
+        checks = contract_checks(
+            repo_root,
+            package=json.loads(markdown_files["scripts/package.json"]),
+            planned_paths=planned_paths,
+        )
     validator_text = None
     if not validator.is_file():
         template = template_path("validator").read_text(encoding="utf-8")
@@ -970,7 +983,15 @@ def plan_ceratops_compatibility(
     compatibility_contract = load_compatibility_contract()
     python_tests = discover_python_tests(repo_root, compatibility_contract["python_test_detection"])
     generated_runtime = runtime_files(
-        repo_root, BUNDLE_ROOT, compatibility_contract, contract_checks(repo_root),
+        repo_root,
+        BUNDLE_ROOT,
+        compatibility_contract,
+        contract_checks(
+            repo_root,
+            planned_paths=(
+                {surface_path("workflow").as_posix()} if workflow_text is not None else set()
+            ),
+        ),
         planned_files=markdown_files, has_python_skills=bool(python_skills),
     )
     markdown_files.pop(".gitignore", None)

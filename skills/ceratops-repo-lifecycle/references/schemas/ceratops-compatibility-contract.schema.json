@@ -50,7 +50,8 @@
         "skill_manifest",
         "skill_bootstrap",
         "validation_project",
-        "python_test_runner"
+        "python_test_runner",
+        "actionlint_runner"
       ],
       "properties": {
         "validator": {
@@ -72,6 +73,9 @@
           "$ref": "#/$defs/surface"
         },
         "python_test_runner": {
+          "$ref": "#/$defs/surface"
+        },
+        "actionlint_runner": {
           "$ref": "#/$defs/surface"
         }
       }
