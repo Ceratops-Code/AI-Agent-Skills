@@ -159,6 +159,24 @@ def test_tool_manager_paths_select_their_underscore_named_suite(
     assert not selection.mapping_gaps
 
 
+@pytest.mark.parametrize(("path", "expected_gap"), [
+    ("Ceratops-Logo/ceratops-green-side-nobg.png", False),
+    ("Ceratops-Logo/resized/ceratops-green-side-nobg-equalized-skill-24.png", False),
+    ("Ceratops-Logo/generate.py", True),
+])
+def test_branding_pngs_are_ignored_without_hiding_executable_changes(
+    test_runner_module: Any, path: str, expected_gap: bool,
+) -> None:
+    runner = test_runner_module
+    root = pathlib.Path(__file__).resolve().parents[2]
+    manifest = runner.load_manifest(root / "tests" / "test-impact.json")
+    selection = runner.selection_from_changes(
+        manifest, (runner.ChangedFile("A", (path,)),),
+    )
+    assert not selection.suites
+    assert bool(selection.mapping_gaps) is expected_gap
+
+
 def test_changed_test_file_selects_its_single_owner(test_runner_module: Any) -> None:
     runner = test_runner_module
     selection = runner.selection_from_changes(
