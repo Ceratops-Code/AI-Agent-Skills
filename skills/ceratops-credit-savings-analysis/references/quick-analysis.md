@@ -22,18 +22,22 @@ Sol analysis children.
   belong to the window. Keep its exclusions in scan evidence and never describe
   an excluded thread as reviewed. Exclude this scan's own thread unless the
   user explicitly includes it.
-- For each selected thread, run `python
-  scripts/credit_analysis/session_evidence_collector.py --session SESSION
-  --summary --evidence-output FULL_USAGE`, adding `--pricing-profile` only
-  when valid caller-supplied rates are available. Then run `python
-  scripts/credit-analysis-workflow.py quick-window --days DAYS --as-of UTC
-  --usage-evidence FULL_USAGE`. The returned `last_runs` counts completed runs
-  started in `(as_of - DAYS, as_of]`. If it is zero, record the thread as
-  having no completed runs in the window and skip it. If those runs are not a
-  completed-run suffix, report the exact thread as unassessed; do not widen the
-  window. Rerun the summary with `--last-runs N` into `WINDOW_USAGE` and use
-  that same window for details and classification. Check its first and last
-  run IDs against `quick-window` before interpreting it.
+- For a recent selection, run `python
+  scripts/credit-analysis-workflow.py quick-collect --selection SELECTION
+  --output BATCH`, adding `--pricing-profile` only for valid caller-supplied
+  rates and `--include-current` only when explicitly requested. The helper
+  retains one batch containing each thread's completed-run suffix in
+  `(as_of - DAYS, as_of]`, usage, ledger, and redacted semantics. It records
+  self-exclusion, empty windows, non-suffix windows, and source failures
+  explicitly. Use its retained semantics for Ledger Review step 2. For step 4,
+  write `ceratops-credit-quick-classifications.v1` with a `threads` list
+  containing each ready `thread_id` and its collector-shaped `classification`,
+  then run `python scripts/credit-analysis-workflow.py quick-validate --batch
+  BATCH --classifications CLASSIFICATIONS --output RESULT`. The helper rechecks
+  each source and exact window, validates every call once, and totals only
+  accepted classifications. Missing, invalid, or changed sources remain
+  unassessed. Retain the batch and result as caller-owned evidence; these
+  commands create no transient full-thread files or analysis children.
 - For an exact source without a recent-days window, omit `--last-runs` for a
   full thread or set it to the completed-run suffix required by the stated
   last-runs or closure boundary. If the boundary cannot be resolved exactly,

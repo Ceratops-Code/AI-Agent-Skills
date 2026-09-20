@@ -32,7 +32,7 @@ behavior; this document explains how they work together.
     },
     {
       "path": "skills/ceratops-credit-savings-analysis/scripts/credit_analysis/command_line_interface.py",
-      "role": "Quick recent-thread selection and command dispatch"
+      "role": "Quick batch collection, classification validation, and command dispatch"
     },
     {
       "path": "skills/ceratops-credit-savings-analysis/SKILL.md",
@@ -220,7 +220,7 @@ supports ledger analysis without model orchestration.
 | --- | --- | --- |
 | Public instruction layer | Selects the public action, defines policy, completion, and presentation | [SKILL.md](SKILL.md), [quick-analysis.md](references/quick-analysis.md), and the other action references |
 | Stable executable entry point | Keeps one script path while forwarding to modular implementation | [credit-analysis-workflow.py](scripts/credit-analysis-workflow.py) |
-| CLI dispatcher | Parses deep-analysis, standalone-surface, and quick-selector commands | [command_line_interface.py](scripts/credit_analysis/command_line_interface.py) |
+| CLI dispatcher | Parses analysis commands and composes quick batch collection and validation | [command_line_interface.py](scripts/credit_analysis/command_line_interface.py) |
 | Surface contract and request core | Validates the contract, one root thread request, and shared artifact paths | [single_surface_analysis.py](scripts/credit_analysis/single_surface_analysis.py) |
 | Session collector | Resolves active or archived sessions, descendant lineage, completed runs, model calls, token usage, and evidence references | [session_evidence_collector.py](scripts/credit_analysis/session_evidence_collector.py) |
 | Source execution context | Resolves run working directories, recovers identity-matched deleted worktrees, and snapshots effective `AGENTS.md` text and hashes once | [source_execution_context.py](scripts/credit_analysis/source_execution_context.py) |
@@ -249,15 +249,18 @@ that design; it does not override the executable sources.
 
 ### Quick ledger analysis
 
-`quick-analysis` uses `select-recent` only when choosing threads by a recent
-day interval. For each thread, the session collector writes a compact usage
-summary. `quick-window` reads that summary's evidence and counts the completed
-run suffix started in `(as_of - days, as_of]`; zero means that thread has no
-completed runs in the interval. The action uses the same `--last-runs` count
-for windowed summary, selected semantic evidence, and final classification.
-The collector rejects incomplete or duplicate call classifications. The quick
-action keeps detailed findings and exclusions in caller-owned machine evidence
-and presents at most three recommendations.
+`quick-analysis` uses `select-recent` when choosing threads by a recent day
+interval. `quick-collect` reads each selected session once and derives its
+completed-run suffix, usage, ledger, and redacted semantics from those same
+rows. It uses the same frozen-window calculation as `quick-window`, excludes
+the current scan unless explicitly included, and retains empty windows and
+source failures. No full-thread intermediate files or analysis children are
+created. The caller reviews the evidence and supplies classifications;
+`quick-validate` rereads each ready source, requires the exact selected ledger
+and semantics to remain unchanged, and reuses the collector's validation of
+every call exactly once. Only accepted threads enter aggregate call and token
+totals. The quick action retains findings and coverage gaps in caller-owned
+evidence and presents at most three recommendations.
 
 ### 6.1 Fresh deep thread analysis
 
@@ -378,6 +381,33 @@ invocation time. The action using the selection owns the output file's cleanup.
 run count for the same boundary and day interval. It rejects a noncontiguous
 run window instead of widening the scan.
 
+`quick-collect --selection SELECTION --output BATCH` writes
+`ceratops-credit-quick-batch.v1` with the original selection and one record per
+thread. Each record is `ready`, `excluded-current`, `no-completed-runs`, or
+`unassessed`. Ready records contain `ledger`, `semantic`, `usage`, `summary`,
+and the collected source fingerprint. The original index fingerprint, project
+metadata, and source fingerprint are provenance annotations; live validation
+compares the selected ledger and semantics instead of rejecting irrelevant
+changes outside the selected window. `--include-current` is an explicit caller
+override. `--pricing-profile` uses the collector's existing pricing contract.
+
+`quick-validate --batch BATCH --classifications CLASSIFICATIONS --output RESULT`
+accepts `ceratops-credit-quick-classifications.v1`: a `threads` list of objects
+with `thread_id` and `classification`, where `classification` is the existing
+collector input described by the batch's `classification_input`. Duplicate or
+out-of-batch identities reject the request. Missing classifications, invalid
+call coverage, unavailable sources, and changed windows become per-thread
+`unassessed` results. `ceratops-credit-quick-result.v1` retains these gaps and
+accepted classifications with aggregate counts and tokens for validated threads
+only. It does not infer semantic correctness from successful validation.
+
+Both commands refuse output overwrite, require an existing output directory,
+and print compact counts and the output path. Batch and result files belong to
+the caller for incremental review and eventual cleanup; the helper creates no
+temporary files. A failed source does not discard successfully collected or
+validated peers. Exact-source quick reviews retain the individual collector
+workflow.
+
 ## 7 Deployment and operations
 
 The skill is source-controlled as one directory. The repository deployment
@@ -464,6 +494,8 @@ python scripts/credit-analysis-workflow.py execute --state STATE
 python scripts/credit-analysis-workflow.py orchestration-status --state STATE
 python scripts/credit-analysis-workflow.py select-recent --days DAYS --output OUTPUT [--as-of UTC]
 python scripts/credit-analysis-workflow.py quick-window --days DAYS --as-of UTC --usage-evidence FILE
+python scripts/credit-analysis-workflow.py quick-collect --selection SELECTION --output BATCH
+python scripts/credit-analysis-workflow.py quick-validate --batch BATCH --classifications CLASSIFICATIONS --output RESULT
 ```
 
 The CLI parser owns the exact command set. The JSON contract governs deep
@@ -522,6 +554,7 @@ needed to claim a measured result.
 | Scenario | Stimulus and condition | Expected response and threshold | Verification |
 | --- | --- | --- | --- |
 | Deterministic recent-days selection | The same index and UTC `as_of` are selected twice | The frozen selected thread IDs and order are identical; active and archived session locations are eligible | Quick selector behavior test |
+| Quick batch validation | Some sources fail, change, or have incomplete classifications | Preserve per-source gaps and count only unchanged, fully classified threads without child model calls | Quick batch CLI behavior tests |
 | Bounded quick window | A selected thread has older and recent completed runs | The quick path returns only the recent completed-run suffix for `--last-runs` and rejects a noncontiguous window | Quick-window CLI behavior test |
 | Unfinished-thread coverage | A selected active thread contains completed runs and one running run | All completed runs enter evidence; the running run is reported unassessed | Session collector and thread tests |
 | Bounded discovery | Prepared evidence exceeds one Luna input but fits the global budget | The minimum ordered parts are admitted, no more than 15 run concurrently, and attempts never exceed 70 | Capacity and orchestration tests plus state totals |

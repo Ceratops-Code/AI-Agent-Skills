@@ -89,15 +89,7 @@ def command_quick_window(
 ) -> dict[str, Any]:
     """Count the completed-run suffix inside a frozen recent-days window."""
 
-    if days < 1:
-        raise CreditAnalysisError("days must be positive")
     collector = _load_evidence_collector()
-    try:
-        as_of = collector.parse_utc_timestamp(as_of_text, "as_of")
-    except RuntimeError as exc:
-        raise CreditAnalysisError(str(exc)) from exc
-    if as_of > dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5):
-        raise CreditAnalysisError("as_of cannot be in the future")
     evidence = json.loads(usage_path.expanduser().read_text(encoding="utf-8"))
     if (
         not isinstance(evidence, dict)
@@ -107,7 +99,20 @@ def command_quick_window(
     window = evidence.get("window")
     if not isinstance(window, dict) or window.get("mode") != "full_thread":
         raise CreditAnalysisError("quick window requires full-thread usage evidence")
-    runs = evidence.get("runs")
+    return _quick_window(days, as_of_text, evidence.get("runs"))
+
+
+def _quick_window(days: int, as_of_text: str, runs: Any) -> dict[str, Any]:
+    """Shared frozen-boundary check for file and in-memory collector evidence."""
+    if days < 1:
+        raise CreditAnalysisError("days must be positive")
+    collector = _load_evidence_collector()
+    try:
+        as_of = collector.parse_utc_timestamp(as_of_text, "as_of")
+    except RuntimeError as exc:
+        raise CreditAnalysisError(str(exc)) from exc
+    if as_of > dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5):
+        raise CreditAnalysisError("as_of cannot be in the future")
     if not isinstance(runs, list):
         raise CreditAnalysisError("usage evidence runs are invalid")
     start = as_of - dt.timedelta(days=days)
@@ -137,6 +142,215 @@ def command_quick_window(
     }
 
 
+def _quick_document(path: pathlib.Path, schema: str) -> dict[str, Any]:
+    value = json.loads(path.expanduser().read_text(encoding="utf-8"))
+    if not isinstance(value, dict) or value.get("schema") != schema:
+        raise CreditAnalysisError(f"expected {schema}")
+    return value
+
+
+def _quick_threads(value: Any) -> dict[str, dict[str, Any]]:
+    """Reject ambiguous identities before any source is collected or counted."""
+    if not isinstance(value, list):
+        raise CreditAnalysisError("quick evidence requires a threads list")
+    collector = _load_evidence_collector()
+    result = {}
+    for item in value:
+        if not isinstance(item, dict):
+            raise CreditAnalysisError("each quick thread must be an object")
+        identity = collector.canonical_thread_id(item.get("thread_id"))
+        if identity != item["thread_id"] or identity in result:
+            raise CreditAnalysisError("duplicate or noncanonical quick thread ID")
+        result[identity] = item
+    return result
+
+
+def _quick_output(path: pathlib.Path) -> pathlib.Path:
+    target = path.expanduser().absolute()
+    if target.exists() or target.is_symlink():
+        raise CreditAnalysisError(f"refusing to overwrite quick output: {target}")
+    if not target.parent.is_dir():
+        raise CreditAnalysisError("quick output directory does not exist")
+    return target
+
+
+def _quick_selection(value: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Validate operational scope; index and project fields are annotations."""
+    if value.get("schema") != "ceratops-credit-quick-selection.v1":
+        raise CreditAnalysisError("batch requires a quick selection")
+    days = value.get("days")
+    if not isinstance(days, int) or isinstance(days, bool) or days < 1:
+        raise CreditAnalysisError("selection days must be a positive integer")
+    _quick_window(days, value.get("as_of"), [])
+    if not isinstance(value.get("exclusions"), list) or any(
+        not isinstance(item, dict)
+        or not isinstance(item.get("thread_id"), str)
+        or not isinstance(item.get("reason"), str)
+        for item in value["exclusions"]
+    ):
+        raise CreditAnalysisError("selection exclusions are invalid")
+    threads = _quick_threads(value.get("threads"))
+    for item in threads.values():
+        if not isinstance(item.get("session"), str) or not item["session"]:
+            raise CreditAnalysisError("selected thread requires a session path")
+        if not isinstance(item.get("thread_name"), str):
+            raise CreditAnalysisError("selected thread name is invalid")
+        if not isinstance(item.get("project"), dict):
+            raise CreditAnalysisError("selected project annotation is invalid")
+    return threads
+
+
+def _quick_snapshot(
+    item: dict[str, Any], days: int, as_of: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]], str]:
+    """Read once and bind the recent suffix to the exact selected session."""
+    collector = _load_evidence_collector()
+    session = pathlib.Path(item["session"]).expanduser().resolve(strict=True)
+    rows, fingerprint = collector.load_rows_with_fingerprint(session)
+    collector.session_source_metadata(rows, expected_thread_id=item["thread_id"])
+    full = collector.build_session_evidence(rows, session=session, last_runs=None)
+    window = _quick_window(days, as_of, full["runs"])
+    if not window["last_runs"]:
+        return {}, rows, fingerprint
+    ledger = collector.build_session_evidence(
+        rows, session=session, last_runs=window["last_runs"],
+    )
+    if (ledger["runs"][0]["turn_id"], ledger["runs"][-1]["turn_id"]) != (
+        window["first_run"], window["last_run"],
+    ):
+        raise CreditAnalysisError("quick window changed during collection")
+    return ledger, rows, fingerprint
+
+
+def _quick_semantics(collector: Any, rows: list, ledger: dict) -> dict[str, Any]:
+    run_ids = [run["turn_id"] for run in ledger["runs"]]
+    return collector.build_semantic_evidence(
+        ledger, run_ids, collector.build_semantic_runs(rows, ledger, run_ids),
+    )
+
+
+def _quick_receipt(value: dict[str, Any], output: pathlib.Path) -> dict[str, Any]:
+    counts: dict[str, int] = {}
+    for item in value["threads"]:
+        counts[item["status"]] = counts.get(item["status"], 0) + 1
+    return {"output": str(output), "threads": len(value["threads"]),
+            "statuses": counts, "selection_exclusions": len(value["selection"]["exclusions"]),
+            **({"totals": value["totals"]} if "totals" in value else {})}
+
+
+def command_quick_collect(
+    selection_path: pathlib.Path, output_path: pathlib.Path,
+    *, include_current: bool = False, pricing_profile: pathlib.Path | None = None,
+) -> dict[str, Any]:
+    """Collect one caller-owned batch without child models or intermediate files.
+
+    Source failures are retained per thread so one inaccessible session cannot
+    discard other evidence. The caller owns retention and eventual deletion of
+    the single output; no temporary full-thread evidence is written.
+    """
+    target = _quick_output(output_path)
+    selection = _quick_document(selection_path, "ceratops-credit-quick-selection.v1")
+    threads = _quick_selection(selection)
+    collector = _load_evidence_collector()
+    pricing = collector.load_pricing_profile(pricing_profile) if pricing_profile else None
+    current = os.environ.get("CODEX_THREAD_ID")
+    current = collector.canonical_thread_id(current) if current else None
+    records = []
+    for identity, item in threads.items():
+        record = {"thread_id": identity, "status": "unassessed"}
+        if identity == current and not include_current:
+            record["status"] = "excluded-current"
+        else:
+            try:
+                ledger, rows, fingerprint = _quick_snapshot(
+                    item, selection["days"], selection["as_of"],
+                )
+                if not ledger:
+                    record["status"] = "no-completed-runs"
+                else:
+                    usage = collector.build_usage_evidence(rows, ledger, pricing)
+                    record.update(
+                        status="ready", source_fingerprint=fingerprint, ledger=ledger,
+                        semantic=_quick_semantics(collector, rows, ledger), usage=usage,
+                        summary=collector.build_usage_summary(usage, top_n=len(ledger["runs"])),
+                    )
+            except (OSError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+                record["error"] = collector.semantic_summary(str(exc))
+        records.append(record)
+    batch = {"schema": "ceratops-credit-quick-batch.v1", "selection": selection,
+             "classification_input": collector.classification_input_contract(),
+             "threads": records}
+    _exclusive_json(target, batch, "quick batch")
+    return _quick_receipt(batch, target)
+
+
+def command_quick_validate(
+    batch_path: pathlib.Path, classifications_path: pathlib.Path,
+    output_path: pathlib.Path,
+) -> dict[str, Any]:
+    """Validate caller judgments against freshly read, unchanged windows.
+
+    Reading a batch never launches semantic analysis or assumes an unclassified
+    call was necessary. Only accepted per-thread summaries enter the totals;
+    incomplete, invalid, or changed sources remain visible as unassessed.
+    """
+    target = _quick_output(output_path)
+    batch = _quick_document(batch_path, "ceratops-credit-quick-batch.v1")
+    selection = batch.get("selection")
+    if not isinstance(selection, dict):
+        raise CreditAnalysisError("batch selection is invalid")
+    sources = _quick_selection(selection)
+    threads = _quick_threads(batch.get("threads"))
+    if list(threads) != list(sources):
+        raise CreditAnalysisError("batch threads do not match the selection")
+    decisions = _quick_document(
+        classifications_path, "ceratops-credit-quick-classifications.v1",
+    )
+    classified = _quick_threads(decisions.get("threads"))
+    if set(classified) - {key for key, item in threads.items() if item.get("status") == "ready"}:
+        raise CreditAnalysisError("classifications contain a thread outside the ready batch")
+    collector = _load_evidence_collector()
+    totals = dict.fromkeys(
+        ("threads", "runs", "model_calls", "necessary", "avoidable_with_implemented_fix",
+         "avoidable_with_unimplemented_fix", *collector.TOKEN_FIELDS), 0,
+    )
+    records = []
+    for identity, item in threads.items():
+        status = item.get("status")
+        if status not in {"ready", "unassessed", "excluded-current", "no-completed-runs"}:
+            raise CreditAnalysisError("batch thread status is invalid")
+        record = {"thread_id": identity, "status": status}
+        if status == "ready":
+            record["status"] = "unassessed"
+            try:
+                decision = classified.get(identity, {}).get("classification")
+                if not isinstance(decision, dict):
+                    raise CreditAnalysisError("missing or invalid thread classification")
+                ledger, rows, _ = _quick_snapshot(
+                    sources[identity], selection["days"], selection["as_of"],
+                )
+                if ledger != item.get("ledger") or not ledger:
+                    raise CreditAnalysisError("selected source or completed-run window changed")
+                if _quick_semantics(collector, rows, ledger) != item.get("semantic"):
+                    raise CreditAnalysisError("selected semantic evidence changed")
+                accepted = collector.build_classified_summary(ledger, decision)
+                record.update(status="validated", classification=decision, summary=accepted)
+                totals["threads"] += 1
+                totals["runs"] += len(accepted["runs"])
+                for key, value in accepted["totals"].items():
+                    totals[key] += value
+            except (OSError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+                record["error"] = collector.semantic_summary(str(exc))
+        elif status == "unassessed":
+            record["error"] = item.get("error", "source was not collected")
+        records.append(record)
+    result = {"schema": "ceratops-credit-quick-result.v1", "selection": selection,
+              "batch": str(batch_path.expanduser().resolve(strict=True)),
+              "threads": records, "totals": totals}
+    _exclusive_json(target, result, "quick result")
+    return _quick_receipt(result, target)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -156,6 +370,15 @@ def build_parser() -> argparse.ArgumentParser:
     quick_window.add_argument("--days", required=True, type=int)
     quick_window.add_argument("--as-of", required=True)
     quick_window.add_argument("--usage-evidence", required=True, type=pathlib.Path)
+    quick_collect = commands.add_parser("quick-collect")
+    quick_collect.add_argument("--selection", required=True, type=pathlib.Path)
+    quick_collect.add_argument("--output", required=True, type=pathlib.Path)
+    quick_collect.add_argument("--include-current", action="store_true")
+    quick_collect.add_argument("--pricing-profile", type=pathlib.Path)
+    quick_validate = commands.add_parser("quick-validate")
+    quick_validate.add_argument("--batch", required=True, type=pathlib.Path)
+    quick_validate.add_argument("--classifications", required=True, type=pathlib.Path)
+    quick_validate.add_argument("--output", required=True, type=pathlib.Path)
     return parser
 
 
@@ -179,9 +402,16 @@ def main(argv: list[str] | None = None) -> int:
             output = command_select_recent(args.days, args.as_of, args.output)
         elif args.command == "quick-window":
             output = command_quick_window(args.days, args.as_of, args.usage_evidence)
+        elif args.command == "quick-collect":
+            output = command_quick_collect(
+                args.selection, args.output, include_current=args.include_current,
+                pricing_profile=args.pricing_profile,
+            )
+        elif args.command == "quick-validate":
+            output = command_quick_validate(args.batch, args.classifications, args.output)
         else:
             raise CreditAnalysisError("unsupported command")
-    except (CreditAnalysisError, OSError, ValueError, json.JSONDecodeError) as exc:
+    except (CreditAnalysisError, OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     if output == "OK":

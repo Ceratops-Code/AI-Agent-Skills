@@ -768,3 +768,227 @@ def _exercise_corrective_cli(
     workflow.command_execute_orchestration(state_path, runner=runner, task_limit=0)
     assert len(runner.calls) == before
     assert max(len(item["attempts"]) for item in saved["execution"].values()) <= 2
+
+
+
+def _quick_batch_case(tmp_path, monkeypatch):
+    """Use real collector fixtures; pytest owns all source and evidence files."""
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    sessions = [indexed_credit_analysis_session(
+        codex_home, thread_id=f"00000000-0000-4000-8000-{number:012d}",
+        thread_name=f"Task {number}", updated_at="2026-08-02T00:00:00Z",
+        project_name=f"project-{number}",
+    ) for number in (1, 2)]
+    selection = tmp_path / "selection.json"
+    selected = run_credit_analysis_workflow(
+        "select-recent", "--days", "3", "--as-of", "2026-08-02T00:00:00Z",
+        "--output", str(selection),
+    )
+    assert selected.returncode == 0, selected.stderr
+    return selection, sessions
+
+
+def _quick_classifications(batch):
+    return {"schema": "ceratops-credit-quick-classifications.v1", "threads": [
+        {"thread_id": item["thread_id"], "classification": {
+            "schema": "ceratops-model-call-classifications.v1",
+            "session": item["ledger"]["session"],
+            "runs": [
+                {"turn_id": "turn-1", "groups": [
+                    {"category": "necessary", "indices": [1]},
+                    {"category": "avoidable_implemented", "indices": [2], "control": "reuse the read"},
+                    {"category": "avoidable_unimplemented", "indices": [3], "control": "batch validation"},
+                ]},
+                {"turn_id": "turn-2", "groups": [{"category": "necessary", "indices": [1, 2]}]},
+                {"turn_id": "turn-3", "groups": [{"category": "necessary", "indices": [1]}]},
+            ],
+        }} for item in batch["threads"] if item["status"] == "ready"
+    ]}
+
+
+def test_quick_batch_collects_and_validates_without_model_processes(tmp_path, monkeypatch):
+    selection, sessions = _quick_batch_case(tmp_path, monkeypatch)
+    original = [session.read_bytes() for session in sessions]
+    load_credit_analysis_workflow_module()
+    from credit_analysis import command_line_interface as cli
+    import subprocess
+
+    def no_process(*args, **kwargs):
+        pytest.fail("quick batch must not launch model or helper processes")
+
+    monkeypatch.setattr(subprocess, "Popen", no_process)
+    batch_path, decisions_path, result_path = [tmp_path / name for name in (
+        "batch.json", "classifications.json", "result.json",
+    )]
+    before = set(tmp_path.rglob("*"))
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        assert cli.main(["quick-collect", "--selection", str(selection), "--output", str(batch_path)]) == 0
+    receipt = json.loads(output.getvalue())
+    assert receipt["statuses"] == {"ready": 2}
+    assert len(output.getvalue()) < 1000
+    assert set(tmp_path.rglob("*")) - before == {batch_path}
+    batch = json.loads(batch_path.read_text())
+    for item in batch["threads"]:
+        assert item["ledger"]["totals"]["model_calls"] == 6
+        assert item["ledger"]["window"]["requested_runs"] == 3
+        assert [run["turn_id"] for run in item["semantic"]["selected_runs"]] == ["turn-1", "turn-2", "turn-3"]
+        assert item["usage"]["pricing"] == {"provided": False}
+    assert "synthetic-user-secret" not in batch_path.read_text()
+    assert "PRIVATE_REASONING_SENTINEL" not in batch_path.read_text()
+    write_json_file(decisions_path, _quick_classifications(batch))
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert cli.main(["quick-validate", "--batch", str(batch_path), "--classifications", str(decisions_path), "--output", str(result_path)]) == 0
+    result = json.loads(result_path.read_text())
+    assert result["totals"] == {
+        "threads": 2, "runs": 6, "model_calls": 12, "necessary": 8,
+        "avoidable_with_implemented_fix": 2, "avoidable_with_unimplemented_fix": 2,
+        "input_tokens": 120, "cached_input_tokens": 24, "output_tokens": 24,
+        "reasoning_output_tokens": 12, "total_tokens": 144,
+    }
+    assert {item["status"] for item in result["threads"]} == {"validated"}
+    assert [session.read_bytes() for session in sessions] == original
+    retained = {p: p.read_bytes() for p in (batch_path, decisions_path, result_path)}
+    for command in (
+        ["quick-collect", "--selection", str(selection), "--output", str(batch_path)],
+        ["quick-validate", "--batch", str(batch_path), "--classifications", str(decisions_path), "--output", str(result_path)],
+    ):
+        with contextlib.redirect_stderr(io.StringIO()) as errors:
+            assert cli.main(command) == 2
+        assert "refusing to overwrite" in errors.getvalue()
+    assert all(p.read_bytes() == content for p, content in retained.items())
+
+
+@pytest.mark.parametrize("defect", [
+    "missing-thread", "missing-call", "duplicate-call", "missing-control",
+    "wrong-session", "source-missing", "source-malformed", "new-completed-run",
+    "semantic-drift", "duplicate-thread", "foreign-thread", "malformed-classification", "active-tail",
+])
+def test_quick_batch_validation_keeps_failures_out_of_totals(tmp_path, monkeypatch, defect):
+    selection, sessions = _quick_batch_case(tmp_path, monkeypatch)
+    batch_path, decisions_path, result_path = [tmp_path / name for name in (
+        "batch.json", "classifications.json", "result.json",
+    )]
+    collected = run_credit_analysis_workflow("quick-collect", "--selection", str(selection), "--output", str(batch_path))
+    assert collected.returncode == 0, collected.stderr
+    batch = json.loads(batch_path.read_text())
+    decisions = _quick_classifications(batch)
+    first = decisions["threads"][0]["classification"]
+    if defect == "missing-thread":
+        decisions["threads"].pop(0)
+    elif defect == "missing-call":
+        first["runs"][0]["groups"].pop()
+    elif defect == "duplicate-call":
+        first["runs"][0]["groups"][0]["indices"].append(2)
+    elif defect == "missing-control":
+        first["runs"][0]["groups"][1].pop("control")
+    elif defect == "wrong-session":
+        first["session"] = str(sessions[1])
+    elif defect == "source-missing":
+        sessions[0].unlink()
+    elif defect == "source-malformed":
+        sessions[0].write_text("{broken\n")
+    elif defect == "new-completed-run":
+        rows = [json.loads(line) for line in sessions[0].read_text().splitlines()]
+        added = [
+            {"timestamp": "2026-08-03T00:00:00Z", "type": "turn_context", "payload": {"turn_id": "new-turn"}},
+            {"timestamp": "2026-08-03T00:00:01Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "phase": "final_answer", "content": [{"type": "output_text", "text": "done"}]}},
+            next(row for row in rows if row.get("payload", {}).get("type") == "token_count"),
+        ]
+        with sessions[0].open("a") as handle:
+            handle.write("".join(json.dumps(row) + "\n" for row in added))
+    elif defect == "active-tail":
+        with sessions[0].open("a") as handle:
+            handle.write(json.dumps({"timestamp": "2026-08-03T00:00:00Z", "type": "turn_context", "payload": {"turn_id": "still-running"}}) + "\n")
+    elif defect == "semantic-drift":
+        sessions[0].write_text(sessions[0].read_text().replace("Fix the failed read", "Changed selected user goal"))
+    elif defect == "duplicate-thread":
+        decisions["threads"].append(copy.deepcopy(decisions["threads"][0]))
+    elif defect == "foreign-thread":
+        decisions["threads"][0]["thread_id"] = "00000000-0000-4000-8000-000000000099"
+    elif defect == "malformed-classification":
+        decisions["threads"][0]["classification"] = []
+    write_json_file(decisions_path, decisions)
+    validated = run_credit_analysis_workflow("quick-validate", "--batch", str(batch_path), "--classifications", str(decisions_path), "--output", str(result_path))
+    if defect == "active-tail":
+        assert validated.returncode == 0, validated.stderr
+        result = json.loads(result_path.read_text())
+        assert [item["status"] for item in result["threads"]] == ["validated", "validated"]
+        assert result["totals"]["model_calls"] == 12
+    elif defect in {"duplicate-thread", "foreign-thread"}:
+        assert validated.returncode == 2
+        assert not result_path.exists()
+    else:
+        assert validated.returncode == 0, validated.stderr
+        result = json.loads(result_path.read_text())
+        assert [item["status"] for item in result["threads"]] == ["unassessed", "validated"]
+        assert result["threads"][0]["error"]
+        assert result["totals"]["threads"] == 1
+        assert result["totals"]["model_calls"] == 6
+        assert result["totals"]["necessary"] == 4
+        assert result["totals"]["total_tokens"] == 72
+
+
+@pytest.mark.parametrize("mode", ["self", "include-self", "empty", "broken", "non-suffix", "lower-edge", "pricing"])
+def test_quick_batch_collection_preserves_window_and_exclusions(tmp_path, monkeypatch, mode):
+    selection, sessions = _quick_batch_case(tmp_path, monkeypatch)
+    selected = json.loads(selection.read_text())
+    selected["exclusions"] = [{"thread_id": "unavailable", "reason": "unresolvable-session-or-metadata"}]
+    args = []
+    if mode in {"self", "include-self"}:
+        monkeypatch.setenv("CODEX_THREAD_ID", selected["threads"][0]["thread_id"])
+        if mode == "include-self":
+            args = ["--include-current"]
+    elif mode == "pricing":
+        pricing = tmp_path / "pricing.json"
+        write_json_file(pricing, {"schema": "ceratops-model-call-pricing-profile.v1",
+            "input_per_million_tokens": 2, "cached_input_per_million_tokens": 1,
+            "output_per_million_tokens": 3, "mode_multiplier": 1})
+        args = ["--pricing-profile", str(pricing)]
+    elif mode == "empty":
+        selected["as_of"] = "2026-08-07T00:00:00Z"
+    elif mode == "broken":
+        sessions[0].write_text("{broken\n")
+    elif mode == "non-suffix":
+        selected["as_of"] = "2026-08-01T00:01:30Z"
+    elif mode == "lower-edge":
+        selected["days"] = 1
+        selected["as_of"] = "2026-08-02T00:00:00Z"
+    write_json_file(selection, selected)
+    output = tmp_path / "batch.json"
+    result = run_credit_analysis_workflow("quick-collect", "--selection", str(selection), "--output", str(output), *args)
+    assert result.returncode == 0, result.stderr
+    batch = json.loads(output.read_text())
+    assert batch["selection"]["exclusions"] == selected["exclusions"]
+    assert json.loads(result.stdout)["selection_exclusions"] == 1
+    expected = {
+        "self": ["excluded-current", "ready"], "include-self": ["ready", "ready"],
+        "empty": ["no-completed-runs", "no-completed-runs"],
+        "broken": ["unassessed", "ready"], "non-suffix": ["unassessed", "unassessed"],
+        "lower-edge": ["ready", "ready"], "pricing": ["ready", "ready"],
+    }
+    assert [item["status"] for item in batch["threads"]] == expected[mode]
+    if mode == "pricing":
+        assert batch["threads"][0]["usage"]["pricing"]["provided"] is True
+        assert batch["threads"][0]["usage"]["pricing"]["input_per_million_tokens"] == 2
+    if mode == "lower-edge":
+        assert [run["turn_id"] for run in batch["threads"][0]["ledger"]["runs"]] == ["turn-2", "turn-3"]
+
+
+def test_quick_window_cli_preserves_suffix_and_input_validation(tmp_path):
+    usage = tmp_path / "usage.json"
+    value = {"schema": "ceratops-model-call-usage-evidence.v1", "window": {"mode": "full_thread"}, "runs": [
+        {"turn_id": "old", "started_at": "2026-07-01T00:00:00Z"},
+        {"turn_id": "recent", "started_at": "2026-08-01T00:00:00Z"},
+    ]}
+    write_json_file(usage, value)
+    result = run_credit_analysis_workflow("quick-window", "--days", "3", "--as-of", "2026-08-02T00:00:00Z", "--usage-evidence", str(usage))
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"last_runs": 1, "first_run": "recent", "last_run": "recent"}
+    value["runs"].reverse()
+    write_json_file(usage, value)
+    result = run_credit_analysis_workflow("quick-window", "--days", "3", "--as-of", "2026-08-02T00:00:00Z", "--usage-evidence", str(usage))
+    assert result.returncode == 2 and "completed-run suffix" in result.stderr
