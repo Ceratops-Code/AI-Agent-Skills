@@ -11,16 +11,21 @@ import json
 import os
 import pathlib
 import runpy
+import tomllib
 from collections.abc import Mapping
 from typing import Any, TypedDict
 
-import tomllib
 import yaml
 
 from .ci_workflow import workflow_errors
 from .compatibility_contract import load_compatibility_contract, template_path
 from .python_tests import discover_python_tests
-from .sdlc_contract_validation import operation_entries, read_contract
+from .repository_validation_contract import load_validation_contract
+from .sdlc_contract_validation import (
+    operation_category,
+    operation_entries,
+    read_contract,
+)
 from .validation_environment import detected_python_skills
 
 
@@ -28,6 +33,72 @@ class CompatibilityResult(TypedDict):
     applicable: bool
     valid: bool | None
     errors: list[str]
+
+
+def _repository_entrypoint(root: pathlib.Path, operation: Mapping[str, Any]) -> bool:
+    """Return whether an operation invokes a regular repository-owned file."""
+
+    for step in operation.get("steps", []):
+        for value in step.get("run", []):
+            if not isinstance(value, str) or not value:
+                continue
+            posix = pathlib.PurePosixPath(value.replace("\\", "/"))
+            windows = pathlib.PureWindowsPath(value)
+            if (
+                posix.is_absolute()
+                or windows.is_absolute()
+                or windows.drive
+                or ".." in posix.parts
+            ):
+                continue
+            candidate = root.joinpath(*posix.parts)
+            if candidate.is_file() and not candidate.is_symlink():
+                return True
+    return False
+
+
+def _validation_coverage_errors(
+    root: pathlib.Path,
+    sdlc: Mapping[str, Any],
+    validation_contract: Mapping[str, Any],
+) -> list[str]:
+    """Require detected repository types to have one declared non-test validator."""
+
+    entries = operation_entries(sdlc)
+    errors: list[str] = []
+    for requirement in validation_contract["coverage_requirements"]:
+        active = any(
+            candidate.is_file() and not candidate.is_symlink()
+            for condition in requirement["when"]
+            for pattern in condition["value"]
+            for candidate in root.glob(pattern)
+        )
+        if not active:
+            continue
+        required_capabilities = set(requirement["required_capabilities"])
+        required_prerequisites = set(requirement["required_prerequisites"])
+        matched = any(
+            operation_category(location) == requirement["operation_category"]
+            and required_capabilities.issubset(
+                operation.get("validation-capabilities", [])
+            )
+            and required_prerequisites.issubset(operation.get("prerequisites", []))
+            and (
+                not requirement["require_repository_entrypoint"]
+                or _repository_entrypoint(root, operation)
+            )
+            for location, operation in entries.items()
+        )
+        if not matched:
+            capabilities = ", ".join(requirement["required_capabilities"])
+            prerequisites = ", ".join(requirement["required_prerequisites"])
+            errors.append(
+                f"repository validation coverage {requirement['id']} requires a "
+                f"{requirement['operation_category']} operation covering "
+                f"{capabilities} with prerequisites {prerequisites} and a "
+                "repository-owned entrypoint"
+            )
+    return errors
 
 
 def _regular_file_error(root: pathlib.Path, relative: pathlib.Path) -> str | None:
@@ -291,6 +362,7 @@ def validate_ceratops_compatibility(repo_root: pathlib.Path) -> CompatibilityRes
     root = repo_root.resolve()
     try:
         contract = load_compatibility_contract()
+        validation_contract = load_validation_contract()
     except RuntimeError as exc:
         return {"applicable": True, "valid": False, "errors": [str(exc)]}
     surfaces = contract["surfaces"]
@@ -330,6 +402,7 @@ def validate_ceratops_compatibility(repo_root: pathlib.Path) -> CompatibilityRes
             errors.append("current Ceratops compatibility requires SDLC version " + str(contract["sdlc_version"]))
         elif sdlc:
             entries = operation_entries(sdlc)
+            errors.extend(_validation_coverage_errors(root, sdlc, validation_contract))
             expected = load_compatibility_contract()["runtime"]["project"]
             # uv supports project discovery from the script path and explicit
             # project selection for existing repository commands.

@@ -1,7 +1,7 @@
 {
   "source_docs_version": 1,
   "name": "ceratops_github_contract_source_docs",
-  "captured_on": "2026-09-09",
+  "captured_on": "2026-09-20",
   "policy": {
     "use_order": [
       "official_docs",
@@ -670,6 +670,20 @@
         "repository_validation"
       ],
       "url": "https://yamllint.readthedocs.io/en/stable/configuration.html"
+    },
+    {
+      "id": "validation.android.lint",
+      "scope": [
+        "repository_validation"
+      ],
+      "url": "https://developer.android.com/studio/write/lint"
+    },
+    {
+      "id": "validation.android.command_line_build",
+      "scope": [
+        "repository_validation"
+      ],
+      "url": "https://developer.android.com/build/building-cmdline"
     },
     {
       "id": "validation.go.test",

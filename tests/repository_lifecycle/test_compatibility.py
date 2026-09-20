@@ -8,9 +8,9 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import tomllib
 
 import pytest
-import tomllib
 import yaml
 
 from tests.repository_lifecycle.support import (
@@ -305,6 +305,72 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     assert actual["deliverables"]["skills"]["validate"]["ceratops-managed"] == {
         "handoff": "target-lifecycle/source-check"
     }
+
+
+def test_android_coverage_requires_declared_non_test_gradle_validation(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "android-compatible"
+    repo.mkdir()
+    (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
+    (repo / "README.md").write_text(
+        "# Android compatible\n", encoding="utf-8", newline="\n"
+    )
+    applied = run_compatibility_engine(
+        REPOSITORY_LIFECYCLE_SCRIPTS,
+        "apply",
+        "--target-repo-root",
+        str(repo),
+    )
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+
+    manifest = repo / "app/src/main/AndroidManifest.xml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("<manifest />\n", encoding="utf-8", newline="\n")
+    entrypoint = repo / "scripts/android-validation.py"
+    entrypoint.write_text("# Repository-owned Gradle entrypoint.\n", encoding="utf-8")
+    compatibility = importlib.import_module(
+        "ceratops_repo_compatibility_engine.validate_ceratops_compatibility"
+    )
+    missing = compatibility.validate_ceratops_compatibility(repo)
+    assert missing["valid"] is False
+    assert any("coverage android-gradle requires" in error for error in missing["errors"])
+
+    sdlc_path = repo / "sdlc/sdlc.yml"
+    sdlc = yaml.safe_load(sdlc_path.read_text(encoding="utf-8"))
+    sdlc["repository"]["prerequisites"].update(
+        {
+            "jdk": {"executable": "java"},
+            "android-sdk": {"executable": "sdkmanager"},
+        }
+    )
+    android_operation = {
+        "prerequisites": ["jdk", "android-sdk"],
+        "validation-capabilities": ["android-lint", "android-build"],
+        "steps": [{"run": ["python", "scripts/android-validation.py"]}],
+    }
+    sdlc["repository"]["tests"]["android"] = android_operation
+    sdlc_path.write_text(
+        yaml.safe_dump(sdlc, sort_keys=False), encoding="utf-8", newline="\n"
+    )
+    tests_only = compatibility.validate_ceratops_compatibility(repo)
+    assert tests_only["valid"] is False
+    assert any("coverage android-gradle requires" in error for error in tests_only["errors"])
+
+    sdlc["repository"]["tests"].pop("android")
+    sdlc["repository"]["validate"]["android"] = android_operation
+    sdlc_path.write_text(
+        yaml.safe_dump(sdlc, sort_keys=False), encoding="utf-8", newline="\n"
+    )
+    assert compatibility.validate_ceratops_compatibility(repo)["valid"] is True
+
+    android_operation["validation-capabilities"] = ["android-build"]
+    sdlc_path.write_text(
+        yaml.safe_dump(sdlc, sort_keys=False), encoding="utf-8", newline="\n"
+    )
+    lint_missing = compatibility.validate_ceratops_compatibility(repo)
+    assert lint_missing["valid"] is False
+    assert any("android-lint" in error for error in lint_missing["errors"])
 
 
 def test_non_python_skill_needs_no_shared_skill_runtime(
