@@ -38,11 +38,12 @@ CURRENT_OPERATION_RE = re.compile(
 V1_OPERATION_RE = re.compile(r"^(deploy|release)\.operations\.[a-z][a-z0-9_-]*$")
 V4_OPERATION_RE = re.compile(
     rf"^(?:repository\.actions\.(?P<repository>bootstrap|validate|test|test-selection)|"
-    rf"deliverables\.(?P<kind>packages|tools|skills|hooks)\."
+    rf"deliverables\.(?P<kind>packages|apps|tools|skills|hooks)\."
     rf"(?P<name>{NAME})\.actions\.(?P<action>validate|test|build|install|publish|verify-publish))$"
 )
 V4_ACTIONS_BY_KIND = {
     "packages": frozenset({"validate", "test", "build", "publish", "verify-publish"}),
+    "apps": frozenset({"validate", "test", "install", "publish", "verify-publish"}),
     "tools": frozenset({"validate", "test", "install", "publish", "verify-publish"}),
     "skills": frozenset({"validate", "test", "install"}),
     "hooks": frozenset({"validate", "test", "install"}),
@@ -284,6 +285,7 @@ def _v4_semantic_errors(value: Mapping[str, Any]) -> list[str]:
                 )
     path_fields = {
         "packages": ("source", "project"),
+        "apps": ("source", "manifest"),
         "tools": ("source", "manifest"),
         "skills": ("source",),
         "hooks": ("source",),

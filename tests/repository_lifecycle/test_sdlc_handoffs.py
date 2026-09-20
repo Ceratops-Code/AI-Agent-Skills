@@ -166,6 +166,18 @@ def _v4_fixture() -> dict[str, Any]:
                     },
                 },
             },
+            "apps": {
+                "claims-mobile": {
+                    "source": "apps/claims", "manifest": "apps/claims/AndroidManifest.xml",
+                    "prerequisites": ["claims"],
+                    "actions": {
+                        "validate": {"requires": {"capabilities": []}, "no-op": "Repository checks cover the app."},
+                        "install": _v4_action({"run": [
+                            sys.executable, "-c", "from pathlib import Path; Path('app-installed.txt').write_text('done')",
+                        ]}),
+                    },
+                },
+            },
             "skills": {
                 "claims-catalog-invoice": {
                     "source": "skills/claims-catalog-invoice", "prerequisites": ["claims"],
@@ -204,12 +216,15 @@ def test_v4_template_and_typed_operation_index(tmp_path: pathlib.Path) -> None:
         "repository.actions.validate", "repository.actions.test",
         "deliverables.packages.core.actions.build",
         "deliverables.packages.claims.actions.build",
+        "deliverables.apps.claims-mobile.actions.validate",
+        "deliverables.apps.claims-mobile.actions.install",
         "deliverables.tools.insurance-claims-tool.actions.validate",
         "deliverables.tools.insurance-claims-tool.actions.install",
         "deliverables.skills.claims-catalog-invoice.actions.validate",
         "deliverables.skills.claims-catalog-invoice.actions.install",
     }
     assert runner.operation_category("deliverables.packages.claims.actions.build") == "build"
+    assert runner.operation_category("deliverables.apps.claims-mobile.actions.install") == "deploy-local"
     assert runner.operation_category("deliverables.tools.insurance-claims-tool.actions.install") == "deploy-local"
     with pytest.raises(runner.OperationError, match="Invalid SDLC operation location"):
         runner.operation_category("deliverables.skills.claims-catalog-invoice.actions.build")
@@ -234,6 +249,13 @@ def test_v4_prerequisites_are_exposed_without_build_or_install(tmp_path: pathlib
         "repository.actions.test",
     ]
     assert runner.validation_operations(tmp_path, [
+        "deliverables.apps.claims-mobile.actions.install"
+    ]) == [
+        "repository.actions.validate",
+        "deliverables.apps.claims-mobile.actions.validate",
+        "repository.actions.test",
+    ]
+    assert runner.validation_operations(tmp_path, [
         "deliverables.tools.insurance-claims-tool.actions.install"
     ]) == [
         "repository.actions.validate",
@@ -244,6 +266,15 @@ def test_v4_prerequisites_are_exposed_without_build_or_install(tmp_path: pathlib
     assert result.returncode == 0
     payload = json.loads(result.stdout)
     assert list(payload["prerequisites"]["packages"]) == ["core", "claims"]
+
+    app_location = "deliverables.apps.claims-mobile.actions.install"
+    app_prepared = runner.prepare_operations(
+        tmp_path, [runner.OperationRequest(app_location)]
+    )[0]
+    assert list(app_prepared.prerequisites["packages"]) == ["core", "claims"]
+    assert app_prepared.prerequisites["packages"]["claims"]["action-locations"] == {
+        "build": "deliverables.packages.claims.actions.build"
+    }
 
 
 def test_v4_source_installed_tool_needs_no_package_artifact(tmp_path: pathlib.Path) -> None:
@@ -278,6 +309,20 @@ def test_v4_tool_install_can_run_standalone_script(tmp_path: pathlib.Path) -> No
     assert result["status"] == "completed"
     assert result["steps"] == [1]
     assert (tmp_path / "installed.txt").read_text() == "done"
+
+
+def test_v4_app_install_can_run_standalone_script(tmp_path: pathlib.Path) -> None:
+    fixture = _v4_fixture()
+    assert contracts.validation_errors(fixture) == []
+    (tmp_path / "sdlc").mkdir()
+    (tmp_path / "sdlc/sdlc.yml").write_text(json.dumps(fixture))
+    prepared = runner.prepare_operations(tmp_path, [runner.OperationRequest(
+        "deliverables.apps.claims-mobile.actions.install",
+    )])[0]
+    result = runner.execute_prepared_operation(prepared)
+    assert result["status"] == "completed"
+    assert result["steps"] == [1]
+    assert (tmp_path / "app-installed.txt").read_text() == "done"
 
 
 @pytest.mark.parametrize("mode", ["skill", "ci", "return"])
@@ -352,6 +397,8 @@ def test_v4_rejects_invalid_dependency_or_lifecycle_boundary(change, expected: s
 
 
 @pytest.mark.parametrize("change", [
+    lambda x: x["deliverables"]["apps"]["claims-mobile"]["actions"].update(
+        build=_v4_action({"run": ["python"]})),
     lambda x: x["deliverables"]["tools"]["insurance-claims-tool"].update(package="claims"),
     lambda x: x["deliverables"]["tools"]["insurance-claims-tool"].update(prerequisites=["core", "claims"]),
     lambda x: x["deliverables"]["skills"]["claims-catalog-invoice"]["actions"]["install"].update(

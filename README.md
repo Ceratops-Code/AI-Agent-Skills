@@ -222,7 +222,7 @@ the validator. Managed deployment binds source validation followed by the
 transactional installer. The compatible-repository producer
 adds these skill operations only for source skills in current-format contracts;
 the generic template declares repository validation and an explicit test no-op.
-SDLC v4 also supports separate packages, tools, skills, and hooks. Its schema
+SDLC v4 also supports separate packages, apps, tools, skills, and hooks. Its schema
 lives at `skills/ceratops-repo-lifecycle/references/schemas/sdlc.v4.schema.json`;
 `scripts/repository_operation.py` resolves action locations and returns package
 prerequisites through `--prepare-only`. Registered v4 skill validation and

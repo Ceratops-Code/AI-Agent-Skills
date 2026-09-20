@@ -467,6 +467,31 @@
         }
       }
     },
+    "app": {
+      "description": "An application installed on a target device or operating system.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "manifest",
+        "prerequisites",
+        "actions"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "manifest": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "prerequisites": {
+          "$ref": "#/$defs/packagePrerequisites"
+        },
+        "actions": {
+          "$ref": "#/$defs/installedActions"
+        }
+      }
+    },
     "skill": {
       "type": "object",
       "additionalProperties": false,
@@ -527,6 +552,16 @@
         "$ref": "#/$defs/tool"
       }
     },
+    "namedApps": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "#/$defs/identifier"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/app"
+      }
+    },
     "namedSkills": {
       "type": "object",
       "minProperties": 1,
@@ -579,6 +614,9 @@
         },
         "tools": {
           "$ref": "#/$defs/namedTools"
+        },
+        "apps": {
+          "$ref": "#/$defs/namedApps"
         },
         "skills": {
           "$ref": "#/$defs/namedSkills"
