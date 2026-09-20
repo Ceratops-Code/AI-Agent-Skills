@@ -991,9 +991,11 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
     baseline.write_text("keep me\n", encoding="utf-8", newline="\n")
     check_log = scope / "check.log"
     check_script = scope / "check-once.py"
+    command_arguments = ["pytest", "--flag", "pytest", "--flag", "last"]
     check_script.write_text(
         "import pathlib\n"
         "import sys\n"
+        f"assert sys.argv[1:] == {command_arguments!r}\n"
         "path = pathlib.Path(__file__).with_name('check.log')\n"
         "prior = path.read_text(encoding='utf-8') if path.exists() else ''\n"
         "path.write_text(prior + 'run\\n', encoding='utf-8')\n"
@@ -1027,7 +1029,7 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
                 "paths": ["skills/alpha-tool/scripts/tool.py"],
                 "expected_matches": 0,
             },
-            {"kind": "command", "argv": [sys.executable, str(check_script)]},
+            {"kind": "command", "argv": [sys.executable, str(check_script), *command_arguments]},
             {
                 "kind": "pytest",
                 "nodes": ["tests/test_helper.py::test_helper_value"],
@@ -1067,6 +1069,34 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
     assert not invalid_evidence_path.exists()
     assert invalid_request_path.is_file()
 
+    for field in ("selected_skills", "allowed_paths"):
+        duplicate_request = json.loads(json.dumps(request))
+        duplicate_request[field] *= 2
+        invalid_request_path.write_text(json.dumps(duplicate_request), encoding="utf-8")
+        rejected = run_skill_update_workflow(
+            "prepare", "--request", str(invalid_request_path), "--state", str(invalid_state_path),
+        )
+        assert rejected.returncode == 2, rejected.stderr
+        assert f"{field} values must be unique" in rejected.stderr
+        assert not invalid_state_path.exists()
+
+    for arguments, error in (
+        ([], "nonempty string list"),
+        ("echo", "nonempty string list"),
+        ([sys.executable, 42], "nonempty string list"),
+        ([sys.executable, ""], "nonempty string list"),
+        ([sys.executable, "\0"], "contains NUL"),
+    ):
+        malformed_request = json.loads(json.dumps(request))
+        malformed_request["checks"][1]["argv"] = arguments
+        invalid_request_path.write_text(json.dumps(malformed_request), encoding="utf-8")
+        rejected = run_skill_update_workflow(
+            "prepare", "--request", str(invalid_request_path), "--state", str(invalid_state_path),
+        )
+        assert rejected.returncode == 2, rejected.stderr
+        assert error in rejected.stderr
+        assert not invalid_state_path.exists()
+
     prepared = run_skill_update_workflow(
         "prepare",
         "--request",
@@ -1079,6 +1109,7 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["schema"] == "ceratops-skill-update-state.v2"
     assert "preexisting.txt" in state["baseline_dirty"]
+    assert state["checks"][1]["argv"] == request["checks"][1]["argv"]
     incomplete = run_skill_update_workflow(
         "finalize",
         "--state",
@@ -1152,6 +1183,7 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
     ]
     assert evidence["checks"][0]["actual_matches"] == 0
     assert evidence["checks"][1]["stdout"] == "מלא\n"
+    assert evidence["checks"][1]["argv"] == request["checks"][1]["argv"]
     assert check_log.read_text(encoding="utf-8").splitlines() == ["run"]
     assert baseline.read_text(encoding="utf-8") == "keep me\n"
 

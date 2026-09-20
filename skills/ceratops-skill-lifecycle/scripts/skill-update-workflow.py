@@ -176,7 +176,8 @@ def _validate_checks(
                     raise UpdateExecutionError(f"pytest node file does not exist: {node}")
             check["nodes"] = nodes
         elif kind == "command":
-            argv = _string_list(raw["argv"], f"check {index} argv")
+            # Repeated arguments are meaningful and must reach the process intact.
+            argv = _string_list(raw["argv"], f"check {index} argv", unique=False)
             if any("\0" in value for value in argv):
                 raise UpdateExecutionError(f"check {index} argv contains NUL")
             check["argv"] = argv
