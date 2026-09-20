@@ -980,7 +980,7 @@ def test_quick_batch_collection_preserves_window_and_exclusions(tmp_path, monkey
 
 def test_quick_window_cli_preserves_suffix_and_input_validation(tmp_path):
     usage = tmp_path / "usage.json"
-    value = {"schema": "ceratops-model-call-usage-evidence.v1", "window": {"mode": "full_thread"}, "runs": [
+    value: dict[str, Any] = {"schema": "ceratops-model-call-usage-evidence.v1", "window": {"mode": "full_thread"}, "runs": [
         {"turn_id": "old", "started_at": "2026-07-01T00:00:00Z"},
         {"turn_id": "recent", "started_at": "2026-08-01T00:00:00Z"},
     ]}

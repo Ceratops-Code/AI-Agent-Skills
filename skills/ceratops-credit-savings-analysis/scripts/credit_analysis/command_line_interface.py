@@ -102,7 +102,7 @@ def command_quick_window(
     return _quick_window(days, as_of_text, evidence.get("runs"))
 
 
-def _quick_window(days: int, as_of_text: str, runs: Any) -> dict[str, Any]:
+def _quick_window(days: int, as_of_text: object, runs: Any) -> dict[str, Any]:
     """Shared frozen-boundary check for file and in-memory collector evidence."""
     if days < 1:
         raise CreditAnalysisError("days must be positive")
@@ -257,7 +257,7 @@ def command_quick_collect(
     current = collector.canonical_thread_id(current) if current else None
     records = []
     for identity, item in threads.items():
-        record = {"thread_id": identity, "status": "unassessed"}
+        record: dict[str, Any] = {"thread_id": identity, "status": "unassessed"}
         if identity == current and not include_current:
             record["status"] = "excluded-current"
         else:
