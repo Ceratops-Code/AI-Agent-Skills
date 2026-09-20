@@ -830,8 +830,10 @@ def command_amend(request_path: pathlib.Path, state_path: pathlib.Path) -> None:
     ):
         raise UpdateExecutionError("pending evidence does not match prepared failure")
 
+    # Prepared new paths may now exist without being staged; retain their ownership.
+    carried = _string_list(state["allowed_paths"], "prepared allowed paths")
     candidate, repo_root, task_temp_root, candidate_evidence, disposable = (
-        _validated_request(resolved_request)
+        _validated_request(resolved_request, carried_paths=carried)
     )
     cleanup_root = cleanup["task_temp_root"]
     assert isinstance(cleanup_root, pathlib.Path)

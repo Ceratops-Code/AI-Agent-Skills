@@ -658,8 +658,11 @@ def test_skill_update_workflow_accepts_new_shared_section_source(
     assert not task_temp_root.exists()
 
 
+@pytest.mark.parametrize(
+    "created_path", [None, "scripts/new-helper.py", "skills/sections/new-section.md"]
+)
 def test_skill_update_workflow_amends_failed_scope_and_reuses_only_searches(
-    tmp_path: pathlib.Path,
+    tmp_path: pathlib.Path, created_path: str | None,
 ) -> None:
     worktree, scope, task_temp_root = prepare_skill_update_workflow_worktree(
         tmp_path
@@ -695,7 +698,7 @@ def test_skill_update_workflow_amends_failed_scope_and_reuses_only_searches(
     request_path = task_temp_root / "request.json"
     state_path = task_temp_root / "state.json"
     evidence_path = task_temp_root / "evidence.json"
-    request = {
+    request: dict[str, Any] = {
         "schema": "ceratops-skill-update-request.v2",
         "repo_root": str(worktree),
         "task_temp_root": str(task_temp_root),
@@ -735,6 +738,10 @@ def test_skill_update_workflow_amends_failed_scope_and_reuses_only_searches(
             },
         ],
     }
+    if created_path is not None:
+        (worktree / created_path).parent.mkdir(parents=True, exist_ok=True)
+        request["allowed_paths"].append(created_path)
+        request["change_groups"][0]["paths"].append(created_path)
     request_path.write_text(
         json.dumps(request) + "\n",
         encoding="utf-8",
@@ -749,6 +756,8 @@ def test_skill_update_workflow_amends_failed_scope_and_reuses_only_searches(
 
     alpha = worktree / "skills" / "alpha-tool" / "scripts" / "tool.py"
     alpha.write_text("VALUE = 2\n", encoding="utf-8", newline="\n")
+    if created_path is not None:
+        (worktree / created_path).write_text("# Approved source\n", encoding="utf-8", newline="\n")
     failed = run_skill_update_workflow(
         "verify",
         "--state",
@@ -819,6 +828,11 @@ def test_skill_update_workflow_amends_failed_scope_and_reuses_only_searches(
     assert amended.returncode == 0, amended.stderr
     amended_state = json.loads(state_path.read_text(encoding="utf-8"))
     assert amended_state["head"] == prepared_head
+    assert amended_state["baseline_dirty"] == prepared_state["baseline_dirty"]
+    for path, baseline in prepared_state["baseline_targets"].items():
+        assert amended_state["baseline_targets"][path] == baseline
+    if created_path is not None:
+        assert not run_git(worktree, "ls-files", "--", created_path).stdout.strip()
     assert amended_state["verification"]["status"] == "pending"
     assert amended_state["verification"]["generation"] == 0
     beta_baseline = amended_state["baseline_targets"][beta_path]
@@ -839,10 +853,10 @@ def test_skill_update_workflow_amends_failed_scope_and_reuses_only_searches(
     )
     assert verified.returncode == 0, verified.stderr
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-    assert evidence["changed_paths"] == [
-        "skills/alpha-tool/scripts/tool.py",
-        beta_path,
-    ]
+    expected_paths = ["skills/alpha-tool/scripts/tool.py", beta_path]
+    if created_path is not None:
+        expected_paths.append(created_path)
+    assert evidence["changed_paths"] == sorted(expected_paths)
     assert evidence["checks"][0]["reused"] is True
     assert evidence["checks"][0]["source_evidence_sha256"] == (
         failed_evidence_sha256
@@ -865,6 +879,27 @@ def test_skill_update_workflow_amends_failed_scope_and_reuses_only_searches(
     )
     assert finalized.returncode == 0, finalized.stderr
     assert not task_temp_root.exists()
+
+
+@pytest.mark.parametrize("unapproved_path", ["scripts/unapproved.py", "skills/sections/unapproved.md"])
+def test_amend_rejects_new_untracked_ancillary_files(
+    tmp_path: pathlib.Path, unapproved_path: str,
+) -> None:
+    worktree, request, state, _, _, _, _ = _supersede_case(tmp_path, new_maintenance=True)
+    target = worktree / unapproved_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("# Not previously approved\n", encoding="utf-8", newline="\n")
+    declaration = json.loads(request.read_text(encoding="utf-8"))
+    declaration["allowed_paths"].append(unapproved_path)
+    declaration["change_groups"][0]["paths"].append(unapproved_path)
+    request.write_text(json.dumps(declaration), encoding="utf-8")
+    before = {path: path.read_bytes() for path in state.parent.iterdir() if path.is_file()}
+
+    result = run_skill_update_workflow("amend", "--request", str(request), "--state", str(state))
+
+    assert result.returncode == 2
+    assert "allowed path must be" in result.stderr and unapproved_path in result.stderr
+    assert {path: path.read_bytes() for path in state.parent.iterdir() if path.is_file()} == before
 
 
 def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes(
