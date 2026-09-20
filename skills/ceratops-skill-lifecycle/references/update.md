@@ -79,42 +79,41 @@ repo docs, then update the narrowest correct source that exists.
 
 #### 3. Apply updates at the real source
 
-- (D) Before the first edit of helper-runtime code or a multi-file contract
+- Before the first edit of helper-runtime code or a multi-file contract
   update, create one request declaring selected skills, allowed paths, cohesive
-  change groups, structured checks, the verified task-temp root, the exact
-  evidence output, the disposable request, state, and evidence roles, and a
-  helper-owned active-update retention marker; run
-  `python scripts/skill-update-workflow.py prepare --request REQUEST --state
-  STATE`. After the last edit, run `python scripts/skill-update-workflow.py
-  verify --state STATE --evidence-output EVIDENCE`. The helper must preserve the
-  recorded pre-existing worktree baseline, reject undeclared new changes or
-  source drift, collect every declared pytest node before edits without
-  executing tests, reject Git whitespace errors in changed tracked and new files
-  before executing each required check once for its applicable input, treat
-  declared zero-match searches as success, write detailed evidence, and emit
-  only `OK` or one compact actionable error.
-- (D) After a failed verification records pending state, the caller may replace
-  the prepared request with a monotonic expansion and run
-  `python scripts/skill-update-workflow.py amend --request REQUEST --state
-  STATE`. The helper must preserve the original HEAD and dirty baselines,
-  branch,
+  change groups, non-test checks, the verified task-temp root, the exact
+  evidence
+  output, disposable request/state/evidence roles, and a helper-owned
+  active-update retention marker.
+- (D) Before editing, run `python scripts/skill-update-workflow.py prepare
+  --request REQUEST --state STATE`.
+- (D) After editing, run `python scripts/skill-update-workflow.py verify
+  --state STATE --evidence-output EVIDENCE`.
+- Preserve the recorded pre-existing worktree baseline, reject undeclared new
+  changes or source drift, and reject Git whitespace errors in changed tracked
+  and new files before running each declared non-test check once for its
+  applicable input. Treat declared zero-match searches as success, write
+  detailed evidence, and emit only `OK` or one compact actionable error.
+- Repository-declared SDLC tests own test selection, collection, and execution.
+  Do not put test checks or test-runner commands in an update request.
+- (D) For a monotonic expansion after failed verification, replace the request
+  and run `python scripts/skill-update-workflow.py amend --request REQUEST
+  --state STATE`.
+- Amendment must preserve the original HEAD and dirty baselines, branch,
   correction generation, artifact ownership, and existing scope; accept only
-  added selected skills, allowed paths, group paths or groups, and checks that
-  pass the original ownership, path, link, committed-scope, and collection
-  gates; and reuse an earlier successful check only when its hashed failed
-  evidence and deterministic declared inputs still match. Failed, invalidated,
-  non-deterministic, and added checks must run on the next `verify`. After a
-  passed verification, `verify` may start one correction generation only when
-  the current task HEAD or complete prepared scope snapshot differs from the
-  passed evidence. It must atomically make the earlier success non-finalizable
+  added selected skills, allowed paths, group paths or groups, and non-test
+  checks that pass the original ownership, path, link, and committed-scope
+  gates. Reuse an earlier successful check only when its hashed failed evidence
+  and deterministic declared inputs still match. Failed, invalidated,
+  non-deterministic, and added checks must run on the next `verify`.
+- After passed verification, `verify` may start one correction generation only
+  when the current task HEAD or complete prepared scope snapshot differs from
+  the passed evidence. Atomically make the earlier success non-finalizable
   before correction checks, accept only the prepared HEAD or a descendant whose
-  committed paths stay declared, rerun the declared checks, preserve retryable
+  committed paths stay declared, rerun declared checks, preserve retryable
   pending state on failure, reject unchanged retries and scope broadening, and
-  permanently invalidate state changed after the correction generation. Do not
-  use the workflow for skill-local text-only updates.
-- For failed pytest checks, print test identities and reported errors in the
-  compact error; retain complete failure details in evidence and mark omitted
-  output.
+  permanently invalidate state changed after the correction generation.
+- Do not use the workflow for skill-local text-only updates.
 - The update helper must count manifest-declared shared sources as ownership
   for their selected skill consumers and reject selected skills without an
   owned allowed path.

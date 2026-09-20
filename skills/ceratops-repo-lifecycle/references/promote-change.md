@@ -63,6 +63,8 @@ owns selected post-merge publication, deployment and cleanup.
 
 - Promote only explicitly selected task branches.
 - Keep unrelated branches and worktrees outside inspection and cleanup scope.
+- Supply the promotion trigger, tested release branch, and exact assembled
+  commit to the SDLC test phase; leave test selection to the repository runner.
 - Before promotion, identify the selected task's unique linear commit range
   beyond main and release. Check live remote branch and commit publication
   before rewriting it. Preserve shared main and release history; abort a failed

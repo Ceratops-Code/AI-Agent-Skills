@@ -1,8 +1,9 @@
 """Parse repository test requests without running tests or mutating files.
 
 Only explicit ``--auto`` requests inspect GitHub context: pull requests retain
-the repository's base/head impact selection; local runs and pushes run all tests.
-Malformed or unsupported CI context fails closed before collection.
+the repository's base/head impact selection; local runs, pushes and promotions
+run all tests. SDLC supplies promotion context only to the test subprocess.
+Malformed or unsupported context fails closed before collection.
 """
 
 from __future__ import annotations
@@ -12,7 +13,10 @@ import json
 import os
 import pathlib
 import re
-from collections.abc import Sequence
+import subprocess
+from collections.abc import Callable, Mapping, Sequence
+
+TEST_CONTEXT_ENV = "CERATOPS_SDLC_TEST_CONTEXT"
 
 
 def parse_request(argv: Sequence[str] | None) -> tuple[argparse.Namespace, str | None]:
@@ -31,6 +35,7 @@ def parse_request(argv: Sequence[str] | None) -> tuple[argparse.Namespace, str |
     parser.add_argument("--worktree", action="store_true")
     parser.add_argument("--write-collection", type=pathlib.Path)
     args = parser.parse_args(list(argv) if argv is not None else None)
+    args.context = None
     modes = sum((bool(args.targets), args.all, args.auto, args.validate_manifest,
                  args.worktree, args.write_collection is not None,
                  args.reconcile_collection is not None,
@@ -48,9 +53,27 @@ def parse_request(argv: Sequence[str] | None) -> tuple[argparse.Namespace, str |
         return args, "test targets must be paths or node IDs, not pytest options"
     if args.auto:
         try:
-            if os.environ.get("GITHUB_ACTIONS") != "true":
+            supplied = os.environ.get(TEST_CONTEXT_ENV)
+            if supplied is not None:
+                context = json.loads(supplied)
+                if (
+                    not isinstance(context, dict)
+                    or set(context) != {"trigger", "branch", "commit"}
+                    or context["trigger"] != "promotion"
+                    or not isinstance(context["branch"], str)
+                    or not context["branch"].strip()
+                    or not isinstance(context["commit"], str)
+                    or re.fullmatch(r"[0-9a-f]{40}", context["commit"]) is None
+                    or os.environ.get("GITHUB_ACTIONS") == "true"
+                ):
+                    raise ValueError("invalid or conflicting promotion test context")
+                args.context = context
+                args.all = True
+            elif os.environ.get("GITHUB_ACTIONS") != "true":
+                args.context = {"trigger": "local"}
                 args.all = True
             elif os.environ.get("GITHUB_EVENT_NAME") == "push":
+                args.context = {"trigger": "push", "branch": os.environ.get("GITHUB_REF_NAME", "")}
                 args.all = True
             elif os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
                 event = json.loads(pathlib.Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
@@ -59,8 +82,37 @@ def parse_request(argv: Sequence[str] | None) -> tuple[argparse.Namespace, str |
                 if not all(isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha)
                            for sha in (args.base, args.head)):
                     raise ValueError("pull-request base and head must be full commit SHAs")
+                source = event["pull_request"]["head"]["ref"]
+                target = event["pull_request"]["base"]["ref"]
+                if not all(isinstance(branch, str) and branch.strip() for branch in (source, target)):
+                    raise ValueError("pull-request source and target branches are required")
+                args.context = {
+                    "trigger": "pull_request", "source_branch": source, "target_branch": target,
+                }
             else:
                 raise ValueError("--auto supports GitHub pull_request and push events")
         except (OSError, ValueError, KeyError, TypeError) as exc:
-            return args, f"cannot select CI tests: {exc}"
+            return args, f"cannot select contextual tests: {exc}"
     return args, None
+
+
+def validate_execution_context(
+    context: Mapping[str, str] | None,
+    root: pathlib.Path,
+    runner: Callable[[Sequence[str], pathlib.Path], subprocess.CompletedProcess[str]],
+) -> str | None:
+    """Bind supplied promotion identity to the checkout before collecting tests.
+
+    PR source/target identities come from GitHub's event. Its checkout may be a
+    detached merge commit, so those branch names are not checkout assertions.
+    """
+    if context is None or context.get("trigger") != "promotion":
+        return None
+    for command, expected in (
+        (["git", "rev-parse", "--verify", "HEAD^{commit}"], context["commit"]),
+        (["git", "branch", "--show-current"], context["branch"]),
+    ):
+        result = runner(command, root)
+        if result.returncode or result.stdout.strip() != expected:
+            return "promotion test context does not match the checked-out branch and commit"
+    return None

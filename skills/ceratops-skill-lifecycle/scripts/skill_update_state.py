@@ -35,7 +35,6 @@ REQUEST_FIELDS = {
 }
 GROUP_FIELDS = {"name", "paths"}
 CHECK_FIELDS = {
-    "pytest": {"kind", "nodes"},
     "command": {"kind", "argv"},
     "search": {"kind", "pattern", "paths", "expected_matches"},
 }
@@ -80,7 +79,6 @@ OWNED_ROLES = DISPOSABLE_ROLES | {"retention"}
 SKILL_NAME_RE = re.compile(
     r"^(?![a-z0-9-]*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
 )
-PYTEST_NODE_RE = re.compile(r"^tests/[A-Za-z0-9_./-]+\.py::\S+$")
 def _run_bytes(
     arguments: Sequence[str],
     *,

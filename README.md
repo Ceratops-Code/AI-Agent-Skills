@@ -167,7 +167,7 @@ without repository deduplication.
 | `skills/ceratops-repo-lifecycle/scripts/ship-repository.py` | Prevalidates one SDLC contract and ordered phase selections, runs declared CI test selection against freshly fetched base and exact staged head commits before push, and orchestrates guarded GitHub shipping, main synchronization, per-operation publication and deployment checkpoints, and resumable selected-source cleanup. |
 | `skills/ceratops-repo-lifecycle/scripts/rename-repository-path.py` | Plans or applies tracked file renames and exact filename references; accepts explicit or Git-detected rename pairs, updates relative Markdown links, blocks ambiguous references, preserves the index and text bytes outside replacements, and compensates caught file errors. |
 | `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Source, metadata, runtime-input, contract, and portability validator invoked by source-validate and explicit skill workflows. It accepts optional skill-local `README.md` design documentation and a matching relative README Skills-table link. Full validation and selected skill-lifecycle validation check the deterministic contract against its closed schema, supported command arguments, and existing helper paths. The schema identifies descriptive fields as annotations; validation never executes contract-supplied commands. |
-| `skills/ceratops-skill-lifecycle/scripts/skill-update-workflow.py` | Records allowed files, checks and the original worktree baseline; prepares, verifies and finalizes updates. Its `supersede` command starts a revised request after failure, preserves the original baseline and failed records, and transfers their exact cleanup ownership to the successor. |
+| `skills/ceratops-skill-lifecycle/scripts/skill-update-workflow.py` | Records allowed files, non-test checks and the original worktree baseline; prepares, verifies and finalizes updates without collecting or running tests. Rejects pytest checks and direct test-runner commands; test execution belongs to SDLC. Its `supersede` command starts a revised request after failure, preserves the original baseline and failed records, and transfers their exact cleanup ownership to the successor. |
 | `skills/ceratops-skill-lifecycle/scripts/skill_update_state.py` | Owns update state, filesystem boundaries and cleanup-record validation; successful successor finalization removes only unchanged inherited disposable records and preserves protected inputs. |
 | `skills/ceratops-skill-lifecycle/scripts/fast-change.py` | Classifies exact structured replacements, generates their diff, and owns the eligible direct-release change through declared Markdown lint, exact helper tests, targeted installation, commit, and failure compensation. |
 
@@ -806,7 +806,15 @@ it never runs tests.
 SDLC separately runs `scripts/testing/run-tests.py --auto`: exact PR base/head
 impact selection in GitHub, all tests locally and on push. Every deliverable
 declares its tests, using a no-op when the repository test phase covers them.
-Promotion and shipping require both applicable results before mutation.
+Promotion supplies `--test-trigger promotion` and the assembled commit to the
+SDLC runner. SDLC binds the current release branch and passes
+`CERATOPS_SDLC_TEST_CONTEXT` only to test commands. The test runner verifies
+that branch and commit before collection and preserves full-suite selection.
+PR results record source and destination branches from the GitHub event;
+the CI checkout may be a detached merge commit. Promotion context is removed
+from pytest's environment so nested runner calls cannot inherit it.
+Promotion checks the assembled release commit before requested deployment;
+shipping repeats the applicable checks before remote mutation.
 Run an individual case with
 `uv run --locked scripts/testing/run-tests.py tests/path.py::test_name`.
 Local uncommitted selection is explicit

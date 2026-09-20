@@ -6,7 +6,6 @@ import json
 import os
 import pathlib
 import re
-import shlex
 import shutil
 import stat
 import tempfile
@@ -20,7 +19,7 @@ def _remove_scratch(root: pathlib.Path, scratch: pathlib.Path) -> None:
     """Remove only an owned child; reset a proven read-only bit when needed."""
 
     if scratch.is_symlink() or scratch.is_junction() or scratch.resolve().parent != root:
-        raise OSError(f"test scratch path changed; cleanup retained: {scratch}")
+        raise OSError(f"check scratch path changed; cleanup retained: {scratch}")
 
     def remove_readonly(function: Callable[..., object], path: str, error: BaseException) -> None:
         entry = pathlib.Path(path)
@@ -40,7 +39,7 @@ def _remove_scratch(root: pathlib.Path, scratch: pathlib.Path) -> None:
     if scratch.exists():
         shutil.rmtree(scratch, onexc=remove_readonly)
     if scratch.exists() or scratch.is_symlink():
-        raise OSError(f"test scratch cleanup left a folder: {scratch}")
+        raise OSError(f"check scratch cleanup left a folder: {scratch}")
 
 
 def _resume_cleanup(root: pathlib.Path) -> None:
@@ -48,18 +47,18 @@ def _resume_cleanup(root: pathlib.Path) -> None:
 
     for marker in sorted(root.glob(".check-*.cleanup.json")):
         if marker.is_symlink() or not marker.is_file():
-            raise OSError(f"unsafe test scratch cleanup record: {marker}")
+            raise OSError(f"unsafe check scratch cleanup record: {marker}")
         name = marker.name[1:-len(".cleanup.json")]
         scratch = root / name
         try:
             record = json.loads(marker.read_text(encoding="utf-8"))
         except (ValueError, OSError) as exc:
-            raise OSError(f"invalid test scratch cleanup record: {marker}") from exc
+            raise OSError(f"invalid check scratch cleanup record: {marker}") from exc
         if (
             re.fullmatch(r"check-[A-Za-z0-9_-]+", name) is None
             or record != {"schema": SCRATCH_SCHEMA, "path": str(scratch)}
         ):
-            raise OSError(f"test scratch cleanup ownership mismatch: {marker}")
+            raise OSError(f"check scratch cleanup ownership mismatch: {marker}")
         _remove_scratch(root, scratch)
         marker.unlink(missing_ok=True)
 
@@ -79,23 +78,8 @@ def check_environment(task_temp_root: pathlib.Path) -> Iterator[dict[str, str]]:
     scratch = pathlib.Path(tempfile.mkdtemp(prefix="check-", dir=root))
     try:
         environment = dict(os.environ)
-        for name in ("TMPDIR", "TEMP", "TMP", "PYTEST_DEBUG_TEMPROOT"):
+        for name in ("TMPDIR", "TEMP", "TMP"):
             environment[name] = str(scratch)
-        # Pytest validates every basetemp occurrence, even one later overridden.
-        # Remove inherited locations while preserving the remaining arguments.
-        try:
-            options = iter(shlex.split(environment.get("PYTEST_ADDOPTS", "")))
-        except ValueError as exc:
-            raise OSError(f"invalid inherited PYTEST_ADDOPTS: {exc}") from exc
-        retained = []
-        for option in options:
-            if option == "--basetemp":
-                next(options, None)
-            elif not option.startswith("--basetemp="):
-                retained.append(option)
-        environment["PYTEST_ADDOPTS"] = shlex.join(
-            [*retained, "--basetemp", str(scratch / "pytest")]
-        )
         yield environment
     finally:
         marker = root / f".{scratch.name}.cleanup.json"
@@ -105,5 +89,5 @@ def check_environment(task_temp_root: pathlib.Path) -> Iterator[dict[str, str]]:
         try:
             _remove_scratch(root, scratch)
         except OSError as exc:
-            raise OSError(f"test scratch cleanup failed at {scratch}: {exc}") from exc
+            raise OSError(f"check scratch cleanup failed at {scratch}: {exc}") from exc
         marker.unlink(missing_ok=True)

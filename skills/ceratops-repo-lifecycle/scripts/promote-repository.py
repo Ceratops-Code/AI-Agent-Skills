@@ -565,6 +565,7 @@ def _validation_command(
     command = [
         sys.executable, str(OPERATION_RUNNER), "--repo-root", str(repo_root),
         "--sdlc-contract", str(args.sdlc_contract), "--validate", "--tests", "--commit", commit,
+        "--test-trigger", "promotion",
     ]
     for operation in args.validation_operation or []:
         command.extend(("--validation-operation", operation))
