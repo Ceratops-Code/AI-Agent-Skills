@@ -383,7 +383,10 @@ Each repository owns one lifecycle contract:
 - `skills/ceratops-repo-lifecycle/references/contracts/code-repo-deterministic-contract.json`
   defines deterministic repository-content checks for files, workflow text,
   Dependabot config, CODEOWNERS, local git state, local path references, and
-  secret-pattern scans.
+  secret-pattern scans. Dependabot checks parse YAML and match detected manifest
+  directories to update entries, including directory globs, GitHub Actions' root,
+  and declared workspace/module membership. Unresolved dynamic build membership
+  requires explicit directory coverage.
 - `skills/ceratops-repo-lifecycle/references/contracts/artifact-deterministic-contract.json`
   defines external artifact checks for PyPI, npm, DockerHub or OCI registries,
   GitHub Container Registry, GitHub releases, docs sites, and other package

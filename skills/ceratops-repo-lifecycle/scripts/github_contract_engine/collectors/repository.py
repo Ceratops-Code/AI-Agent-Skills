@@ -8,7 +8,7 @@ import re
 from typing import Any
 
 from ..github_api import ApiResult, run_gh_api, run_json_command, substitute
-from .local_repository import classify_repository
+from .local_repository import classify_repository, dependabot_coverage
 
 COLLECTION_KEYS = {
     "report_open_prs_older_than_days",
@@ -492,7 +492,6 @@ def collect_repository(
     dependabot_text = (
         local.get("texts", {}).get(dependabot_path, "") if dependabot_path else ""
     )
-    ecosystems = local.get("dependabot", {}).get("ecosystems", {})
     community = _result(
         fetched, "/repos/${owner}/${repo}/community/profile", parameters
     )
@@ -730,17 +729,7 @@ def collect_repository(
             "codeowners_errors": codeowners_errors,
             "dependabot_label_referenced": "dependencies" in dependabot_text,
             "dependabot_label_exists": dependency_label.ok,
-            "dependabot": {
-                "config_present": bool(dependabot_path),
-                "text_available": bool(dependabot_text),
-                "ecosystems": sorted(ecosystems),
-                "missing_ecosystems": [
-                    name for name in ecosystems if name not in dependabot_text
-                ],
-                "updates_present": "updates:" in dependabot_text,
-                "schedule_present": "schedule:" in dependabot_text
-                and "interval:" in dependabot_text,
-            },
+            "dependabot": dependabot_coverage(local, default_branch),
             "workflow_write_all": local.get("workflows", {}).get(
                 "permissions_write_all", []
             ),
