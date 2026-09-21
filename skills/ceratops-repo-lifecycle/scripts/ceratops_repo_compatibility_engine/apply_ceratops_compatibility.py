@@ -1000,6 +1000,8 @@ def plan_ceratops_compatibility(
     validator_text, workflow_text, validation_checks, markdown_files = validation_surfaces(repo_root, ci_action_revision)
     compatibility_contract = load_compatibility_contract()
     python_tests = discover_python_tests(repo_root, compatibility_contract["python_test_detection"])
+    test_runner = repo_root / surface_path("python_test_runner")
+    generate_python_test_runner = bool(python_tests) and not test_runner.is_file()
     generated_runtime = runtime_files(
         repo_root,
         BUNDLE_ROOT,
@@ -1011,13 +1013,13 @@ def plan_ceratops_compatibility(
             ),
         ),
         planned_files=markdown_files, has_python_skills=bool(python_skills),
+        generate_python_test_runner=generate_python_test_runner,
     )
     markdown_files.pop(".gitignore", None)
     require_skill_runtime_project(
         repo_root, compatibility_contract, has_python_skills=bool(python_skills),
     )
-    test_runner = repo_root / surface_path("python_test_runner")
-    if python_tests and not test_runner.is_file():
+    if generate_python_test_runner:
         generated_runtime[test_runner] = template_path("python_test_runner").read_text(encoding="utf-8").replace("__TEST_TARGETS__", repr(python_tests))
     return CompatibilityPlan(
         manifest=manifest,
