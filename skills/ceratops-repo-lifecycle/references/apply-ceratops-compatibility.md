@@ -87,7 +87,9 @@ Infer the source identity from stable repository evidence before asking.
   runtime payloads, and maintenance commands.
 - Apply the current SDLC format with explicit tests for every deliverable.
   Preserve target operations when upgrading supported declarations; reject
-  an upgrade whose operation ownership cannot be preserved.
+  an upgrade whose operation ownership cannot be preserved. Preserve an
+  existing JSON-compatible or YAML serialization so target readers keep their
+  supported input form.
 - Block malformed or unsafe existing declarations before mutation. After the
   first write, restore every changed target file after any caught blocker and
   report the failed phase and rollback state.

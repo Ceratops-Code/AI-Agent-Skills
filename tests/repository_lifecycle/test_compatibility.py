@@ -1168,7 +1168,7 @@ def test_explicit_app_test_ownership_does_not_generate_python_test_runner(
         "no-op": "The app deliverable owns executable tests.",
     }
     contract_path.write_text(
-        yaml.safe_dump(contract, sort_keys=False), encoding="utf-8", newline="\n"
+        json.dumps(contract, indent=2) + "\n", encoding="utf-8", newline="\n"
     )
 
     result = run_compatibility_engine(
@@ -1186,7 +1186,9 @@ def test_explicit_app_test_ownership_does_not_generate_python_test_runner(
         dependency.split("=", 1)[0] == "pytest"
         for dependency in runtime["project"]["dependencies"]
     )
-    preserved = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
+    preserved_text = contract_path.read_text(encoding="utf-8")
+    assert preserved_text.startswith("{\n")
+    preserved = json.loads(preserved_text)
     assert preserved["repository"]["actions"]["test"]["no-op"] == (
         "The app deliverable owns executable tests."
     )

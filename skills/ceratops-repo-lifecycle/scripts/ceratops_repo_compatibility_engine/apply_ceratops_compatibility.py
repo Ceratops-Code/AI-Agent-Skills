@@ -80,6 +80,31 @@ class IndentedSafeDumper(yaml.SafeDumper):
         return super().increase_indent(flow, False)
 
 
+def serialized_sdlc_contract(
+    path: pathlib.Path,
+    contract: Mapping[str, object],
+) -> tuple[str, str]:
+    """Render SDLC v4 while preserving an existing JSON or YAML representation."""
+
+    newline = "\n"
+    json_representation = False
+    if path.is_file():
+        payload = path.read_bytes()
+        newline = "\r\n" if b"\r\n" in payload else "\n"
+        try:
+            json_representation = isinstance(
+                json.loads(payload.decode("utf-8")), Mapping
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            pass
+    if json_representation:
+        return json.dumps(contract, indent=2, sort_keys=False) + "\n", newline
+    return (
+        yaml.dump(contract, Dumper=IndentedSafeDumper, sort_keys=False),
+        newline,
+    )
+
+
 @dataclass(frozen=True)
 class FileSnapshot:
     """Exact recoverable state for one file the helper may change."""
@@ -1282,14 +1307,13 @@ def apply_compatibility_plan(
     if plan.sdlc_contract is not None:
         sdlc_path = repo_root / surface_path("sdlc")
         sdlc_path.parent.mkdir(parents=True, exist_ok=True)
+        sdlc_text, newline = serialized_sdlc_contract(
+            sdlc_path, plan.sdlc_contract
+        )
         sdlc_path.write_text(
-            yaml.dump(
-                plan.sdlc_contract,
-                Dumper=IndentedSafeDumper,
-                sort_keys=False,
-            ),
+            sdlc_text,
             encoding="utf-8",
-            newline="\n",
+            newline=newline,
         )
     if plan.validator_text is not None:
         validator_path = repo_root / surface_path("validator")
