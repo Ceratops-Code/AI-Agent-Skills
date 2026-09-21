@@ -20,7 +20,6 @@ from typing import Any
 import tomllib
 import yaml
 
-from .python_tests import discover_python_tests
 from .python_tool_configuration import project_text
 
 
@@ -28,6 +27,7 @@ def runtime_files(
     root: pathlib.Path, bundle: pathlib.Path, contract: Mapping[str, Any],
     checks: list[dict[str, Any]], *, planned_files: Mapping[str, str] | None = None,
     has_python_skills: bool = False,
+    generate_python_test_runner: bool = False,
 ) -> dict[pathlib.Path, str]:
     """Render repository tooling declarations without copying the SDLC engine."""
 
@@ -35,7 +35,9 @@ def runtime_files(
     planned_files = planned_files or {}
     files: dict[pathlib.Path, str] = {}
     dependencies: set[str] = set()
-    if discover_python_tests(root, contract["python_test_detection"]):
+    # Preserved runners own their framework dependencies. Only the runner this
+    # transaction generates has a known pytest dependency.
+    if generate_python_test_runner:
         dependencies.add("pytest")
     for check in checks:
         command = check["command"]
