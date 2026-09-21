@@ -48,6 +48,7 @@ PENDING_MANAGER = SCRIPT_ROOT / "manage-pending-work.py"
 OPERATION_RUNNER = SCRIPT_ROOT / "repository_operation.py"
 SHIP_REPOSITORY = SCRIPT_ROOT / "ship-repository.py"
 RELEASE_BRANCH = "release/local"
+PROMOTION_BRANCHES = (RELEASE_BRANCH, "promote/local")
 DEFAULT_SDLC_CONTRACT = pathlib.Path("sdlc/sdlc.yml")
 
 
@@ -654,11 +655,22 @@ def promote(args: argparse.Namespace, *, timings: dict[str, float] | None = None
     if timings is None:
         timings = {}
 
-    if args.release_branch != RELEASE_BRANCH:
-        raise PromotionError(f"release_branch must be {RELEASE_BRANCH}.")
     repo_root = args.repo_root.expanduser().resolve(strict=True)
     if not repo_root.is_dir():
         raise PromotionError("Repository root is not a directory.")
+    if args.release_branch not in PROMOTION_BRANCHES:
+        raise PromotionError(
+            f"release_branch must be one of {', '.join(PROMOTION_BRANCHES)}."
+        )
+    has_release_ref = _ref_exists(repo_root, "refs/heads/release")
+    if args.release_branch == RELEASE_BRANCH and has_release_ref:
+        raise PromotionError(
+            "release/local conflicts with the existing release branch; select promote/local."
+        )
+    if args.release_branch == "promote/local" and not has_release_ref:
+        raise PromotionError(
+            "promote/local is reserved for repositories with an existing release branch."
+        )
     branches = list(dict.fromkeys(args.source_branch or []))
     ship_after_promotion = bool(getattr(args, "ship_after_promotion", False))
     if not ship_after_promotion and any(
@@ -972,7 +984,8 @@ def _validate_completion(receipt: object, *, repo_root: pathlib.Path, commit: st
         raise PromotionError("Deployment completion evidence lacks a transaction identity.")
 
 
-def _completed_deployment(result: object, commit: str, *, repo_root: pathlib.Path | None = None,
+def _completed_deployment(result: object, commit: str, *, release_branch: str = RELEASE_BRANCH,
+                          repo_root: pathlib.Path | None = None,
                           external: dict[str, dict[str, Any]] | None = None,
                           record_binding: dict[str, Any] | None = None,
                           caller_verified: bool = True) -> None:
@@ -985,8 +998,8 @@ def _completed_deployment(result: object, commit: str, *, repo_root: pathlib.Pat
     """
     if not isinstance(result, dict) or result.get("status") != "ready":
         raise PromotionError("Result is not a successful promote-and-deploy outcome.")
-    if result.get("head") != commit:
-        raise PromotionError("Result head does not match expected-commit.")
+    if result.get("head") != commit or result.get("release_branch") != release_branch:
+        raise PromotionError("Result head or promotion branch does not match finalization inputs.")
     operations = result.get("operations")
     if (not isinstance(operations, dict) or operations.get("status") != "completed"
             or operations.get("pending_operations") != []):
@@ -1058,14 +1071,16 @@ def _completed_deployment(result: object, commit: str, *, repo_root: pathlib.Pat
         raise PromotionError("Completion evidence names an unselected deployment operation.")
 
 
-def _completed_promotion_only(result: object, commit: str) -> None:
+def _completed_promotion_only(
+    result: object, commit: str, release_branch: str = RELEASE_BRANCH,
+) -> None:
     """Accept only the saved ready result of an operation-free promotion."""
     if not isinstance(result, dict) or result.get("status") != "ready":
         raise PromotionError("Result is not a successful promotion-only outcome.")
     if result.get("head") != commit:
         raise PromotionError("Result head does not match expected-commit.")
     if ("operations" not in result or result["operations"] is not None
-            or result.get("release_branch") != RELEASE_BRANCH
+            or result.get("release_branch") != release_branch
             or not isinstance(result.get("merged_branches"), list)
             or not result["merged_branches"]
             or not all(isinstance(branch, str) and branch for branch in result["merged_branches"])
@@ -1153,9 +1168,10 @@ def finalize_result(args: argparse.Namespace) -> None:
             raise PromotionError("Completion evidence operation is missing or duplicated.")
         external[operation] = value
     if args.promotion_only:
-        _completed_promotion_only(result, args.expected_commit)
+        _completed_promotion_only(result, args.expected_commit, args.release_branch)
     else:
-        _completed_deployment(result, args.expected_commit, repo_root=repo_root, external=external,
+        _completed_deployment(result, args.expected_commit, release_branch=args.release_branch,
+                              repo_root=repo_root, external=external,
                               record_binding={"result_file": str(path), "sha256": digest,
                                               "identity": [getattr(original_stat, key) for key in
                                                            ("st_dev", "st_ino", "st_mtime_ns", "st_size", "st_mode", "st_nlink")]},
@@ -1201,7 +1217,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--release-branch",
         default=RELEASE_BRANCH,
-        help="must be release/local",
+        help="release/local, or promote/local when an existing release branch occupies that namespace",
     )
     parser.add_argument("--remote-name", default="origin")
     parser.add_argument("--title", help="PR title override for composed shipping.")

@@ -42,7 +42,7 @@ and publication.
 - Target repository, checkout, task worktree, branch, selected source branches,
   PR, artifact, dependency queue, compatibility gap, or creation request that
   identifies the action.
-- Whether promotion stops at `release/local`, deploys selected deliverables,
+- Whether promotion stops at the selected local promotion branch, deploys selected deliverables,
   or continues into shipping; capture ordered complete YAML operation locations
   and keep these flow decisions outside the contract.
 - Required live GitHub, local repository, CI, artifact, credential, and
@@ -125,8 +125,10 @@ and publication.
 - Use `create-or-publish`, `apply-ceratops-compatibility`,
   `repo-contracts-review`, `codeql-disposition`, `health-audit`, or
   `dependency-maintenance` for their named repository surfaces.
-- Use `promote` when selected committed branches should join a local
-  `release/local` branch without deployment.
+- Use `promote` when selected committed branches should join the local
+  promotion branch without deployment. The default is `release/local`; use
+  `promote/local` when an authoritative `release` branch occupies that Git ref
+  namespace.
 - Use `promote-and-deploy` when promotion should run explicitly selected
   `deploy-local` entries and use their advisory routing for domain work.
 - Use composed promotion and shipping when selected committed branches should

@@ -1085,11 +1085,10 @@ def test_promote_repository_rejects_noncanonical_release_branch_before_mutation(
 
     assert result.returncode == 1
     assert json.loads(result.stderr)["message"] == (
-        "release_branch must be release/local."
+        "release_branch must be one of release/local, promote/local."
     )
     assert run_git(repo, "branch", "--show-current").stdout.strip() == "approved"
     assert run_git(repo, "branch", "--list", "release/task").stdout == ""
-
     conflict_root = tmp_path / "automatic-rebase-conflict"
     (
         conflict_repo,
@@ -1213,6 +1212,72 @@ def test_promote_repository_rejects_noncanonical_release_branch_before_mutation(
         nonlinear_source_head
     )
     assert run_git(nonlinear_worktree, "status", "--porcelain").stdout == ""
+
+
+def test_promote_repository_uses_conflict_free_branch_when_release_exists(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo, approved_head, _, environment = prepare_repository_lifecycle_repo(tmp_path)
+    main_head = run_git(repo, "rev-parse", "main").stdout.strip()
+    assert run_git(repo, "branch", "release", "main").returncode == 0
+    task_temp = repo.parent / "tmp" / repo.name / "conflict-free-promotion"
+    task_temp.mkdir(parents=True)
+    result_file = task_temp / "promotion-result.json"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(PROMOTE_REPOSITORY),
+            "--result-file",
+            str(result_file),
+            "--repo-root",
+            str(repo),
+            "--source-branch",
+            "approved",
+            "--release-branch",
+            "promote/local",
+            "--no-run-operation",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+
+    assert result.returncode == 0, result.stderr
+    promoted = json.loads(result.stdout)
+    assert promoted["release_branch"] == "promote/local"
+    assert promoted["head"] == approved_head
+    assert run_git(repo, "branch", "--show-current").stdout.strip() == "promote/local"
+    assert run_git(repo, "rev-parse", "release").stdout.strip() == main_head
+    digest = hashlib.sha256(result_file.read_bytes()).hexdigest()
+    finalized = subprocess.run(
+        [
+            sys.executable,
+            str(PROMOTE_REPOSITORY),
+            "--finalize-result",
+            "--promotion-only",
+            "--result-file",
+            str(result_file),
+            "--task-temp-root",
+            str(task_temp),
+            "--repo-root",
+            str(repo),
+            "--release-branch",
+            "promote/local",
+            "--expected-commit",
+            approved_head,
+            "--verified-result-sha256",
+            digest,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+    assert finalized.returncode == 0, finalized.stderr
+    assert finalized.stdout == "OK\n"
+    assert not result_file.exists()
 
 
 def test_promote_preserves_structured_operation_failure_evidence(
