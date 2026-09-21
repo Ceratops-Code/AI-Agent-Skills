@@ -12,6 +12,7 @@ the package-owned helper, and emits one compact JSON result.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import pathlib
@@ -28,13 +29,19 @@ import yaml
 from .ci_workflow import pinned_action, resolve_action, workflow_errors
 from .compatibility_contract import (
     load_compatibility_contract,
+    managed_skill_record,
     surface_path,
     template_path,
 )
 from .python_tests import discover_python_tests, test_operation
 from .python_tool_configuration import project_text, repository_configured
 from .repository_validation_contract import load_validation_contract
-from .sdlc_contract_validation import load_contract, validation_errors
+from .sdlc_contract_validation import (
+    load_contract,
+    operation_category,
+    operation_entries,
+    validation_errors,
+)
 from .validate_ceratops_compatibility import (
     action_assignment_errors,
     validate_ceratops_compatibility,
@@ -71,6 +78,31 @@ class IndentedSafeDumper(yaml.SafeDumper):
         self, flow: bool = False, indentless: bool = False
     ) -> object:
         return super().increase_indent(flow, False)
+
+
+def serialized_sdlc_contract(
+    path: pathlib.Path,
+    contract: Mapping[str, object],
+) -> tuple[str, str]:
+    """Render SDLC v4 while preserving an existing JSON or YAML representation."""
+
+    newline = "\n"
+    json_representation = False
+    if path.is_file():
+        payload = path.read_bytes()
+        newline = "\r\n" if b"\r\n" in payload else "\n"
+        try:
+            json_representation = isinstance(
+                json.loads(payload.decode("utf-8")), Mapping
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            pass
+    if json_representation:
+        return json.dumps(contract, indent=2, sort_keys=False) + "\n", newline
+    return (
+        yaml.dump(contract, Dumper=IndentedSafeDumper, sort_keys=False),
+        newline,
+    )
 
 
 @dataclass(frozen=True)
@@ -149,6 +181,24 @@ def _safe_validation_path(value: object, label: str) -> pathlib.PurePosixPath:
     if path.is_absolute() or ".." in path.parts:
         raise RuntimeError(f"{label} must stay inside the target repository")
     return path
+
+
+def _planned_path_matches(path: str, pattern: str) -> bool:
+    """Match a planned file with the zero-directory ``**/`` semantics of glob."""
+
+    variants = {pattern}
+    pending = [pattern]
+    while pending:
+        candidate = pending.pop()
+        marker = "**/"
+        if marker not in candidate:
+            continue
+        collapsed = candidate.replace(marker, "", 1)
+        if collapsed not in variants:
+            variants.add(collapsed)
+            pending.append(collapsed)
+    planned = pathlib.PurePosixPath(path)
+    return any(planned.match(candidate) for candidate in variants)
 
 
 def _package_root(repo_root: pathlib.Path) -> pathlib.Path:
@@ -236,6 +286,10 @@ def _validation_condition_matches(
             candidate.is_file() and not candidate.is_symlink()
             for pattern in patterns
             for candidate in repo_root.glob(pattern)
+        ) or any(
+            _planned_path_matches(path, pattern)
+            for path in (planned_files or {})
+            for pattern in patterns
         )
     if kind == "file-contains" and set(condition) == {"kind", "path", "value"}:
         relative = _safe_validation_path(condition["path"], "repository-validation contract condition path")
@@ -254,7 +308,8 @@ def _validation_condition_matches(
 
 
 def contract_checks(
-    repo_root: pathlib.Path, *, package: dict[str, object] | None = None
+    repo_root: pathlib.Path, *, package: dict[str, object] | None = None,
+    planned_paths: set[str] | None = None,
 ) -> list[dict[str, object]]:
     """Select checks only after validating the complete shared contract."""
 
@@ -267,6 +322,7 @@ def contract_checks(
             repo_root, template_path("validation_project"),
         ),
     }
+    planned_files.update({path: "" for path in planned_paths or set()})
     selected: list[dict[str, object]] = []
     for check in contract["checks"]:
         if any(
@@ -467,7 +523,10 @@ def validation_surfaces(
         if path.is_symlink() or (path.exists() and not path.is_file()):
             raise RuntimeError(f"existing {label} must be a regular file: {path}")
 
-    checks = contract_checks(repo_root)
+    planned_paths = (
+        {surface_path("workflow").as_posix()} if not workflow.is_file() else set()
+    )
+    checks = contract_checks(repo_root, planned_paths=planned_paths)
     markdown_files = (
         default_markdown_files(repo_root)
         if not validator.is_file() and not workflow.is_file()
@@ -475,7 +534,11 @@ def validation_surfaces(
         else {}
     )
     if markdown_files:
-        checks = contract_checks(repo_root, package=json.loads(markdown_files["scripts/package.json"]))
+        checks = contract_checks(
+            repo_root,
+            package=json.loads(markdown_files["scripts/package.json"]),
+            planned_paths=planned_paths,
+        )
     validator_text = None
     if not validator.is_file():
         template = template_path("validator").read_text(encoding="utf-8")
@@ -584,17 +647,174 @@ def validate_template(template: Mapping[str, object]) -> None:
         raise RuntimeError("skill-sections template is not repository-neutral")
 
 
+def _legacy_repository_action(
+    operations: object,
+    *,
+    category: str,
+) -> dict[str, object] | None:
+    """Collapse clearly classified v2/v3 repository operations into one v4 action."""
+
+    if operations in (None, {}):
+        return None
+    if not isinstance(operations, Mapping) or not operations:
+        raise RuntimeError(f"legacy repository {category} operations are invalid")
+    if category == "test-selection" and len(operations) != 1:
+        raise RuntimeError("legacy test-selection ownership must resolve to one action")
+    capabilities: list[str] = []
+    validation_capabilities: list[str] = []
+    steps: list[object] = []
+    parameters: list[str] | None = None
+    no_op: str | None = None
+    for operation in operations.values():
+        if not isinstance(operation, Mapping) or "handoff" in operation:
+            raise RuntimeError(
+                f"legacy repository {category} action ownership is ambiguous"
+            )
+        capabilities.extend(operation.get("prerequisites", []))
+        validation_capabilities.extend(operation.get("validation-capabilities", []))
+        current_parameters = operation.get("parameters")
+        if current_parameters is not None:
+            if parameters is not None and parameters != current_parameters:
+                raise RuntimeError(
+                    f"legacy repository {category} parameters are ambiguous"
+                )
+            parameters = list(current_parameters)
+        if "steps" in operation:
+            if no_op is not None:
+                raise RuntimeError(
+                    f"legacy repository {category} mixes commands and no-op actions"
+                )
+            steps.extend(copy.deepcopy(operation["steps"]))
+        elif "no-op" in operation:
+            if steps or no_op is not None or len(operations) != 1:
+                raise RuntimeError(
+                    f"legacy repository {category} no-op ownership is ambiguous"
+                )
+            no_op = str(operation["no-op"])
+        else:
+            raise RuntimeError(f"legacy repository {category} action is invalid")
+    action: dict[str, object] = {
+        "requires": {"capabilities": list(dict.fromkeys(capabilities))}
+    }
+    if validation_capabilities:
+        action["validation-capabilities"] = list(
+            dict.fromkeys(validation_capabilities)
+        )
+    if parameters is not None:
+        action["parameters"] = parameters
+    if steps:
+        action["steps"] = steps
+    elif no_op is not None:
+        action["no-op"] = no_op
+    else:
+        raise RuntimeError(f"legacy repository {category} action has no behavior")
+    return action
+
+
+def _legacy_compatibility_candidate(
+    contract: Mapping[str, object],
+    reusable: Mapping[str, object],
+) -> dict[str, object]:
+    """Upgrade only the producer-owned v2/v3 layout with explicit category ownership."""
+
+    unknown_top = set(contract) - {"version", "kind", "repository", "deliverables"}
+    if unknown_top:
+        raise RuntimeError(
+            "legacy SDLC ownership is not mapped for " + sorted(unknown_top)[0]
+        )
+    deliverables = contract.get("deliverables", {})
+    if not isinstance(deliverables, Mapping):
+        raise RuntimeError("legacy SDLC deliverables are invalid")
+    unknown_deliverables = set(deliverables) - {"skills"}
+    if unknown_deliverables:
+        raise RuntimeError(
+            "legacy SDLC operation ownership must be mapped for deliverable "
+            + sorted(unknown_deliverables)[0]
+        )
+    skills = deliverables.get("skills", {})
+    if not isinstance(skills, Mapping):
+        raise RuntimeError("legacy skill operations are invalid")
+    for category, operations in skills.items():
+        if category not in {"validate", "tests", "deploy-local"} or not isinstance(
+            operations, Mapping
+        ):
+            raise RuntimeError("legacy skill operation ownership is ambiguous")
+        for operation in operations.values():
+            if not isinstance(operation, Mapping):
+                raise RuntimeError("legacy skill operation ownership is ambiguous")
+            handoff = operation.get("handoff")
+            run_steps = operation.get("steps")
+            no_op = operation.get("no-op")
+            recognized = (
+                category == "validate"
+                and handoff == "ceratops-skill-lifecycle/source-validate"
+            ) or (
+                category == "deploy-local"
+                and handoff == "ceratops-skill-lifecycle/deploy"
+            ) or (
+                category == "deploy-local"
+                and isinstance(run_steps, list)
+                and len(run_steps) == 1
+                and isinstance(run_steps[0], Mapping)
+                and isinstance(run_steps[0].get("run"), list)
+                and run_steps[0]["run"][-1] == "scripts/deploy-skills.py"
+            ) or (
+                category == "tests" and isinstance(no_op, str) and bool(no_op.strip())
+            )
+            if not recognized:
+                raise RuntimeError("legacy skill operation ownership is ambiguous")
+    candidate = copy.deepcopy(dict(reusable))
+    legacy_repository = contract.get("repository", {})
+    if not isinstance(legacy_repository, Mapping):
+        raise RuntimeError("legacy repository lifecycle is invalid")
+    capabilities = dict(legacy_repository.get("prerequisites", {}))
+    capabilities.setdefault("uv", {"executable": "uv"})
+    candidate_repository = candidate.get("repository")
+    if not isinstance(candidate_repository, Mapping):
+        raise RuntimeError("current repository lifecycle template is invalid")
+    actions = dict(candidate_repository.get("actions", {}))
+    for legacy, current in (
+        ("bootstrap", "bootstrap"),
+        ("test-selection", "test-selection"),
+        ("validate", "validate"),
+        ("tests", "test"),
+    ):
+        converted = _legacy_repository_action(
+            legacy_repository.get(legacy), category=legacy
+        )
+        if converted is not None:
+            actions[current] = converted
+    unknown_repository = set(legacy_repository) - {
+        "prerequisites",
+        "bootstrap",
+        "test-selection",
+        "validate",
+        "tests",
+    }
+    if unknown_repository:
+        raise RuntimeError(
+            "legacy repository operation ownership must be mapped for "
+            + sorted(unknown_repository)[0]
+        )
+    candidate["repository"] = {
+        "capabilities": capabilities,
+        "actions": actions,
+    }
+    return candidate
+
+
 def build_sdlc_contract_candidate(
     repo_root: pathlib.Path,
     *,
-    has_skills: bool,
+    skill_names: list[str],
     apply_contract: bool,
-) -> dict[str, object] | None:
-    """Preserve target capabilities and apply repository validation.
+) -> dict[str, object]:
+    """Preserve target capabilities and apply the typed v4 lifecycle.
 
     The template owns repository validation; the compatibility contract owns
-    skill action routing. Existing operations retain their definitions. Skillless targets
-    lose only exact producer-owned entries. Deployment is never implicit.
+    named skill action routing. Existing actions retain their definitions.
+    Removed skills lose only exact producer-owned entries. Deployment is never
+    implicit.
     """
 
     if not apply_contract:
@@ -602,60 +822,84 @@ def build_sdlc_contract_candidate(
     reusable = load_contract(template_path("sdlc"))
     target = repo_root / surface_path("sdlc")
     contract = load_contract(target) if target.is_file() else dict(reusable)
-    if contract["version"] == 1:
-        raise RuntimeError("SDLC version 1 operation ownership must be mapped to deliverables before applying current compatibility")
-    candidate = dict(contract, version=reusable["version"])
+    if contract["version"] in {2, 3}:
+        contract = _legacy_compatibility_candidate(contract, reusable)
+    elif contract["version"] != reusable["version"]:
+        raise RuntimeError(
+            f"SDLC version {contract['version']} action ownership must be mapped "
+            "to typed v4 deliverables before applying current compatibility"
+        )
+    candidate = dict(contract)
     repository = dict(candidate.get("repository", {}))
-    validations = dict(repository.get("validate", {}))
-    existing_validation = validations.get("repository")
-    if existing_validation is None or existing_validation == {"steps": [{"run": ["python", "scripts/validate-repository.py"]}]}:
-        validations["repository"] = reusable["repository"]["validate"]["repository"]
-    elif existing_validation != reusable["repository"]["validate"]["repository"]:
+    capabilities = dict(repository.get("capabilities", {}))
+    capabilities.setdefault("uv", {"executable": "uv"})
+    actions = dict(repository.get("actions", {}))
+    existing_validation = actions.get("validate")
+    owned_validation = reusable["repository"]["actions"]["validate"]
+    if existing_validation is None:
+        actions["validate"] = owned_validation
+    elif existing_validation != owned_validation:
         # A custom wrapper can carry arguments or setup that cannot safely be
         # replaced or duplicated. The action must first separate that behavior.
         raise RuntimeError("custom repository validation operation requires explicit integration with the uv validator command")
-    repository["validate"] = validations
-    repository.setdefault("prerequisites", {}).setdefault("uv", {"executable": "uv"})
-    repository.setdefault("bootstrap", {}).setdefault("validation", reusable["repository"]["bootstrap"]["validation"])
-    tests = dict(repository.get("tests", {}))
-    infer_tests = not tests or tests == reusable["repository"]["tests"]
-    if infer_tests:
-        tests = {}
-    detected = discover_python_tests(repo_root, load_compatibility_contract()["python_test_detection"])
+    actions.setdefault("bootstrap", reusable["repository"]["actions"]["bootstrap"])
+    existing_test = actions.get("test")
+    owned_test = reusable["repository"]["actions"]["test"]
+    infer_tests = existing_test is None or existing_test == owned_test
+    test_steps: list[dict[str, object]] = []
+    test_capabilities: list[str] = []
+    detected = discover_python_tests(
+        repo_root, load_compatibility_contract()["python_test_detection"]
+    )
     if detected and infer_tests:
-        tests["python"] = test_operation(repo_root, surface_path("python_test_runner").as_posix())
+        generated = test_operation(
+            repo_root, surface_path("python_test_runner").as_posix()
+        )
+        test_steps.extend(generated["steps"])
+        test_capabilities.extend(generated["requires"]["capabilities"])
     package = _package_manifest(repo_root)
     manager, _ = _package_manager(repo_root, package)
     if "test" in _package_scripts(package) and infer_tests:
         binding = [] if _package_root(repo_root) == repo_root else ["--dir" if manager == "pnpm" else "--prefix", "scripts"]
-        tests["package"] = {"steps": [{"run": [manager or "npm", *binding, "test"]}]}
+        executable = manager or "npm"
+        capabilities.setdefault(executable, {"executable": executable})
+        test_capabilities.append(executable)
+        test_steps.append({"run": [executable, *binding, "test"]})
     if (repo_root / "go.mod").is_file() and infer_tests:
-        tests["go"] = {"steps": [{"run": ["go", "test", "./..."]}]}
+        capabilities.setdefault("go", {"executable": "go"})
+        test_capabilities.append("go")
+        test_steps.append({"run": ["go", "test", "./..."]})
     if (repo_root / "Cargo.toml").is_file() and infer_tests:
-        tests["rust"] = {"steps": [{"run": ["cargo", "test"]}]}
-    repository["tests"] = tests or reusable["repository"]["tests"]
+        capabilities.setdefault("cargo", {"executable": "cargo"})
+        test_capabilities.append("cargo")
+        test_steps.append({"run": ["cargo", "test"]})
+    if infer_tests:
+        actions["test"] = (
+            {
+                "requires": {
+                    "capabilities": list(dict.fromkeys(test_capabilities))
+                },
+                "steps": test_steps,
+            }
+            if test_steps
+            else owned_test
+        )
+    repository["capabilities"] = capabilities
+    repository["actions"] = actions
     candidate["repository"] = repository
     deliverables = dict(candidate.get("deliverables", {}))
     skills = dict(deliverables.get("skills", {}))
-    owned_operations = load_compatibility_contract()["managed_skill_operations"]
-    for category, owned_entries in owned_operations.items():
-        operations = dict(skills.get(category, {}))
-        for name, owned in owned_entries.items():
-            if has_skills:
-                operations.setdefault(name, owned)
-            elif operations.get(name) == owned:
-                operations.pop(name)
-        if operations:
-            skills[category] = operations
-        else:
-            skills.pop(category, None)
+    selected = set(skill_names)
+    for name in sorted(selected):
+        skills.setdefault(name, managed_skill_record(name))
+    for name in list(skills):
+        if name not in selected and skills[name] == managed_skill_record(name):
+            skills.pop(name)
     if skills:
         deliverables["skills"] = skills
     else:
         deliverables.pop("skills", None)
     if deliverables:
-        for deliverable in deliverables.values():
-            deliverable.setdefault("tests", {"none": {"no-op": "No deliverable-specific test operation is declared; repository tests remain separately selectable."}})
         candidate["deliverables"] = deliverables
     else:
         candidate.pop("deliverables", None)
@@ -966,29 +1210,49 @@ def plan_ceratops_compatibility(
         action_errors = action_assignment_errors(repo_root, manifest)
         if action_errors:
             raise RuntimeError("; ".join(action_errors))
+    sdlc_contract = build_sdlc_contract_candidate(
+        repo_root,
+        skill_names=sorted(skill_names),
+        apply_contract=apply_sdlc_contract,
+    )
     validator_text, workflow_text, validation_checks, markdown_files = validation_surfaces(repo_root, ci_action_revision)
     compatibility_contract = load_compatibility_contract()
     python_tests = discover_python_tests(repo_root, compatibility_contract["python_test_detection"])
+    test_runner = repo_root / surface_path("python_test_runner")
+    test_runner_relative = surface_path("python_test_runner").as_posix()
+    test_runner_selected = any(
+        test_runner_relative in step.get("run", [])
+        for name, operation in operation_entries(sdlc_contract).items()
+        if operation_category(name) == "tests"
+        for step in operation.get("steps", [])
+    )
+    generate_python_test_runner = (
+        bool(python_tests) and test_runner_selected and not test_runner.is_file()
+    )
     generated_runtime = runtime_files(
-        repo_root, BUNDLE_ROOT, compatibility_contract, contract_checks(repo_root),
+        repo_root,
+        BUNDLE_ROOT,
+        compatibility_contract,
+        contract_checks(
+            repo_root,
+            planned_paths=(
+                {surface_path("workflow").as_posix()} if workflow_text is not None else set()
+            ),
+        ),
         planned_files=markdown_files, has_python_skills=bool(python_skills),
+        generate_python_test_runner=generate_python_test_runner,
     )
     markdown_files.pop(".gitignore", None)
     require_skill_runtime_project(
         repo_root, compatibility_contract, has_python_skills=bool(python_skills),
     )
-    test_runner = repo_root / surface_path("python_test_runner")
-    if python_tests and not test_runner.is_file():
+    if generate_python_test_runner:
         generated_runtime[test_runner] = template_path("python_test_runner").read_text(encoding="utf-8").replace("__TEST_TARGETS__", repr(python_tests))
     return CompatibilityPlan(
         manifest=manifest,
         skill_updates=skill_updates,
         canonical_sources=canonical_sources,
-        sdlc_contract=build_sdlc_contract_candidate(
-            repo_root,
-            has_skills=bool(skill_names),
-            apply_contract=apply_sdlc_contract,
-        ),
+        sdlc_contract=sdlc_contract,
         validator_text=validator_text,
         workflow_text=workflow_text,
         markdown_files=markdown_files,
@@ -1043,14 +1307,13 @@ def apply_compatibility_plan(
     if plan.sdlc_contract is not None:
         sdlc_path = repo_root / surface_path("sdlc")
         sdlc_path.parent.mkdir(parents=True, exist_ok=True)
+        sdlc_text, newline = serialized_sdlc_contract(
+            sdlc_path, plan.sdlc_contract
+        )
         sdlc_path.write_text(
-            yaml.dump(
-                plan.sdlc_contract,
-                Dumper=IndentedSafeDumper,
-                sort_keys=False,
-            ),
+            sdlc_text,
             encoding="utf-8",
-            newline="\n",
+            newline=newline,
         )
     if plan.validator_text is not None:
         validator_path = repo_root / surface_path("validator")

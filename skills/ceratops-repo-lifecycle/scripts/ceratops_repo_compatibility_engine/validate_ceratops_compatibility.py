@@ -11,16 +11,21 @@ import json
 import os
 import pathlib
 import runpy
+import tomllib
 from collections.abc import Mapping
 from typing import Any, TypedDict
 
-import tomllib
 import yaml
 
 from .ci_workflow import workflow_errors
 from .compatibility_contract import load_compatibility_contract, template_path
 from .python_tests import discover_python_tests
-from .sdlc_contract_validation import operation_entries, read_contract
+from .repository_validation_contract import load_validation_contract
+from .sdlc_contract_validation import (
+    operation_category,
+    operation_entries,
+    read_contract,
+)
 from .validation_environment import detected_python_skills
 
 
@@ -28,6 +33,81 @@ class CompatibilityResult(TypedDict):
     applicable: bool
     valid: bool | None
     errors: list[str]
+
+
+def _repository_entrypoint(root: pathlib.Path, operation: Mapping[str, Any]) -> bool:
+    """Return whether an operation invokes a regular repository-owned file."""
+
+    for step in operation.get("steps", []):
+        for value in step.get("run", []):
+            if not isinstance(value, str) or not value:
+                continue
+            posix = pathlib.PurePosixPath(value.replace("\\", "/"))
+            windows = pathlib.PureWindowsPath(value)
+            if (
+                posix.is_absolute()
+                or windows.is_absolute()
+                or windows.drive
+                or ".." in posix.parts
+            ):
+                continue
+            candidate = root.joinpath(*posix.parts)
+            if candidate.is_file() and not candidate.is_symlink():
+                return True
+    return False
+
+
+def _operation_requirements(operation: Mapping[str, Any]) -> set[str]:
+    """Return required runtime capabilities across supported SDLC versions."""
+
+    requirements = operation.get("requires")
+    if isinstance(requirements, Mapping):
+        return set(requirements.get("capabilities", []))
+    return set(operation.get("prerequisites", []))
+
+
+def _validation_coverage_errors(
+    root: pathlib.Path,
+    sdlc: Mapping[str, Any],
+    validation_contract: Mapping[str, Any],
+) -> list[str]:
+    """Require detected repository types to have one declared non-test validator."""
+
+    entries = operation_entries(sdlc)
+    errors: list[str] = []
+    for requirement in validation_contract["coverage_requirements"]:
+        active = any(
+            candidate.is_file() and not candidate.is_symlink()
+            for condition in requirement["when"]
+            for pattern in condition["value"]
+            for candidate in root.glob(pattern)
+        )
+        if not active:
+            continue
+        required_capabilities = set(requirement["required_capabilities"])
+        required_prerequisites = set(requirement["required_prerequisites"])
+        matched = any(
+            operation_category(location) == requirement["operation_category"]
+            and required_capabilities.issubset(
+                operation.get("validation-capabilities", [])
+            )
+            and required_prerequisites.issubset(_operation_requirements(operation))
+            and (
+                not requirement["require_repository_entrypoint"]
+                or _repository_entrypoint(root, operation)
+            )
+            for location, operation in entries.items()
+        )
+        if not matched:
+            capabilities = ", ".join(requirement["required_capabilities"])
+            prerequisites = ", ".join(requirement["required_prerequisites"])
+            errors.append(
+                f"repository validation coverage {requirement['id']} requires a "
+                f"{requirement['operation_category']} operation covering "
+                f"{capabilities} with prerequisites {prerequisites} and a "
+                "repository-owned entrypoint"
+            )
+    return errors
 
 
 def _regular_file_error(root: pathlib.Path, relative: pathlib.Path) -> str | None:
@@ -291,6 +371,7 @@ def validate_ceratops_compatibility(repo_root: pathlib.Path) -> CompatibilityRes
     root = repo_root.resolve()
     try:
         contract = load_compatibility_contract()
+        validation_contract = load_validation_contract()
     except RuntimeError as exc:
         return {"applicable": True, "valid": False, "errors": [str(exc)]}
     surfaces = contract["surfaces"]
@@ -309,10 +390,28 @@ def validate_ceratops_compatibility(repo_root: pathlib.Path) -> CompatibilityRes
 
     errors: list[str] = []
     python_tests = discover_python_tests(root, contract["python_test_detection"])
+    sdlc: Mapping[str, Any] | None = None
+    sdlc_errors: list[str] = []
+    entries: dict[str, Mapping[str, Any]] = {}
+    if not _regular_file_error(root, paths["sdlc"]):
+        sdlc, sdlc_errors = read_contract(root / paths["sdlc"])
+        if sdlc:
+            entries = operation_entries(sdlc)
+    test_runner_relative = surfaces["python_test_runner"]["path"]
+    test_runner_selected = any(
+        test_runner_relative in step.get("run", [])
+        for name, operation in entries.items()
+        if operation_category(name) == "tests"
+        for step in operation.get("steps", [])
+    )
     for name, surface in surfaces.items():
         required = surface["required"] == "always" or (
             surface["required"] == "with_skills" and bool(source_skills)
-        ) or (surface["required"] == "with_python_tests" and bool(python_tests))
+        ) or (
+            surface["required"] == "with_python_tests"
+            and bool(python_tests)
+            and test_runner_selected
+        )
         if (required or name in present) and (error := _regular_file_error(root, paths[name])):
             errors.append(error)
     if not _regular_file_error(root, paths["workflow"]):
@@ -324,12 +423,11 @@ def validate_ceratops_compatibility(repo_root: pathlib.Path) -> CompatibilityRes
         )
         errors.extend(manifest_errors)
     if "sdlc" in present and not _regular_file_error(root, paths["sdlc"]):
-        sdlc, sdlc_errors = read_contract(root / paths["sdlc"])
         errors.extend(sdlc_errors)
         if sdlc and sdlc["version"] != contract["sdlc_version"]:
             errors.append("current Ceratops compatibility requires SDLC version " + str(contract["sdlc_version"]))
         elif sdlc:
-            entries = operation_entries(sdlc)
+            errors.extend(_validation_coverage_errors(root, sdlc, validation_contract))
             expected = load_compatibility_contract()["runtime"]["project"]
             # uv supports project discovery from the script path and explicit
             # project selection for existing repository commands.
@@ -337,12 +435,23 @@ def validate_ceratops_compatibility(repo_root: pathlib.Path) -> CompatibilityRes
                 ["uv", "run", "--locked", surfaces["validator"]["path"]],
                 ["uv", "run", "--project", expected, "--locked", "python", surfaces["validator"]["path"]],
             ]
-            commands = [step["run"] for name, entry in entries.items() if ".validate." in name for step in entry.get("steps", [])]
+            commands = [
+                step["run"]
+                for name, entry in entries.items()
+                if operation_category(name) == "validate"
+                for step in entry.get("steps", [])
+                if "run" in step
+            ]
             if not any(command in commands for command in validator_commands):
                 errors.append("SDLC must invoke the repository validator through its locked uv project")
-            if not sdlc.get("repository", {}).get("tests"):
+            tests = [
+                entry
+                for name, entry in entries.items()
+                if operation_category(name) == "tests"
+            ]
+            if not tests:
                 errors.append("SDLC must declare repository tests or an explicit no-op")
-            if python_tests and not any(".tests." in name and (entry.get("steps") or entry.get("handoff")) for name, entry in entries.items()):
+            if python_tests and not any(entry.get("steps") for entry in tests):
                 errors.append("detected Python tests require an executable SDLC tests operation")
     errors.extend(_environment_errors(root, contract, has_python_skills=bool(python_skills)))
     errors.extend(_skill_runtime_errors(root, contract, has_python_skills=bool(python_skills)))

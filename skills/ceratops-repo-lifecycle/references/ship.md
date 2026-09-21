@@ -14,6 +14,8 @@ selected-source cleanup. YAML declares capabilities; this action owns timing.
   `python "<skill-root>/scripts/ship-repository.py" --repo-root PATH
   --head-branch release/local --base-branch main --remote-name origin
   --reusable-head`.
+  Use `--head-branch promote/local` when an authoritative local `release`
+  branch occupies that Git ref namespace.
   `<skill-root>` is the installed `ceratops-repo-lifecycle` directory.
   The CI wait defaults to 30 minutes; `--ci-wait-seconds` overrides it.
 - Run the helper before manual readiness or implementation inspection, without
@@ -43,7 +45,7 @@ selected-source cleanup. YAML declares capabilities; this action owns timing.
 
 ### Inputs To Capture
 
-- Repository checkout, staged `release/local` , base branch, remote, merge
+- Repository checkout, staged promotion branch, base branch, remote, merge
   method,
   and optional PR `--title`/`--body` overrides.
 - New PRs derive omitted metadata from the staged commits relative to the base.
@@ -57,7 +59,9 @@ selected-source cleanup. YAML declares capabilities; this action owns timing.
 
 ### Boundaries
 
-- Ship only clean staged `release/local`.
+- Ship only the clean promotion branch selected during promotion:
+  `release/local` by default, or `promote/local` when an authoritative local
+  `release` branch exists.
 - Repair ordinary check failures under the parent's repair/retry rule without
   expanding the selected change scope; restart shipping after committing the
   fix.

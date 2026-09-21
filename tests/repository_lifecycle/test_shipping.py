@@ -28,14 +28,16 @@ def _commit(repo: pathlib.Path) -> str:
     return run_git(repo, "rev-parse", "HEAD").stdout.strip()
 
 
-def _setup(tmp_path: pathlib.Path, *, contract: bool = True) -> tuple[Any, ...]:
+def _setup(
+    tmp_path: pathlib.Path, *, contract: bool = True, head_branch: str = "release/local",
+) -> tuple[Any, ...]:
     """Use real SDLC execution and Git identity, simulating only GitHub and cleanup."""
 
     repo = tmp_path / "repo"
     repo.mkdir()
     log = tmp_path / "order.txt"
     external_failure = tmp_path / "publication-unavailable"
-    assert run_git(repo, "init", "-b", "release/local").returncode == 0
+    assert run_git(repo, "init", "-b", head_branch).returncode == 0
     assert run_git(repo, "config", "user.name", "Tests").returncode == 0
     assert (
         run_git(repo, "config", "user.email", "tests@example.invalid").returncode == 0
@@ -85,6 +87,8 @@ def _setup(tmp_path: pathlib.Path, *, contract: bool = True) -> tuple[Any, ...]:
             },
         )
     _commit(repo)
+    if head_branch == "promote/local":
+        assert run_git(repo, "branch", "release", "HEAD").returncode == 0
     loaded = runpy.run_path(str(SHIP_REPOSITORY))
     original = loaded["_run_json"]
     commands: list[list[str]] = []
@@ -156,7 +160,7 @@ def _setup(tmp_path: pathlib.Path, *, contract: bool = True) -> tuple[Any, ...]:
             "--repo-root",
             str(repo),
             "--head-branch",
-            "release/local",
+            head_branch,
             "--reusable-head",
             *(
                 ["--publish-operation", PUBLIC, "--deploy-operation", LOCAL]
@@ -255,6 +259,36 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
     assert forwarded[forwarded.index("--review-replies-request") + 1] == str(
         args.review_replies_request
     )
+
+
+def test_repository_ship_uses_conflict_free_promotion_branch(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo, loaded, args, _, _, commands = _setup(
+        tmp_path, contract=False, head_branch="promote/local",
+    )
+    release_head = run_git(repo, "rev-parse", "release").stdout.strip()
+
+    result = loaded["ship_repository"](args)
+
+    assert result["status"] == "shipped"
+    assert run_git(repo, "rev-parse", "release").stdout.strip() == release_head
+    remote = next(command for command in commands if str(PR_WORKFLOW_ENTRYPOINT) in command)
+    assert remote[remote.index("--head-branch") + 1] == "promote/local"
+
+
+def test_repository_ship_rejects_promote_branch_without_release(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo, loaded, args, _, _, _ = _setup(tmp_path, contract=False)
+    assert run_git(repo, "branch", "-m", "promote/local").returncode == 0
+    args.head_branch = "promote/local"
+
+    with pytest.raises(
+        loaded["RepositoryShipError"],
+        match="reserved for repositories with an existing release branch",
+    ):
+        loaded["ship_repository"](args)
 
 
 def test_repository_ship_missing_custom_contract_blocks_before_remote_mutation(
@@ -483,7 +517,7 @@ def test_repository_ship_rejects_noncanonical_release_branch_before_remote_proce
     _, loaded, args, log, state, _ = _setup(tmp_path)
     args.head_branch = "release/task"
     with pytest.raises(
-        loaded["RepositoryShipError"], match="Head branch must be release/local"
+        loaded["RepositoryShipError"], match="Head branch must be one of"
     ):
         loaded["ship_repository"](args)
     assert state["calls"] == 0 and not log.exists()

@@ -38,6 +38,11 @@
       "path": "scripts/run-tests.py",
       "template": "run-tests.py.tmpl",
       "required": "with_python_tests"
+    },
+    "actionlint_runner": {
+      "path": "scripts/run-actionlint.py",
+      "template": "run-actionlint.py.tmpl",
+      "required": "always"
     }
   },
   "manifest_profiles": [
@@ -47,34 +52,39 @@
   "generated_manifest_profile": "ceratops-compatible",
   "managed_skill_operations": {
     "validate": {
-      "ceratops-managed": {
-        "handoff": "ceratops-skill-lifecycle/source-validate"
-      }
-    },
-    "deploy-local": {
-      "ceratops-managed": {
-        "handoff": "ceratops-skill-lifecycle/deploy"
+      "requires": {
+        "capabilities": []
       },
-      "standalone": {
-        "steps": [
-          {
-            "run": [
-              "uv",
-              "run",
-              "--locked",
-              "scripts/deploy-skills.py"
-            ]
+      "steps": [
+        {
+          "handoff": {
+            "lifecycle": "ceratops-skill-lifecycle",
+            "action": "source-validate",
+            "inputs": {
+              "skill": "{skill}"
+            }
           }
-        ]
-      }
+        }
+      ]
     },
-    "tests": {
-      "none": {
-        "no-op": "No skill-specific test command is declared; repository tests remain separately selectable."
-      }
+    "install": {
+      "requires": {
+        "capabilities": []
+      },
+      "steps": [
+        {
+          "handoff": {
+            "lifecycle": "ceratops-skill-lifecycle",
+            "action": "deploy",
+            "inputs": {
+              "skill": "{skill}"
+            }
+          }
+        }
+      ]
     }
   },
-  "sdlc_version": 3,
+  "sdlc_version": 4,
   "runtime": {
     "project": "scripts",
     "lockfile": "scripts/uv.lock",

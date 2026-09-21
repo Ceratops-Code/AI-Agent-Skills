@@ -2,8 +2,11 @@
 
 ## Goal
 
-Fast-forward selected committed task branches into `release/local` and validate
-the assembled commit. For `promote-and-deploy`, run selected `deploy-local`
+Fast-forward selected committed task branches into a local promotion branch and
+validate the assembled commit. Use `release/local` by default. When the
+repository already has an authoritative `release` branch, use `promote/local`
+because Git cannot store both `release` and `release/local`. For
+`promote-and-deploy`, run selected `deploy-local`
 entries in order. Composed shipping validates again at its own boundary and
 owns selected post-merge publication, deployment and cleanup.
 
@@ -28,6 +31,9 @@ owns selected post-merge publication, deployment and cleanup.
   --release-branch release/local --remote-name origin
   --run-operation ID [--run-operation ID...]
   [--parameter name=value ...]`.
+- When `refs/heads/release` exists, use the same exact command with
+  `--release-branch promote/local`; use that same branch argument when
+  finalizing its saved result.
 - (D) Promotion followed by terminal shipping uses the same command with
   `--ship-after-promotion` as its complete operation choice. Do not add
   `--run-operation` or `--no-run-operation`; shipping alone publishes or
@@ -42,8 +48,9 @@ owns selected post-merge publication, deployment and cleanup.
 
 ### Inputs To Capture
 
-- Repository checkout, selected committed source branches, main branch,
-  `release/local`, and remote.
+- Repository checkout, selected committed source branches, main branch, local
+  promotion branch, and remote. Use `promote/local` only when
+  `refs/heads/release` already exists; otherwise use `release/local`.
 - Whether the selected action is `promote`, `promote-and-deploy`, or composed
   promotion and shipping.
 - Optional PR `--title` and `--body` require `--ship-after-promotion` and pass
@@ -63,6 +70,8 @@ owns selected post-merge publication, deployment and cleanup.
 
 - Promote only explicitly selected task branches.
 - Keep unrelated branches and worktrees outside inspection and cleanup scope.
+- Supply the promotion trigger, tested release branch, and exact assembled
+  commit to the SDLC test phase; leave test selection to the repository runner.
 - Before promotion, identify the selected task's unique linear commit range
   beyond main and release. Check live remote branch and commit publication
   before rewriting it. Preserve shared main and release history; abort a failed
@@ -73,6 +82,8 @@ owns selected post-merge publication, deployment and cleanup.
 
 1. Require clean selected worktrees. Through the promotion helper, establish
    Git ancestry with the eligible automatic rebase and run `git diff --check`.
+   When `refs/heads/release` exists, pass `--release-branch promote/local` to
+   execution and result finalization; otherwise retain `release/local`.
 2. For `promote`, run the helper with `--no-run-operation`.
 3. For `promote-and-deploy`, repeat `--run-operation LOCATION` in order.
    Repeat `--parameter name=value` for required operation inputs; it is invalid
@@ -123,8 +134,8 @@ promotion checks never suppress that boundary. Check results cannot authorize a
 different or dirty commit. Deployment and publication commands come only from
 the repository's declared entries, not from helper-selected script names.
 Preparation-only requires a clean `main` checkout and exits immediately after
-`release/local` is ready, before source preflight, promotion, scope records,
-or deployment.
+the selected local promotion branch is ready, before source preflight,
+promotion, scope records, or deployment.
 
 Use `--result-file PATH` outside the repository to atomically retain the exact
 JSON outcome, including operation receipts and phase durations in seconds. The
@@ -162,7 +173,7 @@ artifacts, and pending-work state. Success prints `OK`; failure reports
 
 ### Completion Gate
 
-- The checkout is clean on `release/local`.
+- The checkout is clean on the reported local promotion branch.
 - Every selected branch is contained in the reported release commit.
 - Every attempted automatic rebase either completed and reported both heads or
   restored the original clean source state before blocking.
@@ -179,7 +190,7 @@ artifacts, and pending-work state. Success prints `OK`; failure reports
 
 Report only:
 
-- `release/local`, exact head, promoted branches, and automatic rebase results
+- local promotion branch, exact head, promoted branches, and automatic rebase results
 - ordered operation outcomes and advisory handoffs when selected
 - pending-work scope
 - blockers or intentionally retained state

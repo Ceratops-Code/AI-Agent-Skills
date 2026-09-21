@@ -35,7 +35,6 @@ REQUEST_FIELDS = {
 }
 GROUP_FIELDS = {"name", "paths"}
 CHECK_FIELDS = {
-    "pytest": {"kind", "nodes"},
     "command": {"kind", "argv"},
     "search": {"kind", "pattern", "paths", "expected_matches"},
 }
@@ -80,7 +79,6 @@ OWNED_ROLES = DISPOSABLE_ROLES | {"retention"}
 SKILL_NAME_RE = re.compile(
     r"^(?![a-z0-9-]*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
 )
-PYTEST_NODE_RE = re.compile(r"^tests/[A-Za-z0-9_./-]+\.py::\S+$")
 def _run_bytes(
     arguments: Sequence[str],
     *,
@@ -146,7 +144,9 @@ def _validate_state_fields(raw: Mapping[str, object]) -> None:
         raise UpdateExecutionError("failed evidence hash is invalid")
 
 
-def _string_list(value: object, label: str) -> list[str]:
+def _string_list(value: object, label: str, *, unique: bool = True) -> list[str]:
+    """Preserve ordered strings; identity lists also require unique entries."""
+
     if (
         not isinstance(value, Sequence)
         or isinstance(value, (str, bytes))
@@ -155,7 +155,7 @@ def _string_list(value: object, label: str) -> list[str]:
     ):
         raise UpdateExecutionError(f"{label} must be a nonempty string list")
     result = list(value)
-    if len(result) != len(set(result)):
+    if unique and len(result) != len(set(result)):
         raise UpdateExecutionError(f"{label} values must be unique")
     return result
 

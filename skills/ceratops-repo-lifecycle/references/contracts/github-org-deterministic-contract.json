@@ -900,18 +900,22 @@
               "org_bypass_secret_scanning_closure_requests",
               "org_review_and_manage_secret_scanning_bypass_requests",
               "org_review_and_manage_secret_scanning_closure_requests",
+              "publish_repository_advisories",
               "read_code_quality",
               "read_code_scanning",
+              "read_repository_advisories",
               "resolve_dependabot_alerts",
               "resolve_secret_scanning_alerts",
               "review_org_code_scanning_dismissal_requests",
               "review_org_dependabot_alert_dismissal_requests",
+              "triage_repository_advisories",
               "view_dependabot_alerts",
               "view_org_code_scanning_dismissal_requests",
               "view_org_dependabot_alert_dismissal_requests",
               "view_secret_scanning_alerts",
               "write_code_quality",
-              "write_code_scanning"
+              "write_code_scanning",
+              "write_repository_advisories"
             ]
           }
         ]

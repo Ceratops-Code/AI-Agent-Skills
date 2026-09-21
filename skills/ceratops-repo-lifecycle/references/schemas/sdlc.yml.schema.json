@@ -191,6 +191,15 @@
             "$ref": "#/$defs/name"
           }
         },
+        "validation-capabilities": {
+          "description": "Validation behavior supplied by this operation and consumed by repository coverage requirements.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/name"
+          }
+        },
         "parameters": {
           "type": "array",
           "uniqueItems": true,

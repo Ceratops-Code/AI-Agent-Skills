@@ -3,8 +3,9 @@
 
 The runner accepts explicit test targets, full-suite, committed-revision,
 manifest, worktree, collection-snapshot, or collection-reconciliation modes.
-Explicit --auto selects PR impact tests in GitHub and all tests locally or on
-push. Worktree mode compares tracked and untracked paths with resolved HEAD. Collection modes preserve every pytest
+Explicit --auto records PR branch context and selects PR impact tests in GitHub;
+local, push and explicitly identified promotion runs select all tests.
+Worktree mode compares tracked and untracked paths with resolved HEAD. Collection modes preserve every pytest
 node identity, including parameter IDs, across structural moves without a
 model. The runner uses Git, the checked-in impact manifest, and pytest through
 argv arrays; it never invokes a shell, network client, model, prompt, agent, or
@@ -30,7 +31,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any
 
-from runner_requests import parse_request
+from runner_requests import TEST_CONTEXT_ENV, parse_request, validate_execution_context
 
 pytest_diagnostics = importlib.import_module("pytest-diagnostics")
 pytest_environment = importlib.import_module("pytest-environment")
@@ -176,6 +177,10 @@ def run_text(
             pytest_environment.isolated_environment(cwd) if is_pytest else nullcontext(None)
         )
         with context as environ:
+            if environ is not None:
+                # A test subprocess must not pass this invocation's promotion
+                # identity to runner calls made by fixtures or nested repos.
+                environ.pop(TEST_CONTEXT_ENV, None)
             result = subprocess.run(
                 list(command), cwd=cwd, env=environ, capture_output=True,
                 text=True, encoding="utf-8", errors="replace", check=False,
@@ -1277,6 +1282,13 @@ def execute(
         else "diff"
     )
     payload = base_payload(mode=mode, base=args.base, head=args.head)
+    if args.context is not None:
+        payload["context"] = args.context
+    context_error = validate_execution_context(args.context, root, preflight_text)
+    if context_error:
+        payload["manifest_errors"] = [context_error]
+        payload["status"] = "configuration-error"
+        return fail_before_tests(CONFIGURATION_EXIT_CODE)
     try:
         manifest = load_manifest(root / "tests" / "test-impact.json")
     except ImpactError as exc:

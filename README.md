@@ -134,7 +134,7 @@ without repository deduplication.
 | `skills/ceratops-repo-lifecycle/references/templates/deploy-skills.py.tmpl` | Authoritative standalone installer copied into compatible skill repositories as `scripts/deploy-skills.py`; invoke it through uv using the scripts project. |
 | `skills/ceratops-repo-lifecycle/references/contracts/repository-validation-contract.json` | Schema-validated repository checks used by compatibility generation and included in repository contract review and validator discovery. |
 | `skills/ceratops-repo-lifecycle/references/contracts/ceratops-compatibility-*-contract.json` | Internal structural contract consumed by compatibility generation/checking, plus a behavioral review rubric for environment setup, tests, and lifecycle orchestration; no external source registry. |
-| `skills/ceratops-repo-lifecycle/references/templates/validate-repository.py.tmpl` and `validate.yml.tmpl` | Repository-neutral validator and CI templates created only when their target files are absent; new validation setups without JavaScript package-manager files also receive locked Markdown dependencies and default rules from the Markdown templates. Existing tooling, Markdown settings, and exclusive validators are preserved. |
+| `skills/ceratops-repo-lifecycle/references/templates/validate-repository.py.tmpl`, `validate.yml.tmpl`, and `run-actionlint.py.tmpl` | Repository-neutral validation templates created only when their target files are absent; new validation setups receive a pinned, checksum-verified actionlint runner, and setups without JavaScript package-manager files also receive locked Markdown dependencies and default rules. Existing tooling, Markdown settings, and exclusive validators are preserved. |
 | `skills/ceratops-repo-lifecycle/scripts/ceratops_repo_compatibility_engine/` | Skill-owned package with the shared compatibility-contract loader, read-only compatibility checks, SDLC-contract validation, rollback-protected Ceratops compatibility application, and version-only bootstrap synchronization; it operates on explicit target repositories and is never copied into them. |
 | `skills/ceratops-repo-lifecycle/references/templates/skill-sections.json.tmpl` | Repository-neutral template for creating a target repository's live `skills/skill-sections.json`; never a live manifest. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Classifies exact affected sets, owns direct-manifest inventory, and invokes one runtime transaction; emits commit-bound completion evidence and can finalize its saved promotion handoff without replaying deployment. |
@@ -159,7 +159,7 @@ without repository deduplication.
 | `skills/ceratops-governance-lifecycle/scripts/rule_graph.py` | Parses canonical AGENTS rules and rejects structural syntax or rule-local explicit-user override escape clauses. |
 | `skills/ceratops-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for compact local audit snapshots, contract evaluation, shared GitHub API access, sanitized evidence, and evidence-gated CodeQL disposition. |
 | `skills/ceratops-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for individual PR operations, opt-in scoped branch/stage/commit preparation and checked draft or fork PR publication in `ensure_pr.py`, bounded standalone review and CI inspectors with caller-owned evidence files, shared readiness-owned CI diagnostics, one-call retry-safe review replies and resolutions, decision-complete gate blockers, single-snapshot terminal Actions outage detection, exact-commit checkpointed shipping, four-proof obsolete-prepared-checkpoint cleanup before automatic resume, scoped pending-work checks, concurrent gates, integrated admin merge, reusable-branch restoration, and terminal cleanup. |
-| `skills/ceratops-repo-lifecycle/scripts/promote-repository.py` | Prepares `release/local`; promotes selected branches with no deployment or an explicit ordered operation selection; or composes promotion into exact-head shipping with ordered release and deploy selections, finalization, and cleanup; checks live publication before rebasing only task commits while preserving shared history; records outcomes, recreating the output directory at save time when needed, and finalizes verified promotion-only or bound deployment results within the task temp root without replay. |
+| `skills/ceratops-repo-lifecycle/scripts/promote-repository.py` | Prepares the local promotion branch, using `release/local` by default or `promote/local` when an authoritative `release` branch occupies that ref namespace; promotes selected branches with no deployment or an explicit ordered operation selection; or composes promotion into exact-head shipping with ordered release and deploy selections, finalization, and cleanup; checks live publication before rebasing only task commits while preserving shared history; records outcomes, recreating the output directory at save time when needed, and finalizes verified promotion-only or bound deployment results within the task temp root without replay. |
 | `skills/ceratops-repo-lifecycle/scripts/manage-pending-work.py` | Records, checks, automatically resumes the retained target commit, and progressively finalizes the exact selected scope; preflight preserves and reports non-cleanup-eligible worktrees, while eligible residual-worktree and identity-matched task-temp cleanup delegates bounded removal to `pending-work-cleanup.py`. |
 | `skills/ceratops-repo-lifecycle/scripts/pending-work-cleanup.py` | Checks named directory boundaries, preserves active skill-update state, and removes selected residual and task-temp trees after clearing read-only Windows files and directories without traversing links. |
 | `skills/ceratops-repo-lifecycle/scripts/action.yml` | GitHub composite action that runs declared validation and tests using the skill-owned SDLC engine; CI defers skill handoffs and retains failure evidence. |
@@ -167,7 +167,7 @@ without repository deduplication.
 | `skills/ceratops-repo-lifecycle/scripts/ship-repository.py` | Prevalidates one SDLC contract and ordered phase selections, runs declared CI test selection against freshly fetched base and exact staged head commits before push, and orchestrates guarded GitHub shipping, main synchronization, per-operation publication and deployment checkpoints, and resumable selected-source cleanup. |
 | `skills/ceratops-repo-lifecycle/scripts/rename-repository-path.py` | Plans or applies tracked file renames and exact filename references; accepts explicit or Git-detected rename pairs, updates relative Markdown links, blocks ambiguous references, preserves the index and text bytes outside replacements, and compensates caught file errors. |
 | `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Source, metadata, runtime-input, contract, and portability validator invoked by source-validate and explicit skill workflows. It accepts optional skill-local `README.md` design documentation and a matching relative README Skills-table link. Full validation and selected skill-lifecycle validation check the deterministic contract against its closed schema, supported command arguments, and existing helper paths. The schema identifies descriptive fields as annotations; validation never executes contract-supplied commands. |
-| `skills/ceratops-skill-lifecycle/scripts/skill-update-workflow.py` | Records allowed files, checks and the original worktree baseline; prepares, verifies and finalizes updates. Its `supersede` command starts a revised request after failure, preserves the original baseline and failed records, and transfers their exact cleanup ownership to the successor. |
+| `skills/ceratops-skill-lifecycle/scripts/skill-update-workflow.py` | Records allowed files, non-test checks and the original worktree baseline; prepares, verifies and finalizes updates without collecting or running tests. Rejects pytest checks and direct test-runner commands; test execution belongs to SDLC. Its `supersede` command starts a revised request after failure, preserves the original baseline and failed records, and transfers their exact cleanup ownership to the successor. |
 | `skills/ceratops-skill-lifecycle/scripts/skill_update_state.py` | Owns update state, filesystem boundaries and cleanup-record validation; successful successor finalization removes only unchanged inherited disposable records and preserves protected inputs. |
 | `skills/ceratops-skill-lifecycle/scripts/fast-change.py` | Classifies exact structured replacements, generates their diff, and owns the eligible direct-release change through declared Markdown lint, exact helper tests, targeted installation, commit, and failure compensation. |
 
@@ -193,12 +193,14 @@ scope before mutation and owns exact-match validation, diff generation,
 application, repository-declared Markdown lint, exact helper tests when
 required, targeted installation, staging, commit, and compensation.
 
-Promotion validates the assembled `release/local` commit.
+Promotion validates the assembled local promotion commit. It uses
+`release/local` by default and `promote/local` when a repository's authoritative
+`release` branch makes the default Git ref impossible.
 `promote-and-deploy` additionally runs explicitly selected `deploy-local`
-entries after that single validation and test pass. Shipping requires both
-results before remote changes and repeats both on the synchronized commit before
-pending publication or deployment. Successful earlier checks do not suppress
-a later lifecycle
+entries after that single validation and test pass. Shipping uses the same
+selected promotion branch. It requires both results before remote changes and
+repeats both on the synchronized commit before pending publication or
+deployment. Successful earlier checks do not suppress a later lifecycle
 boundary. The agent repairs ordinary failures in the selected task worktree,
 commits and retries; a failed check never permits later mutation.
 
@@ -222,7 +224,7 @@ the validator. Managed deployment binds source validation followed by the
 transactional installer. The compatible-repository producer
 adds these skill operations only for source skills in current-format contracts;
 the generic template declares repository validation and an explicit test no-op.
-SDLC v4 also supports separate packages, tools, skills, and hooks. Its schema
+SDLC v4 also supports separate packages, apps, tools, skills, and hooks. Its schema
 lives at `skills/ceratops-repo-lifecycle/references/schemas/sdlc.v4.schema.json`;
 `scripts/repository_operation.py` resolves action locations and returns package
 prerequisites through `--prepare-only`. Registered v4 skill validation and
@@ -716,10 +718,12 @@ for normal use, or `release/local` for an active unpublished preview.
 After changing the installed source snapshot, use the installed lifecycle
 skill's `deploy` action for managed updates or the independent installer for
 an explicit overlay without validation or retirement.
-When shipping a staged batch, reuse the same `release/local` branch name locally
-and remotely by default. Use `$ceratops-repo-lifecycle` `promote` to assemble
-selected reviewed branches without installation, or `promote-and-deploy` to run
-an explicit ordered deploy-operation selection and any returned handoffs. Use
+When shipping a staged batch, reuse the selected promotion branch locally and
+remotely: `release/local` by default, or `promote/local` when an authoritative
+`release` branch occupies that ref namespace. Use `$ceratops-repo-lifecycle`
+`promote` to assemble selected reviewed branches without installation, or
+`promote-and-deploy` to run an explicit ordered deploy-operation selection and
+any returned handoffs. Use
 `ship` for
 the complete
 scoped pre-push check, exact-commit PR publication, readiness and review gates,
@@ -806,7 +810,15 @@ it never runs tests.
 SDLC separately runs `scripts/testing/run-tests.py --auto`: exact PR base/head
 impact selection in GitHub, all tests locally and on push. Every deliverable
 declares its tests, using a no-op when the repository test phase covers them.
-Promotion and shipping require both applicable results before mutation.
+Promotion supplies `--test-trigger promotion` and the assembled commit to the
+SDLC runner. SDLC binds the current release branch and passes
+`CERATOPS_SDLC_TEST_CONTEXT` only to test commands. The test runner verifies
+that branch and commit before collection and preserves full-suite selection.
+PR results record source and destination branches from the GitHub event;
+the CI checkout may be a detached merge commit. Promotion context is removed
+from pytest's environment so nested runner calls cannot inherit it.
+Promotion checks the assembled release commit before requested deployment;
+shipping repeats the applicable checks before remote mutation.
 Run an individual case with
 `uv run --locked scripts/testing/run-tests.py tests/path.py::test_name`.
 Local uncommitted selection is explicit

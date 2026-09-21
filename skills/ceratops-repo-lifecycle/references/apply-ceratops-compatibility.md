@@ -87,7 +87,9 @@ Infer the source identity from stable repository evidence before asking.
   runtime payloads, and maintenance commands.
 - Apply the current SDLC format with explicit tests for every deliverable.
   Preserve target operations when upgrading supported declarations; reject
-  an upgrade whose operation ownership cannot be preserved.
+  an upgrade whose operation ownership cannot be preserved. Preserve an
+  existing JSON-compatible or YAML serialization so target readers keep their
+  supported input form.
 - Block malformed or unsafe existing declarations before mutation. After the
   first write, restore every changed target file after any caught blocker and
   report the failed phase and rollback state.
@@ -100,9 +102,11 @@ Infer the source identity from stable repository evidence before asking.
 - Run repository Python entrypoints through `uv run --locked <script.py>`.
   Keep their project and lock in `scripts`; uv owns Python selection and
   dependency synchronization. Do not inject environment bootstrap code.
-- Generate `scripts/run-tests.py` when Python tests are detected. Preserve
-  repository-owned test implementation; generated Python test commands use the
-  scripts project. CI runs validation and tests without executing skill handoffs.
+- Generate `scripts/run-tests.py` when compatibility infers repository test
+  ownership and selects that runner in SDLC. Preserve explicit SDLC test
+  ownership without creating an unused runner; generated Python test commands
+  use the scripts project. CI runs validation and tests without executing skill
+  handoffs.
 - Review custom validators and configuration-defined scripts to ensure they
   never run tests. Move test execution into SDLC test operations without losing
   target behavior before claiming compatibility. Detection cannot prove this
@@ -139,13 +143,13 @@ Infer the source identity from stable repository evidence before asking.
   source skills exist, write `skills/skill-sections.json`, copy canonical shared
   sections to `skills/sections/`, and remove generated section blocks from
   source skills.
-- Create or reconcile sdlc/sdlc.yml from the owned template, preserving target
-  capabilities with separate validation and tests. For source skills, add
-  `deliverables.skills.validate.ceratops-managed` routing to
-  `ceratops-skill-lifecycle/source-validate` and
-  `deliverables.skills.deploy-local.ceratops-managed` routing to
-  `ceratops-skill-lifecycle/deploy`, plus `standalone` deployment. Preserve
-  target-owned entries; deployment alternatives are not automatic defaults.
+- Create or reconcile `sdlc/sdlc.yml` from the owned v4 template, preserving
+  target capabilities with separate validation and tests. For each source
+  skill, add a named `deliverables.skills.<name>` record whose
+  `actions.validate` hands off to `ceratops-skill-lifecycle/source-validate`
+  and whose `actions.install` hands off to
+  `ceratops-skill-lifecycle/deploy`. Preserve target-owned entries; deployment
+  alternatives are not automatic defaults.
 - When skills exist, make every source `SKILL.md` delta-only, add or align
   `skills/<name>/agents/openai.yaml`, and align the README Skills table without
   changing skill behavior.

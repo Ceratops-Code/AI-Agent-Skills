@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ship ``release/local``, publish its release, deploy locally, and clean.
+"""Ship a supported promotion branch, publish, deploy locally, and clean.
 
 The GitHub helper retains ownership of publication, gates, exact-head merge,
 and synchronization. This wrapper adds checkpointed remote release-publication
@@ -43,6 +43,7 @@ PENDING_MANAGER = SCRIPT_ROOT / "manage-pending-work.py"
 PR_WORKFLOW_ENTRYPOINT = SCRIPT_ROOT / "github_pr_workflow" / "__main__.py"
 DEFAULT_SDLC_CONTRACT = pathlib.Path("sdlc/sdlc.yml")
 RELEASE_BRANCH = "release/local"
+PROMOTION_BRANCHES = (RELEASE_BRANCH, "promote/local")
 
 
 class RepositoryShipError(RuntimeError):
@@ -55,6 +56,21 @@ class RepositoryShipError(RuntimeError):
     ) -> None:
         super().__init__(message)
         self.payload = {"status": "error", "message": message, **(payload or {})}
+
+
+def _local_branch_exists(repo_root: pathlib.Path, branch: str) -> bool:
+    """Return whether one exact local branch exists, rejecting Git failures."""
+
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode not in {0, 1}:
+        raise RepositoryShipError(f"Could not inspect local branch: {branch}")
+    return result.returncode == 0
 
 
 def _operation_ids(value: object, category: str) -> list[str]:
@@ -1064,9 +1080,15 @@ def _synchronized_post_merge_resume(
 def ship_repository(args: argparse.Namespace) -> dict[str, object]:
     """Run complete shipping, release publication, deployment, and cleanup."""
 
-    if args.head_branch != RELEASE_BRANCH:
-        raise RepositoryShipError(f"Head branch must be {RELEASE_BRANCH}.")
     repo_root = args.repo_root.expanduser().resolve(strict=True)
+    if args.head_branch not in PROMOTION_BRANCHES:
+        raise RepositoryShipError(
+            f"Head branch must be one of {', '.join(PROMOTION_BRANCHES)}."
+        )
+    if args.head_branch == "promote/local" and not _local_branch_exists(repo_root, "release"):
+        raise RepositoryShipError(
+            "promote/local is reserved for repositories with an existing release branch."
+        )
     # Moving this process cannot release its parent shell's directory handle.
     # Reject the unsafe caller before any shipping or deployment phase starts.
     if pathlib.Path.cwd().resolve().is_relative_to(SCRIPT_ROOT.parent):
@@ -1362,7 +1384,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--head-branch",
         required=True,
-        help="must be release/local",
+        help="release/local, or promote/local when an existing release branch occupies that namespace",
     )
     parser.add_argument("--base-branch", default="main")
     parser.add_argument("--remote-name", default="origin")

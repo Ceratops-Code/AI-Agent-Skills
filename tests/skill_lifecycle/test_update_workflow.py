@@ -5,7 +5,6 @@ import json
 import os
 import pathlib
 import runpy
-import shlex
 import stat
 import sys
 from contextlib import contextmanager
@@ -220,107 +219,48 @@ def test_supersede_carries_new_maintenance_files_and_subsequent_in_scope_fixes(t
     assert run_skill_update_workflow("finalize", "--state", str(successor)).returncode == 0
 
 
-def test_supersede_refuses_scope_removal_before_importing_revised_tests(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_supersede_refuses_scope_removal_before_executing_revised_checks(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, _, state, _, request, successor, _ = _supersede_case(tmp_path)
     revised = json.loads(request.read_text())
     revised["allowed_paths"] = ["skills/alpha-tool/SKILL.md"]
     revised["change_groups"][0]["paths"] = revised["allowed_paths"]
-    revised["checks"] = [{"kind": "pytest", "nodes": ["tests/test_helper.py::test_helper_value"]}]
+    revised["checks"] = [{"kind": "command", "argv": [sys.executable, "-c", "raise SystemExit(0)"]}]
     request.write_text(json.dumps(revised), encoding="utf-8")
     monkeypatch.syspath_prepend(str(SKILL_UPDATE_WORKFLOW.parent))
     workflow = runpy.run_path(str(SKILL_UPDATE_WORKFLOW))
 
-    def collect(*args):
-        pytest.fail("revised tests imported before scope validation")
+    def execute(*args):
+        pytest.fail("revised checks executed before scope validation")
 
-    monkeypatch.setitem(workflow["command_supersede"].__globals__, "_collect_declared_pytest_nodes", collect)
+    monkeypatch.setitem(workflow["command_supersede"].__globals__, "_run_check", execute)
     with pytest.raises(workflow["UpdateExecutionError"], match="cannot remove prepared scope"):
         workflow["command_supersede"](state, request, successor)
     assert not successor.exists()
 
 
-@pytest.mark.parametrize(
-    "outcome", [
-        "passed", "collection_failed", "command_failed", "pytest_failed",
-        "cleanup_failed", "pytest_setup_failed", "pytest_teardown_failed",
-        "pytest_multiple_failed", "pytest_long_failed", "pytest_many_failed",
-        "pytest_report_missing", "pytest_report_invalid",
-    ]
-)
-def test_skill_update_scratch_is_owned_through_collection_and_verification(
+@pytest.mark.parametrize("outcome", ["passed", "scope_only", "command_failed", "cleanup_failed"])
+def test_skill_update_scratch_is_owned_through_verification(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, outcome: str,
 ) -> None:
     case_root = tmp_path / "paths with spaces"
     case_root.mkdir()
     worktree, scope, task_temp_root = prepare_skill_update_workflow_worktree(case_root)
     log = scope / "scratch-paths.jsonl"
-    caller_temp = scope / "caller pytest"
-    caller_temp.mkdir()
-    sentinel = caller_temp / "keep.txt"
-    sentinel.write_text("caller-owned", encoding="utf-8")
     retained = task_temp_root / "keep.txt"
     retained.write_text("unrelated", encoding="utf-8")
     monkeypatch.setenv("SCRATCH_CHECK_LOG", str(log))
-    multiple = outcome in {"pytest_multiple_failed", "pytest_many_failed"}
-    inherited_options = f"--maxfail={0 if multiple else 1} --basetemp " + shlex.quote(str(caller_temp))
-    monkeypatch.setenv("PYTEST_ADDOPTS", inherited_options)
-    monkeypatch.setenv("PYTEST_DEBUG_TEMPROOT", str(caller_temp))
-    probe = (
-        "import json, os, pathlib, stat, tempfile\n"
-        "def record(phase, pytest_path=None):\n"
-        "    folder = pathlib.Path(tempfile.mkdtemp(prefix='generated-'))\n"
-        "    generated = folder / 'readonly.txt'\n"
-        "    generated.write_text('generated', encoding='utf-8')\n"
-        "    generated.chmod(stat.S_IREAD)\n"
-        "    value = {'phase': phase, 'folder': str(folder), 'root': tempfile.gettempdir(), "
-        "'pytest': str(pytest_path) if pytest_path else None}\n"
-        "    with pathlib.Path(os.environ['SCRATCH_CHECK_LOG']).open('a', encoding='utf-8') as log:\n"
-        "        log.write(json.dumps(value) + '\\n')\n"
-    )
-    test_file = worktree / "tests" / "test_helper.py"
-    case_count = 20 if outcome == "pytest_many_failed" else 2 if multiple else 1
-    fixture = (
-        "import pytest\n"
-        "@pytest.fixture\n"
-        "def diagnostic_fixture():\n"
-        + ("    raise RuntimeError('exact setup failure')\n" if outcome == "pytest_setup_failed" else "")
-        + "    yield\n"
-        + ("    raise RuntimeError('exact teardown failure')\n" if outcome == "pytest_teardown_failed" else "")
-    )
-    if outcome == "pytest_long_failed":
-        assertion = (
-            "    print('captured-noise-' * 6000)\n"
-            "    raise ValueError('visible-error ' + 'x' * 40000 + ' complete-error-tail')\n"
-        )
-    elif multiple:
-        assertion = "    assert index < 0, f'exact case {index} failure'\n"
-    else:
-        failing = outcome in {"pytest_failed", "pytest_report_missing", "pytest_report_invalid"}
-        assertion = f"    assert {not failing}\n"
-    test_file.write_text(
-        probe + "record('collection')\n"
-        + ("raise RuntimeError('collection failed')\n" if outcome == "collection_failed" else "")
-        + fixture
-        + f"@pytest.mark.parametrize('index', range({case_count}), ids=lambda value: f'case.{{value}}::part')\n"
-        + "def test_helper_value(tmp_path, diagnostic_fixture, index):\n"
-        + "    record('test', tmp_path)\n"
-        + assertion,
-        encoding="utf-8", newline="\n",
-    )
-    if outcome in {"pytest_report_missing", "pytest_report_invalid"}:
-        report_action = "unlink()" if outcome == "pytest_report_missing" else "write_text('<broken', encoding='utf-8')"
-        (worktree / "tests" / "conftest.py").write_text(
-            "import pathlib, pytest\n"
-            "@pytest.hookimpl(wrapper=True, tryfirst=True)\n"
-            "def pytest_sessionfinish(session):\n"
-            "    yield\n"
-            "    if session.config.option.xmlpath:\n"
-            f"        pathlib.Path(session.config.option.xmlpath).{report_action}\n",
-            encoding="utf-8", newline="\n",
-        )
+    # Non-test checks must not parse or rewrite pytest's inherited settings.
+    monkeypatch.setenv("PYTEST_ADDOPTS", "'unterminated")
     check_script = scope / "check.py"
     check_script.write_text(
-        probe + "record('command')\nprint('probe-finished')\n"
+        "import json, os, pathlib, stat, tempfile\n"
+        "folder = pathlib.Path(tempfile.mkdtemp(prefix='generated-'))\n"
+        "generated = folder / 'readonly.txt'\n"
+        "generated.write_text('generated', encoding='utf-8')\n"
+        "generated.chmod(stat.S_IREAD)\n"
+        "value = {'folder': str(folder), 'root': tempfile.gettempdir(), 'options': os.environ['PYTEST_ADDOPTS']}\n"
+        "pathlib.Path(os.environ['SCRATCH_CHECK_LOG']).write_text(json.dumps(value) + '\\n', encoding='utf-8')\n"
+        "print('probe-finished')\n"
         + f"raise SystemExit({7 if outcome == 'command_failed' else 0})\n",
         encoding="utf-8", newline="\n",
     )
@@ -335,25 +275,15 @@ def test_skill_update_scratch_is_owned_through_collection_and_verification(
         "disposable_artifacts": ["request", "state", "evidence"],
         "selected_skills": ["alpha-tool"], "allowed_paths": [source_path],
         "change_groups": [{"name": "helper", "paths": [source_path]}],
-        "checks": [
+        "checks": [] if outcome == "scope_only" else [
             {"kind": "command", "argv": [sys.executable, str(check_script)]},
-            {"kind": "pytest", "nodes": ["tests/test_helper.py::test_helper_value"]},
         ],
     }) + "\n", encoding="utf-8", newline="\n")
     prepared = run_skill_update_workflow(
         "prepare", "--request", str(request_path), "--state", str(state_path),
     )
-    records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
-    assert len(records) == 1
-    assert not pathlib.Path(records[0]["root"]).exists()
-    assert sentinel.read_text(encoding="utf-8") == "caller-owned"
-    if outcome == "collection_failed":
-        assert prepared.returncode == 2
-        assert "pytest node collection failed" in prepared.stderr
-        assert not state_path.exists() and not evidence_path.exists()
-        assert sorted(path.name for path in task_temp_root.iterdir()) == ["keep.txt", "request.json"]
-        return
     assert prepared.returncode == 0, prepared.stderr
+    assert not log.exists(), "prepare must not execute checks"
     (worktree / source_path).write_text("VALUE = 2\n", encoding="utf-8", newline="\n")
     if outcome == "cleanup_failed":
         monkeypatch.syspath_prepend(str(SKILL_UPDATE_WORKFLOW.parent))
@@ -374,73 +304,29 @@ def test_skill_update_scratch_is_owned_through_collection_and_verification(
         verified = run_skill_update_workflow(
             "verify", "--state", str(state_path), "--evidence-output", str(evidence_path),
         )
-        assert verified.returncode == (0 if outcome == "passed" else 2), verified.stderr
+        assert verified.returncode == (2 if outcome == "command_failed" else 0), verified.stderr
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-    assert evidence["status"] == ("passed" if outcome == "passed" else "failed")
-    assert evidence["checks"][0]["returncode"] == (7 if outcome == "command_failed" else 0)
-    assert "probe-finished" in evidence["checks"][0]["stdout"]
-    if outcome.startswith("pytest_"):
-        check = evidence["checks"][-1]
-        assert check["returncode"] == 1
-        assert verified.stdout == ""
-        assert "pytest check failed (exit 1)" in verified.stderr
-        assert len(verified.stderr) < 4500
-        assert len(verified.stderr.splitlines()) == 1
-        if outcome in {"pytest_report_missing", "pytest_report_invalid"}:
-            assert check["failures"] == []
-            assert "pytest failure report is" in verified.stderr
-            assert "assert False" in verified.stderr
-            assert "test_helper_value" in verified.stderr
-            assert check["failure_diagnostic"]
-        else:
-            failures = check["failures"]
-            assert len(failures) == case_count
-            assert failures[0]["test"].endswith("test_helper_value[case.0::part]")
-            assert failures[0]["test"] in verified.stderr
-            assert failures[0]["detail"]
-            expected_error = {
-                "pytest_failed": "assert False",
-                "pytest_setup_failed": "RuntimeError: exact setup failure",
-                "pytest_teardown_failed": "RuntimeError: exact teardown failure",
-                "pytest_multiple_failed": "exact case 0 failure",
-                "pytest_many_failed": "exact case 0 failure",
-                "pytest_long_failed": "ValueError: visible-error",
-            }[outcome]
-            assert expected_error in verified.stderr
-            if multiple:
-                assert all(f"exact case {index} failure" in failure["message"] for index, failure in enumerate(failures))
-                assert failures[1]["test"] in verified.stderr
-            if outcome == "pytest_long_failed":
-                assert "captured-noise-" not in verified.stderr
-                assert "complete-error-tail" in failures[0]["message"]
-                assert "complete-error-tail" in failures[0]["detail"]
-                assert len(failures[0]["message"]) > 32000
-                assert "output omitted; full details in evidence" in verified.stderr
-    if outcome == "passed":
-        assert verified.stdout == "OK\n" and verified.stderr == ""
-        assert evidence["checks"][-1]["failures"] == []
-    if outcome == "cleanup_failed":
-        assert len(evidence["checks"]) == 2
-        assert all(check["returncode"] == 0 for check in evidence["checks"])
-        assert evidence["failures"] == ["simulated scratch cleanup failure"]
-    records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
-    assert sum(record["phase"] == "collection" for record in records) == (1 if outcome == "command_failed" else 2)
-    assert sum(record["phase"] == "command" for record in records) == 1
-    expected_runs = 0 if outcome in {"command_failed", "pytest_setup_failed"} else case_count
-    assert sum(record["phase"] == "test" for record in records) == expected_runs
-    for record in records:
-        scratch = pathlib.Path(record["root"])
+    passed = outcome in {"passed", "scope_only"}
+    assert evidence["status"] == ("passed" if passed else "failed")
+    if outcome == "scope_only":
+        assert evidence["checks"] == [] and not log.exists()
+    else:
+        assert evidence["checks"][0]["returncode"] == (7 if outcome == "command_failed" else 0)
+        assert "probe-finished" in evidence["checks"][0]["stdout"]
+        records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        assert len(records) == 1
+        scratch = pathlib.Path(records[0]["root"])
         assert scratch.parent == task_temp_root
-        assert pathlib.Path(record["folder"]).is_relative_to(scratch)
+        assert pathlib.Path(records[0]["folder"]).is_relative_to(scratch)
+        assert records[0]["options"] == "'unterminated"
         assert not scratch.exists()
-        if record["pytest"]:
-            assert pathlib.Path(record["pytest"]).is_relative_to(scratch)
+    if outcome == "cleanup_failed":
+        assert evidence["failures"] == ["simulated scratch cleanup failure"]
     assert not list(task_temp_root.glob("check-*"))
     assert not list(task_temp_root.glob(".check-*.cleanup.json"))
-    assert os.environ["PYTEST_ADDOPTS"] == inherited_options
-    assert sentinel.read_text(encoding="utf-8") == "caller-owned"
+    assert os.environ["PYTEST_ADDOPTS"] == "'unterminated"
     finalized = run_skill_update_workflow("finalize", "--state", str(state_path))
-    if outcome == "passed":
+    if passed:
         assert finalized.returncode == 0, finalized.stderr
         assert sorted(path.name for path in task_temp_root.iterdir()) == ["keep.txt"]
     else:
@@ -491,7 +377,7 @@ def test_skill_update_scratch_handles_exceptions_and_cleanup_errors(
         assert not list(tmp_path.glob("check-*"))
 
 
-@pytest.mark.parametrize("invalid", ["path", "json", "options"])
+@pytest.mark.parametrize("invalid", ["path", "json"])
 def test_skill_update_scratch_preserves_unowned_paths(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, invalid: str,
 ) -> None:
@@ -509,16 +395,14 @@ def test_skill_update_scratch_preserves_unowned_paths(
         marker.write_text(json.dumps({
             "schema": module["SCRATCH_SCHEMA"], "path": str(outside),
         }), encoding="utf-8")
-    elif invalid == "json":
-        marker.write_text("{", encoding="utf-8")
     else:
-        monkeypatch.setenv("PYTEST_ADDOPTS", "'unterminated")
+        marker.write_text("{", encoding="utf-8")
     with pytest.raises(OSError):
         with module["check_environment"](root):
-            pytest.fail("invalid scratch ownership or options were accepted")
+            pytest.fail("invalid scratch ownership was accepted")
     assert sentinel.read_text(encoding="utf-8") == "keep"
     assert unrecorded.is_dir()
-    assert set(root.iterdir()) == ({unrecorded} if invalid == "options" else {unrecorded, marker})
+    assert set(root.iterdir()) == {unrecorded, marker}
 
 
 @pytest.mark.parametrize("declaration", [
@@ -774,8 +658,11 @@ def test_skill_update_workflow_accepts_new_shared_section_source(
     assert not task_temp_root.exists()
 
 
+@pytest.mark.parametrize(
+    "created_path", [None, "scripts/new-helper.py", "skills/sections/new-section.md"]
+)
 def test_skill_update_workflow_amends_failed_scope_and_reuses_only_searches(
-    tmp_path: pathlib.Path,
+    tmp_path: pathlib.Path, created_path: str | None,
 ) -> None:
     worktree, scope, task_temp_root = prepare_skill_update_workflow_worktree(
         tmp_path
@@ -811,7 +698,7 @@ def test_skill_update_workflow_amends_failed_scope_and_reuses_only_searches(
     request_path = task_temp_root / "request.json"
     state_path = task_temp_root / "state.json"
     evidence_path = task_temp_root / "evidence.json"
-    request = {
+    request: dict[str, Any] = {
         "schema": "ceratops-skill-update-request.v2",
         "repo_root": str(worktree),
         "task_temp_root": str(task_temp_root),
@@ -851,6 +738,10 @@ def test_skill_update_workflow_amends_failed_scope_and_reuses_only_searches(
             },
         ],
     }
+    if created_path is not None:
+        (worktree / created_path).parent.mkdir(parents=True, exist_ok=True)
+        request["allowed_paths"].append(created_path)
+        request["change_groups"][0]["paths"].append(created_path)
     request_path.write_text(
         json.dumps(request) + "\n",
         encoding="utf-8",
@@ -865,6 +756,8 @@ def test_skill_update_workflow_amends_failed_scope_and_reuses_only_searches(
 
     alpha = worktree / "skills" / "alpha-tool" / "scripts" / "tool.py"
     alpha.write_text("VALUE = 2\n", encoding="utf-8", newline="\n")
+    if created_path is not None:
+        (worktree / created_path).write_text("# Approved source\n", encoding="utf-8", newline="\n")
     failed = run_skill_update_workflow(
         "verify",
         "--state",
@@ -935,6 +828,11 @@ def test_skill_update_workflow_amends_failed_scope_and_reuses_only_searches(
     assert amended.returncode == 0, amended.stderr
     amended_state = json.loads(state_path.read_text(encoding="utf-8"))
     assert amended_state["head"] == prepared_head
+    assert amended_state["baseline_dirty"] == prepared_state["baseline_dirty"]
+    for path, baseline in prepared_state["baseline_targets"].items():
+        assert amended_state["baseline_targets"][path] == baseline
+    if created_path is not None:
+        assert not run_git(worktree, "ls-files", "--", created_path).stdout.strip()
     assert amended_state["verification"]["status"] == "pending"
     assert amended_state["verification"]["generation"] == 0
     beta_baseline = amended_state["baseline_targets"][beta_path]
@@ -955,10 +853,10 @@ def test_skill_update_workflow_amends_failed_scope_and_reuses_only_searches(
     )
     assert verified.returncode == 0, verified.stderr
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-    assert evidence["changed_paths"] == [
-        "skills/alpha-tool/scripts/tool.py",
-        beta_path,
-    ]
+    expected_paths = ["skills/alpha-tool/scripts/tool.py", beta_path]
+    if created_path is not None:
+        expected_paths.append(created_path)
+    assert evidence["changed_paths"] == sorted(expected_paths)
     assert evidence["checks"][0]["reused"] is True
     assert evidence["checks"][0]["source_evidence_sha256"] == (
         failed_evidence_sha256
@@ -983,6 +881,27 @@ def test_skill_update_workflow_amends_failed_scope_and_reuses_only_searches(
     assert not task_temp_root.exists()
 
 
+@pytest.mark.parametrize("unapproved_path", ["scripts/unapproved.py", "skills/sections/unapproved.md"])
+def test_amend_rejects_new_untracked_ancillary_files(
+    tmp_path: pathlib.Path, unapproved_path: str,
+) -> None:
+    worktree, request, state, _, _, _, _ = _supersede_case(tmp_path, new_maintenance=True)
+    target = worktree / unapproved_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("# Not previously approved\n", encoding="utf-8", newline="\n")
+    declaration = json.loads(request.read_text(encoding="utf-8"))
+    declaration["allowed_paths"].append(unapproved_path)
+    declaration["change_groups"][0]["paths"].append(unapproved_path)
+    request.write_text(json.dumps(declaration), encoding="utf-8")
+    before = {path: path.read_bytes() for path in state.parent.iterdir() if path.is_file()}
+
+    result = run_skill_update_workflow("amend", "--request", str(request), "--state", str(state))
+
+    assert result.returncode == 2
+    assert "allowed path must be" in result.stderr and unapproved_path in result.stderr
+    assert {path: path.read_bytes() for path in state.parent.iterdir() if path.is_file()} == before
+
+
 def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -991,9 +910,11 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
     baseline.write_text("keep me\n", encoding="utf-8", newline="\n")
     check_log = scope / "check.log"
     check_script = scope / "check-once.py"
+    command_arguments = ["pytest", "--flag", "pytest", "--flag", "last"]
     check_script.write_text(
         "import pathlib\n"
         "import sys\n"
+        f"assert sys.argv[1:] == {command_arguments!r}\n"
         "path = pathlib.Path(__file__).with_name('check.log')\n"
         "prior = path.read_text(encoding='utf-8') if path.exists() else ''\n"
         "path.write_text(prior + 'run\\n', encoding='utf-8')\n"
@@ -1004,7 +925,7 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
     request_path = task_temp_root / "request.json"
     state_path = task_temp_root / "state.json"
     evidence_path = task_temp_root / "evidence.json"
-    request = {
+    request: dict[str, Any] = {
         "schema": "ceratops-skill-update-request.v2",
         "repo_root": str(worktree),
         "task_temp_root": str(task_temp_root),
@@ -1027,11 +948,7 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
                 "paths": ["skills/alpha-tool/scripts/tool.py"],
                 "expected_matches": 0,
             },
-            {"kind": "command", "argv": [sys.executable, str(check_script)]},
-            {
-                "kind": "pytest",
-                "nodes": ["tests/test_helper.py::test_helper_value"],
-            },
+            {"kind": "command", "argv": [sys.executable, str(check_script), *command_arguments]},
         ],
     }
     request_path.write_text(
@@ -1042,30 +959,63 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
     invalid_request_path = task_temp_root / "invalid-request.json"
     invalid_state_path = task_temp_root / "invalid-state.json"
     invalid_evidence_path = task_temp_root / "invalid-evidence.json"
-    invalid_request = json.loads(json.dumps(request))
-    invalid_request["evidence_output"] = str(invalid_evidence_path)
-    invalid_request["checks"][-1]["nodes"] = [
-        "tests/test_helper.py::test_missing_helper_value"
-    ]
-    invalid_request_path.write_text(
-        json.dumps(invalid_request) + "\n",
+    import_marker = scope / "unexpected-test-import"
+    (worktree / "tests/test_helper.py").write_text(
+        f"from pathlib import Path\nPath({str(import_marker)!r}).touch()\n",
         encoding="utf-8",
-        newline="\n",
     )
-    invalid_prepare = run_skill_update_workflow(
-        "prepare",
-        "--request",
-        str(invalid_request_path),
-        "--state",
-        str(invalid_state_path),
-    )
-    assert invalid_prepare.returncode == 2
-    assert invalid_prepare.stdout == ""
-    assert "pytest node collection failed" in invalid_prepare.stderr
-    assert "test_missing_helper_value" in invalid_prepare.stderr
-    assert not invalid_state_path.exists()
-    assert not invalid_evidence_path.exists()
-    assert invalid_request_path.is_file()
+    rejected_checks = [
+        {"kind": "pytest", "nodes": ["tests/test_helper.py::test_helper_value"]},
+        *[{"kind": "command", "argv": argv} for argv in (
+            [sys.executable, "-m", "pytest"],
+            [sys.executable, "-I", "-m", "pytest", "--collect-only"],
+            [sys.executable, "scripts/testing/run-tests.py", "--all"],
+            ["pytest", "tests/test_helper.py"],
+            ["uv", "run", "--with", "pytest", "python", "-m", "pytest"],
+            ["uv", "run", "--with=pytest", "python", "-m", "pytest"],
+            ["uv", "run", "--locked", "scripts/testing/run-tests.py", "--auto"],
+        )],
+    ]
+    for rejected_check in rejected_checks:
+        invalid_request = json.loads(json.dumps(request))
+        invalid_request["evidence_output"] = str(invalid_evidence_path)
+        invalid_request["checks"] = [rejected_check]
+        invalid_request_path.write_text(json.dumps(invalid_request), encoding="utf-8")
+        invalid_prepare = run_skill_update_workflow(
+            "prepare", "--request", str(invalid_request_path), "--state", str(invalid_state_path),
+        )
+        assert invalid_prepare.returncode == 2, invalid_prepare.stderr
+        assert "repository SDLC tests" in invalid_prepare.stderr
+        assert not import_marker.exists()
+        assert not invalid_state_path.exists() and not invalid_evidence_path.exists()
+
+    for field in ("selected_skills", "allowed_paths"):
+        duplicate_request = json.loads(json.dumps(request))
+        duplicate_request[field] *= 2
+        invalid_request_path.write_text(json.dumps(duplicate_request), encoding="utf-8")
+        rejected = run_skill_update_workflow(
+            "prepare", "--request", str(invalid_request_path), "--state", str(invalid_state_path),
+        )
+        assert rejected.returncode == 2, rejected.stderr
+        assert f"{field} values must be unique" in rejected.stderr
+        assert not invalid_state_path.exists()
+
+    for arguments, error in (
+        ([], "nonempty string list"),
+        ("echo", "nonempty string list"),
+        ([sys.executable, 42], "nonempty string list"),
+        ([sys.executable, ""], "nonempty string list"),
+        ([sys.executable, "\0"], "contains NUL"),
+    ):
+        malformed_request = json.loads(json.dumps(request))
+        malformed_request["checks"][1]["argv"] = arguments
+        invalid_request_path.write_text(json.dumps(malformed_request), encoding="utf-8")
+        rejected = run_skill_update_workflow(
+            "prepare", "--request", str(invalid_request_path), "--state", str(invalid_state_path),
+        )
+        assert rejected.returncode == 2, rejected.stderr
+        assert error in rejected.stderr
+        assert not invalid_state_path.exists()
 
     prepared = run_skill_update_workflow(
         "prepare",
@@ -1079,6 +1029,7 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["schema"] == "ceratops-skill-update-state.v2"
     assert "preexisting.txt" in state["baseline_dirty"]
+    assert state["checks"][1]["argv"] == request["checks"][1]["argv"]
     incomplete = run_skill_update_workflow(
         "finalize",
         "--state",
@@ -1148,10 +1099,11 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
     assert [check["kind"] for check in evidence["checks"]] == [
         "search",
         "command",
-        "pytest",
     ]
     assert evidence["checks"][0]["actual_matches"] == 0
     assert evidence["checks"][1]["stdout"] == "מלא\n"
+    assert evidence["checks"][1]["argv"] == request["checks"][1]["argv"]
+    assert not import_marker.exists()
     assert check_log.read_text(encoding="utf-8").splitlines() == ["run"]
     assert baseline.read_text(encoding="utf-8") == "keep me\n"
 

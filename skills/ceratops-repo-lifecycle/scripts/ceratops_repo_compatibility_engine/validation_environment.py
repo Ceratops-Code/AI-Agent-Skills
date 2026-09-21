@@ -20,7 +20,6 @@ from typing import Any
 import tomllib
 import yaml
 
-from .python_tests import discover_python_tests
 from .python_tool_configuration import project_text
 
 
@@ -28,6 +27,7 @@ def runtime_files(
     root: pathlib.Path, bundle: pathlib.Path, contract: Mapping[str, Any],
     checks: list[dict[str, Any]], *, planned_files: Mapping[str, str] | None = None,
     has_python_skills: bool = False,
+    generate_python_test_runner: bool = False,
 ) -> dict[pathlib.Path, str]:
     """Render repository tooling declarations without copying the SDLC engine."""
 
@@ -35,7 +35,9 @@ def runtime_files(
     planned_files = planned_files or {}
     files: dict[pathlib.Path, str] = {}
     dependencies: set[str] = set()
-    if discover_python_tests(root, contract["python_test_detection"]):
+    # Preserved runners own their framework dependencies. Only the runner this
+    # transaction generates has a known pytest dependency.
+    if generate_python_test_runner:
         dependencies.add("pytest")
     for check in checks:
         command = check["command"]
@@ -55,6 +57,13 @@ def runtime_files(
             raise RuntimeError("existing validator project must declare: " + ", ".join(sorted(missing)))
     if not project.is_file() or project.read_text(encoding="utf-8") != rendered:
         files[project] = rendered
+    surface = contract["surfaces"]["actionlint_runner"]
+    runner = root / surface["path"]
+    if runner.is_symlink() or (runner.exists() and not runner.is_file()):
+        raise RuntimeError("existing actionlint runner must be a regular file")
+    if not runner.is_file():
+        template = bundle / "references/templates" / surface["template"]
+        files[runner] = template.read_text(encoding="utf-8")
     ignore = root / runtime["project"] / ".gitignore"
     existing_ignore = ignore.read_text(encoding="utf-8") if ignore.is_file() else ""
     missing_ignore = [value for value in runtime["ignored_paths"] if value not in existing_ignore.splitlines()]

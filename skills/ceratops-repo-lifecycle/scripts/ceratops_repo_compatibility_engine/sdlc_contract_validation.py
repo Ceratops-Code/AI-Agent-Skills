@@ -19,10 +19,10 @@ import yaml
 
 SKILL_ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCHEMA = SKILL_ROOT / "references" / "schemas" / "sdlc.yml.schema.json"
-# Compatibility application still owns v3. V4 is an independently supported
-# typed-deliverable format and must not silently convert existing contracts.
+# Compatibility application owns v4. Older supported formats remain readable
+# and executable, but must not be converted without explicit action ownership.
 V4_SCHEMA = SCHEMA.with_name("sdlc.v4.schema.json")
-CURRENT_VERSION = 3
+CURRENT_VERSION = 4
 VERSION_SCHEMAS = {
     1: SCHEMA.with_name("sdlc.v1.schema.json"),
     2: SCHEMA.with_name("sdlc.v2.schema.json"),
@@ -38,11 +38,12 @@ CURRENT_OPERATION_RE = re.compile(
 V1_OPERATION_RE = re.compile(r"^(deploy|release)\.operations\.[a-z][a-z0-9_-]*$")
 V4_OPERATION_RE = re.compile(
     rf"^(?:repository\.actions\.(?P<repository>bootstrap|validate|test|test-selection)|"
-    rf"deliverables\.(?P<kind>packages|tools|skills|hooks)\."
+    rf"deliverables\.(?P<kind>packages|apps|tools|skills|hooks)\."
     rf"(?P<name>{NAME})\.actions\.(?P<action>validate|test|build|install|publish|verify-publish))$"
 )
 V4_ACTIONS_BY_KIND = {
     "packages": frozenset({"validate", "test", "build", "publish", "verify-publish"}),
+    "apps": frozenset({"validate", "test", "install", "publish", "verify-publish"}),
     "tools": frozenset({"validate", "test", "install", "publish", "verify-publish"}),
     "skills": frozenset({"validate", "test", "install"}),
     "hooks": frozenset({"validate", "test", "install"}),
@@ -56,6 +57,12 @@ V4_ACTION_CATEGORIES = {
     "install": "deploy-local",
     "publish": "publish",
     "verify-publish": "verify-publish",
+}
+V4_RESULT_SCHEMAS = {
+    "validate": "ceratops-repository-stage-result.v1",
+    "test": "ceratops-repository-stage-result.v1",
+    "build": "ceratops-build-result.v1",
+    "install": "ceratops-deployment-result.v1",
 }
 
 
@@ -165,8 +172,8 @@ def migration_proposal(
         "current_version": version,
         "recommended_version": CURRENT_VERSION,
         "reason": (
-            "Version 3 separates validation and tests, requires deliverable tests, "
-            "and supports explicit no-op operations; versions 1 and 2 remain executable."
+            "Version 4 uses typed deliverables and explicit action ownership while "
+            "keeping validation and tests separate; versions 1 through 3 remain executable."
         ),
     }
 
@@ -282,8 +289,27 @@ def _v4_semantic_errors(value: Mapping[str, Any]) -> list[str]:
                 errors.append(
                     f"handoff must be the single final step at {owner}.actions.{action_name}"
                 )
+            declared_result = action.get("result-schema")
+            if declared_result is not None:
+                expected_result = V4_RESULT_SCHEMAS.get(action_name)
+                if expected_result is None:
+                    errors.append(
+                        f"result-schema is not supported at {owner}.actions.{action_name}"
+                    )
+                elif declared_result != expected_result:
+                    errors.append(
+                        f"{owner}.actions.{action_name} result-schema must be "
+                        f"{expected_result}"
+                    )
+                steps = action.get("steps", [])
+                if not steps or "run" not in steps[-1]:
+                    errors.append(
+                        f"result-schema requires a final run step at "
+                        f"{owner}.actions.{action_name}"
+                    )
     path_fields = {
         "packages": ("source", "project"),
+        "apps": ("source", "manifest"),
         "tools": ("source", "manifest"),
         "skills": ("source",),
         "hooks": ("source",),

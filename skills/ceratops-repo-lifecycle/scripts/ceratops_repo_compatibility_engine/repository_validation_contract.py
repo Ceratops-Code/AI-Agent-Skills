@@ -60,6 +60,23 @@ def load_validation_contract() -> dict[str, Any]:
         error = errors[0]
         pointer = "/" + "/".join(str(part) for part in error.absolute_path)
         raise RuntimeError(f"{CONTRACT_PATH.name} {pointer}: {error.message}")
+    coverage_seen: set[str] = set()
+    for requirement in contract["coverage_requirements"]:
+        requirement_id = requirement["id"]
+        if requirement_id in coverage_seen:
+            raise RuntimeError(
+                f"duplicate repository-validation coverage id: {requirement_id}"
+            )
+        coverage_seen.add(requirement_id)
+        paths = [
+            path
+            for condition in requirement["when"]
+            for path in condition["value"]
+        ]
+        if any(not _relative_path(path) for path in paths):
+            raise RuntimeError(
+                f"repository-validation coverage {requirement_id} has an unsafe path"
+            )
     seen: set[str] = set()
     for check in contract["checks"]:
         check_id = check["id"]

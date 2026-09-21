@@ -121,7 +121,12 @@ VALIDATION_ANNOTATION_FIELDS = frozenset({"root.captured_on", "root.source_doc_s
 VALIDATION_EXECUTABLE_FIELDS = frozenset(
     {
         "root.contract_format_version", "root.kind", "root.name",
-        "root.source_docs_ref", "root.checks",
+        "root.source_docs_ref", "root.coverage_requirements", "root.checks",
+        "def:coverageRequirement.id", "def:coverageRequirement.when",
+        "def:coverageRequirement.operation_category",
+        "def:coverageRequirement.required_capabilities",
+        "def:coverageRequirement.required_prerequisites",
+        "def:coverageRequirement.require_repository_entrypoint",
         "def:check.id", "def:check.when", "def:check.unless",
         "def:check.command", "def:check.cwd", "def:check.exclusive",
         "def:packageScript.kind", "def:packageScript.manager", "def:packageScript.value",

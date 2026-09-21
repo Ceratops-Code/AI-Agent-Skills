@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
 import pathlib
+import runpy
 import stat
 import subprocess
 import sys
@@ -48,15 +50,20 @@ def test_invalid_explicit_selection_never_runs_tests(test_runner_module: Any, tm
     assert payload(capsys)["pytest"]["outcome"] == "not-run"
 
 
-@pytest.mark.parametrize("context", ["local", "push", "pull_request", "malformed", "unsupported"])
+@pytest.mark.parametrize("context", ["local", "push", "pull_request", "malformed", "unsupported", "missing_branch"])
 def test_auto_uses_explicit_ci_context_and_preserves_local_full_selection(
     test_runner_module: Any, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: Any, context: str,
 ) -> None:
     execution = DeterministicExecution(test_runner_module, b"M\0tools/ceratops_tool_manager/cli.py\0")
+    monkeypatch.delenv("CERATOPS_SDLC_TEST_CONTEXT", raising=False)
     monkeypatch.setenv("GITHUB_ACTIONS", "false" if context == "local" else "true")
-    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request" if context == "malformed" else context)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request" if context in {"malformed", "missing_branch"} else context)
+    monkeypatch.setenv("GITHUB_REF_NAME", "main")
     event = tmp_path / "event.json"
-    event.write_text(json.dumps({"pull_request": {"base": {"sha": BASE}, "head": {"sha": HEAD}}})
+    event.write_text(json.dumps({"pull_request": {
+        "base": {"sha": BASE, "ref": "" if context == "missing_branch" else "main"},
+        "head": {"sha": HEAD, "ref": "codex/task"},
+    }})
                      if context != "malformed" else "{}", encoding="utf-8")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
     # Real selection, bounded collection fixture: the execution contract under test
@@ -68,17 +75,150 @@ def test_auto_uses_explicit_ci_context_and_preserves_local_full_selection(
     code = test_runner_module.execute(["--auto", "--diagnostic-output", str(tmp_path / "failure.json")],
                                       repo_root=ROOT, text_runner=commands, bytes_runner=execution.bytes)
     result = payload(capsys)
-    if context in {"malformed", "unsupported"}:
+    if context in {"malformed", "unsupported", "missing_branch"}:
         assert code != 0 and not execution.final_pytest
         assert result["status"] == "configuration-error"
     elif context == "pull_request":
         assert code == 0
         assert (result["base"], result["head"]) == (BASE, HEAD)
+        assert result["context"] == {
+            "trigger": "pull_request", "source_branch": "codex/task", "target_branch": "main",
+        }
         assert result["pytest_targets"] == ["tests/tool_manager"]
     else:
         assert code == 0 and result["full_suite"]
+        assert result["context"]["trigger"] == context
         assert result["pytest_targets"] == list(test_runner_module.all_selection(
             test_runner_module.load_manifest(ROOT / "tests/test-impact.json")).pytest_targets)
+
+
+@pytest.mark.parametrize("condition", [
+    "matched", "wrong-commit", "wrong-branch", "missing-branch", "malformed", "ci-conflict",
+])
+def test_auto_promotion_context_is_bound_before_collection(
+    test_runner_module: Any, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: Any, condition: str,
+) -> None:
+    context = {"trigger": "promotion", "branch": "release/local", "commit": BASE}
+    if condition == "wrong-commit":
+        context["commit"] = HEAD
+    if condition == "wrong-branch":
+        context["branch"] = "codex/task"
+    if condition == "missing-branch":
+        del context["branch"]
+    monkeypatch.setenv("CERATOPS_SDLC_TEST_CONTEXT", "{" if condition == "malformed" else json.dumps(context))
+    monkeypatch.setenv("GITHUB_ACTIONS", "true" if condition == "ci-conflict" else "false")
+    execution = DeterministicExecution(test_runner_module, b"")
+    calls = []
+
+    def commands(command, cwd):
+        calls.append(tuple(command))
+        if command == ["git", "branch", "--show-current"]:
+            return subprocess.CompletedProcess(command, 0, "release/local\n", "")
+        if "--collect-only" in command:
+            return subprocess.CompletedProcess(command, 0, "tests/fixture.py::test_value\n", "")
+        return execution.text(command, cwd)
+
+    code = test_runner_module.execute(
+        ["--auto", "--diagnostic-output", str(tmp_path / "failure.json")],
+        repo_root=ROOT, text_runner=commands, bytes_runner=execution.bytes,
+    )
+    result = payload(capsys)
+    if condition == "matched":
+        assert code == 0 and result["full_suite"]
+        assert result["context"] == context
+        assert len(execution.final_pytest) == 1
+    else:
+        assert code != 0 and result["status"] == "configuration-error"
+        assert not execution.final_pytest
+        assert not any("--collect-only" in command for command in calls)
+
+
+@pytest.mark.parametrize("context", [
+    "ordinary", "promotion", "missing-commit", "missing-tests", "ci", "detached",
+])
+def test_promotion_hands_context_through_sdlc_only_to_tests(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, context: str,
+) -> None:
+    """Use real Git and the real SDLC CLI; the declared probe records its context."""
+    scripts = ROOT / "skills/ceratops-repo-lifecycle/scripts"
+    monkeypatch.syspath_prepend(str(scripts))
+    monkeypatch.delenv("CERATOPS_SDLC_TEST_CONTEXT", raising=False)
+    monkeypatch.setenv("GITHUB_ACTIONS", "false")
+    workflow = runpy.run_path(str(scripts / "promote-repository.py"))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "sdlc").mkdir()
+    record = tmp_path / "test-context.json"
+    contract = {
+        "version": 3, "kind": "ceratops-sdlc",
+        "repository": {
+            "validate": {"probe": {"steps": [{"run": [
+                sys.executable, "-c", "import os; assert 'CERATOPS_SDLC_TEST_CONTEXT' not in os.environ",
+            ]}]}},
+            "tests": {"probe": {"steps": [{"run": [
+                sys.executable, "-c",
+                "import os,pathlib; "
+                f"pathlib.Path({str(record)!r}).write_text(os.environ.get('CERATOPS_SDLC_TEST_CONTEXT', 'null'))",
+            ]}]}},
+        },
+    }
+    (repo / "sdlc/sdlc.yml").write_text(json.dumps(contract), encoding="utf-8")
+    for command in (
+        ["git", "init", "-b", "release/local"],
+        ["git", "add", "."],
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "fixture"],
+    ):
+        subprocess.run(command, cwd=repo, check=True, capture_output=True)
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    args = argparse.Namespace(
+        sdlc_contract=pathlib.Path("sdlc/sdlc.yml"), validation_operation=None,
+        run_operation=None, parameter=[],
+    )
+    command = workflow["_validation_command"](args, repo, commit)
+    assert command[-2:] == ["--test-trigger", "promotion"]
+    if context == "ordinary":
+        command = command[:-2]
+    elif context == "missing-commit":
+        index = command.index("--commit")
+        del command[index:index + 2]
+    elif context == "missing-tests":
+        command.remove("--tests")
+    elif context == "ci":
+        command.append("--ci")
+    elif context == "detached":
+        subprocess.run(["git", "checkout", "--detach"], cwd=repo, check=True, capture_output=True)
+    result = subprocess.run(command, cwd=repo, capture_output=True, text=True, check=False)
+    if context not in {"ordinary", "promotion"}:
+        assert result.returncode != 0
+        assert not record.exists()
+        assert "test context requires" in result.stderr or "require a checked-out release branch" in result.stderr
+        return
+    assert result.returncode == 0, result.stderr
+    expected = {"trigger": "promotion", "branch": "release/local", "commit": commit} if context == "promotion" else None
+    assert json.loads(record.read_text()) == expected
+    assert "CERATOPS_SDLC_TEST_CONTEXT" not in os.environ
+
+
+def test_runner_does_not_leak_promotion_context_into_pytest(
+    test_runner_module: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = json.dumps({"trigger": "promotion", "branch": "release/local", "commit": BASE})
+    monkeypatch.setenv("CERATOPS_SDLC_TEST_CONTEXT", value)
+    environments = []
+    original_run = test_runner_module.subprocess.run
+
+    def child(command, **kwargs):
+        if list(command[:3]) != [sys.executable, "-m", "pytest"]:
+            return original_run(command, **kwargs)
+        environments.append(kwargs["env"])
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(test_runner_module.subprocess, "run", child)
+    result = test_runner_module.run_text([sys.executable, "-m", "pytest", "-q"], ROOT)
+    assert result.returncode == 0 and len(environments) == 1
+    assert "CERATOPS_SDLC_TEST_CONTEXT" not in environments[0]
+    assert os.environ["CERATOPS_SDLC_TEST_CONTEXT"] == value
 
 
 class DeterministicExecution:

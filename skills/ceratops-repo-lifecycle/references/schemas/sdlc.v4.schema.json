@@ -184,12 +184,29 @@
         "requires": {
           "$ref": "#/$defs/requirements"
         },
+        "validation-capabilities": {
+          "description": "Validation behavior supplied by this action and consumed by repository coverage requirements.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
         "parameters": {
           "type": "array",
           "uniqueItems": true,
           "items": {
             "$ref": "#/$defs/parameter"
           }
+        },
+        "result-schema": {
+          "description": "Required structured stdout from the final run step. The repository operation runner validates the complete object and requires a passed terminal status.",
+          "enum": [
+            "ceratops-repository-stage-result.v1",
+            "ceratops-build-result.v1",
+            "ceratops-deployment-result.v1"
+          ]
         },
         "steps": {
           "type": "array",
@@ -467,6 +484,31 @@
         }
       }
     },
+    "app": {
+      "description": "An application installed on a target device or operating system.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "manifest",
+        "prerequisites",
+        "actions"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "manifest": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "prerequisites": {
+          "$ref": "#/$defs/packagePrerequisites"
+        },
+        "actions": {
+          "$ref": "#/$defs/installedActions"
+        }
+      }
+    },
     "skill": {
       "type": "object",
       "additionalProperties": false,
@@ -527,6 +569,16 @@
         "$ref": "#/$defs/tool"
       }
     },
+    "namedApps": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "#/$defs/identifier"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/app"
+      }
+    },
     "namedSkills": {
       "type": "object",
       "minProperties": 1,
@@ -579,6 +631,9 @@
         },
         "tools": {
           "$ref": "#/$defs/namedTools"
+        },
+        "apps": {
+          "$ref": "#/$defs/namedApps"
         },
         "skills": {
           "$ref": "#/$defs/namedSkills"

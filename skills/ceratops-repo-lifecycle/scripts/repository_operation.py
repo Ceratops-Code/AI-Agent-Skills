@@ -22,7 +22,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from ceratops_repo_compatibility_engine.sdlc_contract_validation import (
@@ -35,14 +35,14 @@ from ceratops_repo_compatibility_engine.sdlc_contract_validation import (
     operation_category as contract_operation_category,
 )
 from github_pr_workflow.command import failure_excerpt
-from sdlc_results import capture_step_result
+from sdlc_results import StepResultError, capture_step_result
 
 DEFAULT_CONTRACT = pathlib.Path("sdlc/sdlc.yml")
 PARAMETER_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 PLACEHOLDER_RE = re.compile(r"^\{(?P<name>[a-z][a-z0-9_]*)\}$")
 FAILURE_TAIL_LINES = 8
 FAILURE_TAIL_CHARS = 4096
-FAILED_STATUSES = frozenset({"operation_failed", "validation_failed", "tests_failed", "state_changed", "handoff_required", "error"})
+FAILED_STATUSES = frozenset({"operation_failed", "validation_failed", "tests_failed", "result_invalid", "state_changed", "handoff_required", "error"})
 MUTATION_CATEGORIES = frozenset({"build", "deploy-local", "publish"})
 
 
@@ -81,6 +81,8 @@ class PreparedOperation:
     handoff_mode: str = "legacy"
     contract_path: pathlib.Path | None = None
     parameters: tuple[tuple[str, str], ...] = ()
+    test_context: Mapping[str, str] | None = None
+    result_schema: str | None = None
 
 
 class OperationError(RuntimeError):
@@ -424,6 +426,7 @@ def prepare_operations(
                 context if contract.get("version", 2) >= 3 or context == "ci" else "legacy",
                 contract_path,
                 tuple(sorted(parameters.items())),
+                result_schema=selected.get("result-schema"),
             )
         )
     return prepared
@@ -489,6 +492,8 @@ def _execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object
         "commit": prepared.commit,
         "steps": [],
     }
+    if prepared.test_context is not None:
+        base["test_context"] = dict(prepared.test_context)
     if prepared.prerequisites:
         base["prerequisites"] = dict(prepared.prerequisites)
     if prepared.no_op_reason is not None:
@@ -566,6 +571,14 @@ def _execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object
             # bound to the declared cwd and preserving shell-free arguments.
             if os.name == "nt" and not any(separator in argv[0] for separator in ("/", "\\")):
                 argv[0] = shutil.which(argv[0]) or argv[0]
+            # Context belongs only to this test command, never the parent
+            # process or later deployment commands.
+            process_options: dict[str, Any] = {}
+            if prepared.test_context is not None:
+                process_options["env"] = {
+                    **os.environ,
+                    "CERATOPS_SDLC_TEST_CONTEXT": json.dumps(dict(prepared.test_context)),
+                }
             result = subprocess.run(
                 argv,
                 cwd=step.cwd,
@@ -574,6 +587,7 @@ def _execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object
                 encoding="utf-8",
                 errors="replace",
                 check=False,
+                **process_options,
             )
             code, stdout, stderr = result.returncode, result.stdout, result.stderr
         except OSError as exc:
@@ -605,7 +619,34 @@ def _execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object
                 },
             }
         completed.append(step.position)
-        captured = capture_step_result(stdout)
+        expected_schema = (
+            prepared.result_schema
+            if step is prepared.steps[-1]
+            else None
+        )
+        expected_stage = {
+            "validate": "validation",
+            "tests": "tests",
+        }.get(prepared.category)
+        try:
+            captured = capture_step_result(
+                stdout,
+                expected_schema=expected_schema,
+                expected_stage=expected_stage if expected_schema else None,
+            )
+        except StepResultError as exc:
+            return {
+                **base,
+                "status": "result_invalid",
+                "message": (
+                    f"SDLC step completed but its required result is invalid: "
+                    f"{prepared.operation} step {step.position}. Do not replay a "
+                    "side effect solely to recover this result."
+                ),
+                "steps": completed,
+                "failed_step": step.position,
+                "diagnostic": {"message": str(exc)},
+            }
         if captured:
             step_results.append({"step": step.position, **captured})
             # The shared list also preserves earlier receipts on later failures
@@ -723,6 +764,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--ci", action="store_true", help="Execute commands only; never dispatch skill handoffs.")
     parser.add_argument("--tests", action="store_true", help="Run only selected SDLC tests.")
+    parser.add_argument(
+        "--test-trigger", choices=["promotion"],
+        help="Bind promotion test context to the required clean commit and current branch.",
+    )
     parser.add_argument("--return-handoffs", action="store_true", help="Return pending skill routes without dispatch.")
     parser.add_argument("--evidence-file", type=pathlib.Path)
     parser.add_argument(
@@ -740,6 +785,20 @@ def main(argv: list[str] | None = None) -> int:
         conditional = parse_parameters(args.parameter_if_declared)
         if args.commit:
             require_clean_commit(root, args.commit)
+        test_context = None
+        if args.test_trigger:
+            if not args.tests or not args.commit or args.ci:
+                raise OperationError("Promotion test context requires --tests and --commit outside CI.")
+            branch = subprocess.run(
+                ["git", "branch", "--show-current"], cwd=root,
+                capture_output=True, text=True, check=False,
+            )
+            if branch.returncode or not branch.stdout.strip():
+                raise OperationError("Promotion tests require a checked-out release branch.")
+            test_context = {
+                "trigger": args.test_trigger, "branch": branch.stdout.strip(),
+                "commit": args.commit,
+            }
         prepared = prepare_operations(
             root,
             [
@@ -798,7 +857,10 @@ def main(argv: list[str] | None = None) -> int:
             if requirements:
                 result["prerequisites"] = requirements
         else:
-            checks = execute_prepared_operations(validations)
+            checks = execute_prepared_operations([
+                replace(item, test_context=test_context) if item.category == "tests" else item
+                for item in validations
+            ])
             if checks["status"] in FAILED_STATUSES:
                 result = {
                     **checks,

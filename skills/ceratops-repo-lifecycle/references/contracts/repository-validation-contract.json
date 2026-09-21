@@ -2,10 +2,33 @@
   "contract_format_version": 1,
   "kind": "repository_validation_contract",
   "name": "ceratops_repository_validation_contract",
-  "captured_on": "2026-09-09",
+  "captured_on": "2026-09-20",
   "source_docs_ref": "github-contract-source-docs.json",
   "source_doc_scopes": [
     "repository_validation"
+  ],
+  "coverage_requirements": [
+    {
+      "id": "android-gradle",
+      "when": [
+        {
+          "kind": "path-any",
+          "value": [
+            "**/src/main/AndroidManifest.xml"
+          ]
+        }
+      ],
+      "operation_category": "validate",
+      "required_capabilities": [
+        "android-lint",
+        "android-build"
+      ],
+      "required_prerequisites": [
+        "jdk",
+        "android-sdk"
+      ],
+      "require_repository_entrypoint": true
+    }
   ],
   "checks": [
     {
@@ -234,6 +257,23 @@
         "-m",
         "yamllint",
         "."
+      ],
+      "cwd": "."
+    },
+    {
+      "id": "actionlint",
+      "when": [
+        {
+          "kind": "path-any",
+          "value": [
+            ".github/workflows/**/*.yml",
+            ".github/workflows/**/*.yaml"
+          ]
+        }
+      ],
+      "command": [
+        "{python}",
+        "scripts/run-actionlint.py"
       ],
       "cwd": "."
     }

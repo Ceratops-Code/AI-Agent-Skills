@@ -1,98 +1,213 @@
-version: 3
+version: 4
 kind: ceratops-sdlc
 
 repository:
-  prerequisites:
+  capabilities:
     python:
       executable: python
       version-from:
         file: scripts/pyproject.toml
         key: project.requires-python
-
     node:
       executable: node
       channel: lts
       includes: [npm]
-
     git:
       executable: git
-
     uv:
       executable: uv
-
     ripgrep:
       executable: rg
-
     powershell:
       executable: powershell
       platforms: [windows]
-
-  bootstrap:
-    runtime:
-      prerequisites: [uv]
-      steps:
-        - run: [uv, sync, --project, scripts, --locked]
-
-    development:
-      prerequisites: [uv, node]
+  actions:
+    bootstrap:
+      requires:
+        capabilities: [uv, node]
       steps:
         - run: [uv, sync, --project, scripts, --locked]
         # Resolve npm.cmd on Windows and npm on other platforms.
         - run: [uv, run, --project, scripts, --locked, python, -c, "import shutil, subprocess; subprocess.run([shutil.which('npm'), '--prefix', 'scripts', 'ci'], check=True)"]
-
-  test-selection:
-    ci:
+    test-selection:
+      requires:
+        capabilities: [uv]
       parameters: [base, head]
       steps:
         - run: [uv, run, --locked, scripts/testing/run-tests.py, --select-only, --base, "{base}", --head, "{head}"]
-
-  validate:
-    repository:
+    validate:
+      requires:
+        capabilities: [uv]
       steps:
         - run: [uv, run, --locked, scripts/validate-repository.py]
-
-  tests:
-    python:
+    test:
+      requires:
+        capabilities: [uv]
       steps:
         - run: [uv, run, --locked, scripts/testing/run-tests.py, --auto]
 
 deliverables:
+  tools:
+    ceratops-tool-manager:
+      source: tools/ceratops_tool_manager
+      manifest: tools/ceratops_tool_manager/tool.json
+      prerequisites: []
+      actions:
+        validate:
+          requires:
+            capabilities: []
+          no-op: Repository validation covers the tool manager source and manifest.
+        install:
+          requires:
+            capabilities: [uv]
+          steps:
+            - run: [uv, run, --locked, scripts/deploy-tool-manager.py]
+
   skills:
-    tests:
-      repository:
-        no-op: Covered by repository.tests.python, including this deliverable's tests.
-
-    validate:
-      ceratops-managed:
-        handoff: ceratops-skill-lifecycle/source-validate
-
-    deploy-local:
-      ceratops-managed:
-        handoff: ceratops-skill-lifecycle/deploy
-
-      standalone:
-        steps:
-          - run: [uv, run, --locked, scripts/deploy-skills.py]
+    ceratops-automation-run:
+      source: skills/ceratops-automation-run
+      prerequisites: []
+      actions:
+        validate:
+          requires:
+            capabilities: []
+          steps:
+            - handoff:
+                lifecycle: ceratops-skill-lifecycle
+                action: source-validate
+                inputs:
+                  skill: ceratops-automation-run
+        install:
+          requires:
+            capabilities: []
+          steps:
+            - handoff:
+                lifecycle: ceratops-skill-lifecycle
+                action: deploy
+                inputs:
+                  skill: ceratops-automation-run
+    ceratops-code-consistency-audit:
+      source: skills/ceratops-code-consistency-audit
+      prerequisites: []
+      actions:
+        validate:
+          requires: {capabilities: []}
+          steps: [{handoff: {lifecycle: ceratops-skill-lifecycle, action: source-validate, inputs: {skill: ceratops-code-consistency-audit}}}]
+        install:
+          requires: {capabilities: []}
+          steps: [{handoff: {lifecycle: ceratops-skill-lifecycle, action: deploy, inputs: {skill: ceratops-code-consistency-audit}}}]
+    ceratops-credit-savings-analysis:
+      source: skills/ceratops-credit-savings-analysis
+      prerequisites: []
+      actions:
+        validate:
+          requires: {capabilities: []}
+          steps: [{handoff: {lifecycle: ceratops-skill-lifecycle, action: source-validate, inputs: {skill: ceratops-credit-savings-analysis}}}]
+        install:
+          requires: {capabilities: []}
+          steps: [{handoff: {lifecycle: ceratops-skill-lifecycle, action: deploy, inputs: {skill: ceratops-credit-savings-analysis}}}]
+    ceratops-design-document-lifecycle:
+      source: skills/ceratops-design-document-lifecycle
+      prerequisites: []
+      actions:
+        validate:
+          requires: {capabilities: []}
+          steps: [{handoff: {lifecycle: ceratops-skill-lifecycle, action: source-validate, inputs: {skill: ceratops-design-document-lifecycle}}}]
+        install:
+          requires: {capabilities: []}
+          steps: [{handoff: {lifecycle: ceratops-skill-lifecycle, action: deploy, inputs: {skill: ceratops-design-document-lifecycle}}}]
+    ceratops-governance-lifecycle:
+      source: skills/ceratops-governance-lifecycle
+      prerequisites: []
+      actions:
+        validate:
+          requires: {capabilities: []}
+          steps: [{handoff: {lifecycle: ceratops-skill-lifecycle, action: source-validate, inputs: {skill: ceratops-governance-lifecycle}}}]
+        install:
+          requires: {capabilities: []}
+          steps: [{handoff: {lifecycle: ceratops-skill-lifecycle, action: deploy, inputs: {skill: ceratops-governance-lifecycle}}}]
+    ceratops-misunderstanding-audit:
+      source: skills/ceratops-misunderstanding-audit
+      prerequisites: []
+      actions:
+        validate:
+          requires: {capabilities: []}
+          steps: [{handoff: {lifecycle: ceratops-skill-lifecycle, action: source-validate, inputs: {skill: ceratops-misunderstanding-audit}}}]
+        install:
+          requires: {capabilities: []}
+          steps: [{handoff: {lifecycle: ceratops-skill-lifecycle, action: deploy, inputs: {skill: ceratops-misunderstanding-audit}}}]
+    ceratops-openai-docs-managed:
+      source: skills/ceratops-openai-docs-managed
+      prerequisites: []
+      actions:
+        validate:
+          requires: {capabilities: []}
+          steps: [{handoff: {lifecycle: ceratops-skill-lifecycle, action: source-validate, inputs: {skill: ceratops-openai-docs-managed}}}]
+        install:
+          requires: {capabilities: []}
+          steps: [{handoff: {lifecycle: ceratops-skill-lifecycle, action: deploy, inputs: {skill: ceratops-openai-docs-managed}}}]
+    ceratops-repo-lifecycle:
+      source: skills/ceratops-repo-lifecycle
+      prerequisites: []
+      actions:
+        validate:
+          requires: {capabilities: []}
+          steps: [{handoff: {lifecycle: ceratops-skill-lifecycle, action: source-validate, inputs: {skill: ceratops-repo-lifecycle}}}]
+        install:
+          requires: {capabilities: []}
+          steps: [{handoff: {lifecycle: ceratops-skill-lifecycle, action: deploy, inputs: {skill: ceratops-repo-lifecycle}}}]
+    ceratops-skill-lifecycle:
+      source: skills/ceratops-skill-lifecycle
+      prerequisites: []
+      actions:
+        validate:
+          requires: {capabilities: []}
+          steps: [{handoff: {lifecycle: ceratops-skill-lifecycle, action: source-validate, inputs: {skill: ceratops-skill-lifecycle}}}]
+        install:
+          requires: {capabilities: []}
+          steps: [{handoff: {lifecycle: ceratops-skill-lifecycle, action: deploy, inputs: {skill: ceratops-skill-lifecycle}}}]
+    ceratops-task-lifecycle:
+      source: skills/ceratops-task-lifecycle
+      prerequisites: []
+      actions:
+        validate:
+          requires: {capabilities: []}
+          steps: [{handoff: {lifecycle: ceratops-skill-lifecycle, action: source-validate, inputs: {skill: ceratops-task-lifecycle}}}]
+        install:
+          requires: {capabilities: []}
+          steps: [{handoff: {lifecycle: ceratops-skill-lifecycle, action: deploy, inputs: {skill: ceratops-task-lifecycle}}}]
+    ceratops-tool-lifecycle:
+      source: skills/ceratops-tool-lifecycle
+      prerequisites: []
+      actions:
+        validate:
+          requires: {capabilities: []}
+          steps: [{handoff: {lifecycle: ceratops-skill-lifecycle, action: source-validate, inputs: {skill: ceratops-tool-lifecycle}}}]
+        install:
+          requires: {capabilities: []}
+          steps: [{handoff: {lifecycle: ceratops-skill-lifecycle, action: deploy, inputs: {skill: ceratops-tool-lifecycle}}}]
+    codex-desktop-upgrade:
+      source: skills/codex-desktop-upgrade
+      prerequisites: []
+      actions:
+        validate:
+          requires: {capabilities: []}
+          steps: [{handoff: {lifecycle: ceratops-skill-lifecycle, action: source-validate, inputs: {skill: codex-desktop-upgrade}}}]
+        install:
+          requires: {capabilities: []}
+          steps: [{handoff: {lifecycle: ceratops-skill-lifecycle, action: deploy, inputs: {skill: codex-desktop-upgrade}}}]
 
   hooks:
-    tests:
-      repository:
-        no-op: Covered by repository.tests.python, including this deliverable's tests.
-
-    deploy-local:
-      standalone:
-        steps:
-          - run: [uv, run, --locked, scripts/deploy-hooks.py]
-
-  tools:
-    tests:
-      repository:
-        no-op: Covered by repository.tests.python, including this deliverable's tests.
-
-    deploy-local:
-      ceratops-managed:
-        handoff: ceratops-tool-lifecycle/install
-
-      standalone:
-        steps:
-          - run: [uv, run, --locked, scripts/deploy-tool-manager.py]
+    codex-hooks:
+      source: hooks
+      prerequisites: []
+      actions:
+        validate:
+          requires:
+            capabilities: []
+          no-op: Repository validation covers the hook sources.
+        install:
+          requires:
+            capabilities: [uv]
+          steps:
+            - run: [uv, run, --locked, scripts/deploy-hooks.py]

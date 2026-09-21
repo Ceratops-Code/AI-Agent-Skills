@@ -8,11 +8,16 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import tomllib
 from typing import Any
 
 import pytest
 
-from tests.repository_lifecycle.support import run_operation_cli
+from tests.repository_lifecycle.support import (
+    REPOSITORY_LIFECYCLE_SCRIPTS,
+    run_operation_cli,
+)
+from tests.support.processes import run_compatibility_engine
 from tests.support.repositories import ROOT, run_ci_action, run_git
 
 runner = importlib.import_module("repository_operation")
@@ -28,6 +33,46 @@ def _repository(repo: pathlib.Path) -> str:
     assert run_git(repo, "add", ".").returncode == 0
     assert run_git(repo, "commit", "-m", "fixture").returncode == 0
     return run_git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+def test_compatibility_preserves_custom_unittest_runner_without_pytest(
+    tmp_path: pathlib.Path,
+) -> None:
+    """An existing test runner owns its framework dependency declaration."""
+
+    repo = tmp_path / "repository"
+    scripts = repo / "scripts"
+    scripts.mkdir(parents=True)
+    (repo / ".git").write_text("gitdir: fixture\n", encoding="utf-8")
+    (scripts / "pyproject.toml").write_text(
+        "[project]\n"
+        'name = "repository-tools"\n'
+        'version = "0.0.0"\n'
+        'requires-python = ">=3.11"\n'
+        'dependencies = ["mypy", "ruff"]\n',
+        encoding="utf-8",
+    )
+    runner = scripts / "run-tests.py"
+    runner_text = "import unittest\n\nunittest.main(module=None)\n"
+    runner.write_text(runner_text, encoding="utf-8")
+    tests = repo / "tests"
+    tests.mkdir()
+    (tests / "test_example.py").write_text("import unittest\n", encoding="utf-8")
+
+    result = run_compatibility_engine(
+        REPOSITORY_LIFECYCLE_SCRIPTS,
+        "apply",
+        "--target-repo-root",
+        str(repo),
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert runner.read_text(encoding="utf-8") == runner_text
+    project = tomllib.loads((scripts / "pyproject.toml").read_text(encoding="utf-8"))
+    assert "pytest" not in project["project"]["dependencies"]
+    assert "scripts/run-tests.py" in (repo / "sdlc/sdlc.yml").read_text(
+        encoding="utf-8"
+    )
 
 
 
@@ -166,6 +211,18 @@ def _v4_fixture() -> dict[str, Any]:
                     },
                 },
             },
+            "apps": {
+                "claims-mobile": {
+                    "source": "apps/claims", "manifest": "apps/claims/AndroidManifest.xml",
+                    "prerequisites": ["claims"],
+                    "actions": {
+                        "validate": {"requires": {"capabilities": []}, "no-op": "Repository checks cover the app."},
+                        "install": _v4_action({"run": [
+                            sys.executable, "-c", "from pathlib import Path; Path('app-installed.txt').write_text('done')",
+                        ]}),
+                    },
+                },
+            },
             "skills": {
                 "claims-catalog-invoice": {
                     "source": "skills/claims-catalog-invoice", "prerequisites": ["claims"],
@@ -204,12 +261,15 @@ def test_v4_template_and_typed_operation_index(tmp_path: pathlib.Path) -> None:
         "repository.actions.validate", "repository.actions.test",
         "deliverables.packages.core.actions.build",
         "deliverables.packages.claims.actions.build",
+        "deliverables.apps.claims-mobile.actions.validate",
+        "deliverables.apps.claims-mobile.actions.install",
         "deliverables.tools.insurance-claims-tool.actions.validate",
         "deliverables.tools.insurance-claims-tool.actions.install",
         "deliverables.skills.claims-catalog-invoice.actions.validate",
         "deliverables.skills.claims-catalog-invoice.actions.install",
     }
     assert runner.operation_category("deliverables.packages.claims.actions.build") == "build"
+    assert runner.operation_category("deliverables.apps.claims-mobile.actions.install") == "deploy-local"
     assert runner.operation_category("deliverables.tools.insurance-claims-tool.actions.install") == "deploy-local"
     with pytest.raises(runner.OperationError, match="Invalid SDLC operation location"):
         runner.operation_category("deliverables.skills.claims-catalog-invoice.actions.build")
@@ -234,6 +294,13 @@ def test_v4_prerequisites_are_exposed_without_build_or_install(tmp_path: pathlib
         "repository.actions.test",
     ]
     assert runner.validation_operations(tmp_path, [
+        "deliverables.apps.claims-mobile.actions.install"
+    ]) == [
+        "repository.actions.validate",
+        "deliverables.apps.claims-mobile.actions.validate",
+        "repository.actions.test",
+    ]
+    assert runner.validation_operations(tmp_path, [
         "deliverables.tools.insurance-claims-tool.actions.install"
     ]) == [
         "repository.actions.validate",
@@ -244,6 +311,15 @@ def test_v4_prerequisites_are_exposed_without_build_or_install(tmp_path: pathlib
     assert result.returncode == 0
     payload = json.loads(result.stdout)
     assert list(payload["prerequisites"]["packages"]) == ["core", "claims"]
+
+    app_location = "deliverables.apps.claims-mobile.actions.install"
+    app_prepared = runner.prepare_operations(
+        tmp_path, [runner.OperationRequest(app_location)]
+    )[0]
+    assert list(app_prepared.prerequisites["packages"]) == ["core", "claims"]
+    assert app_prepared.prerequisites["packages"]["claims"]["action-locations"] == {
+        "build": "deliverables.packages.claims.actions.build"
+    }
 
 
 def test_v4_source_installed_tool_needs_no_package_artifact(tmp_path: pathlib.Path) -> None:
@@ -277,6 +353,74 @@ def test_v4_tool_install_can_run_standalone_script(tmp_path: pathlib.Path) -> No
     result = runner.execute_prepared_operation(prepared)
     assert result["status"] == "completed"
     assert result["steps"] == [1]
+    assert (tmp_path / "installed.txt").read_text() == "done"
+
+
+def test_v4_app_install_can_run_standalone_script(tmp_path: pathlib.Path) -> None:
+    fixture = _v4_fixture()
+    assert contracts.validation_errors(fixture) == []
+    (tmp_path / "sdlc").mkdir()
+    (tmp_path / "sdlc/sdlc.yml").write_text(json.dumps(fixture))
+    prepared = runner.prepare_operations(tmp_path, [runner.OperationRequest(
+        "deliverables.apps.claims-mobile.actions.install",
+    )])[0]
+    result = runner.execute_prepared_operation(prepared)
+    assert result["status"] == "completed"
+    assert result["steps"] == [1]
+    assert (tmp_path / "app-installed.txt").read_text() == "done"
+
+
+def test_v4_declared_operation_result_is_validated(tmp_path: pathlib.Path) -> None:
+    fixture = _v4_fixture()
+    action = fixture["deliverables"]["apps"]["claims-mobile"]["actions"]["install"]
+    action["result-schema"] = "ceratops-deployment-result.v1"
+    payload = {
+        "schema": "ceratops-deployment-result.v1",
+        "status": "passed",
+        "target": "tablet:37111",
+        "artifact": {
+            "type": "android-apk",
+            "path": "app/build/app.apk",
+            "sha256": "0" * 64,
+            "size": 1,
+        },
+    }
+    action["steps"] = [{"run": [
+        sys.executable, "-c", f"import json; print(json.dumps({payload!r}))",
+    ]}]
+    assert contracts.validation_errors(fixture) == []
+    (tmp_path / "sdlc").mkdir()
+    (tmp_path / "sdlc/sdlc.yml").write_text(json.dumps(fixture))
+    prepared = runner.prepare_operations(tmp_path, [runner.OperationRequest(
+        "deliverables.apps.claims-mobile.actions.install",
+    )])[0]
+    assert prepared.result_schema == "ceratops-deployment-result.v1"
+    result = runner.execute_prepared_operation(prepared)
+    assert result["status"] == "completed"
+    assert result["step_results"] == [{"step": 1, "result": payload}]
+
+
+def test_v4_invalid_required_result_retains_completed_side_effect(
+    tmp_path: pathlib.Path,
+) -> None:
+    fixture = _v4_fixture()
+    action = fixture["deliverables"]["apps"]["claims-mobile"]["actions"]["install"]
+    action["result-schema"] = "ceratops-deployment-result.v1"
+    action["steps"] = [{"run": [
+        sys.executable,
+        "-c",
+        "from pathlib import Path; Path('installed.txt').write_text('done'); print('{}')",
+    ]}]
+    assert contracts.validation_errors(fixture) == []
+    (tmp_path / "sdlc").mkdir()
+    (tmp_path / "sdlc/sdlc.yml").write_text(json.dumps(fixture))
+    prepared = runner.prepare_operations(tmp_path, [runner.OperationRequest(
+        "deliverables.apps.claims-mobile.actions.install",
+    )])[0]
+    result = runner.execute_prepared_operation(prepared)
+    assert result["status"] == "result_invalid"
+    assert result["steps"] == [1]
+    assert "Do not replay" in result["message"]
     assert (tmp_path / "installed.txt").read_text() == "done"
 
 
@@ -344,6 +488,12 @@ def test_v4_package_build_waits_for_declared_test_gate(tmp_path: pathlib.Path) -
      "capability uv version-from.file must be repository-relative"),
     (lambda x: x["repository"]["capabilities"]["uv"].update(
         version="1.0", channel="stable"), "multiple version authorities"),
+    (lambda x: x["deliverables"]["apps"]["claims-mobile"]["actions"]["install"].update(
+        **{"result-schema": "ceratops-build-result.v1"}),
+     "result-schema must be ceratops-deployment-result.v1"),
+    (lambda x: x["deliverables"]["skills"]["claims-catalog-invoice"]["actions"]["install"].update(
+        **{"result-schema": "ceratops-deployment-result.v1"}),
+     "result-schema requires a final run step"),
 ])
 def test_v4_rejects_invalid_dependency_or_lifecycle_boundary(change, expected: str) -> None:
     fixture = _v4_fixture()
@@ -352,6 +502,8 @@ def test_v4_rejects_invalid_dependency_or_lifecycle_boundary(change, expected: s
 
 
 @pytest.mark.parametrize("change", [
+    lambda x: x["deliverables"]["apps"]["claims-mobile"]["actions"].update(
+        build=_v4_action({"run": ["python"]})),
     lambda x: x["deliverables"]["tools"]["insurance-claims-tool"].update(package="claims"),
     lambda x: x["deliverables"]["tools"]["insurance-claims-tool"].update(prerequisites=["core", "claims"]),
     lambda x: x["deliverables"]["skills"]["claims-catalog-invoice"]["actions"]["install"].update(

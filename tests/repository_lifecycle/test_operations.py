@@ -26,6 +26,7 @@ runner = importlib.import_module("repository_operation")
 contracts = importlib.import_module(
     "ceratops_repo_compatibility_engine.sdlc_contract_validation"
 )
+results = importlib.import_module("sdlc_results")
 
 DEPLOY = "deliverables.sample.deploy-local."
 CHECK = "repository.validate."
@@ -43,16 +44,105 @@ RECEIPT = {
 }
 
 
-def test_live_sdlc_v3_selects_validation_and_tests_for_every_deploy() -> None:
+@pytest.mark.parametrize(
+    ("schema", "stage", "payload"),
+    [
+        (
+            "ceratops-repository-stage-result.v1",
+            "validation",
+            {
+                "schema": "ceratops-repository-stage-result.v1",
+                "stage": "validation",
+                "status": "passed",
+                "source": {"contentSha256": "0" * 64, "sourceCommit": "1" * 40},
+                "checks": [{"id": "lint", "status": "passed", "exitCode": 0}],
+                "evidence": None,
+            },
+        ),
+        (
+            "ceratops-repository-stage-result.v1",
+            "tests",
+            {
+                "schema": "ceratops-repository-stage-result.v1",
+                "stage": "tests",
+                "status": "passed",
+                "source": {"contentSha256": "0" * 64, "sourceCommit": "1" * 40},
+                "groups": [
+                    {
+                        "id": "unit",
+                        "status": "passed",
+                        "path": ".test-results/groups/unit.json",
+                        "sha256": "2" * 64,
+                    }
+                ],
+            },
+        ),
+        (
+            "ceratops-build-result.v1",
+            None,
+            {
+                "schema": "ceratops-build-result.v1",
+                "status": "passed",
+                "artifact": {
+                    "type": "android-apk",
+                    "path": "app/build/app.apk",
+                    "sha256": "3" * 64,
+                    "size": 1,
+                },
+            },
+        ),
+        (
+            "ceratops-deployment-result.v1",
+            None,
+            {
+                "schema": "ceratops-deployment-result.v1",
+                "status": "passed",
+                "target": "tablet:37111",
+                "artifact": {
+                    "type": "android-apk",
+                    "path": "app/build/app.apk",
+                    "sha256": "4" * 64,
+                    "size": 1,
+                },
+            },
+        ),
+    ],
+)
+def test_canonical_operation_results_are_enforced(
+    schema: str, stage: str | None, payload: dict[str, object],
+) -> None:
+    assert results.capture_step_result(
+        json.dumps(payload), expected_schema=schema, expected_stage=stage,
+    ) == {"result": payload}
+
+
+def test_canonical_operation_result_rejects_incomplete_artifact() -> None:
+    payload = {
+        "schema": "ceratops-build-result.v1",
+        "status": "passed",
+        "artifact": {"path": "app/build/app.apk"},
+    }
+    with pytest.raises(results.StepResultError, match="canonical schema"):
+        results.capture_step_result(
+            json.dumps(payload), expected_schema="ceratops-build-result.v1",
+        )
+
+
+def test_live_sdlc_v4_selects_validation_and_tests_for_every_install() -> None:
     document = contracts.load_contract(ROOT / "sdlc/sdlc.yml")
-    assert document["version"] == 3
-    for deliverable in ("skills", "hooks", "tools"):
-        locations = runner.validation_operations(ROOT, [f"deliverables.{deliverable}.deploy-local.standalone"])
-        assert "repository.validate.repository" in locations
-        assert "repository.tests.python" in locations
-        assert f"deliverables.{deliverable}.tests.repository" in locations
-    requests = [runner.OperationRequest("repository.validate.repository"),
-                runner.OperationRequest("repository.tests.python")]
+    assert document["version"] == 4
+    installs = (
+        "deliverables.skills.ceratops-repo-lifecycle.actions.install",
+        "deliverables.hooks.codex-hooks.actions.install",
+        "deliverables.tools.ceratops-tool-manager.actions.install",
+    )
+    for install in installs:
+        locations = runner.validation_operations(ROOT, [install])
+        assert "repository.actions.validate" in locations
+        assert "repository.actions.test" in locations
+        assert install.replace(".install", ".validate") in locations
+    requests = [runner.OperationRequest("repository.actions.validate"),
+                runner.OperationRequest("repository.actions.test")]
     operations = runner.prepare_operations(ROOT, requests, context="ci")
     assert operations[0].steps[0].argv == ("uv", "run", "--locked", "scripts/validate-repository.py")
     assert operations[1].steps[0].argv == ("uv", "run", "--locked", "scripts/testing/run-tests.py", "--auto")
@@ -77,49 +167,47 @@ def test_sdlc_template_is_a_schema_valid_empty_skeleton(tmp_path: pathlib.Path) 
     contract = write_sdlc_contract(tmp_path)
     shutil.copy2(SDLC_CONTRACT_TEMPLATE, contract)
     document = contracts.load_contract(contract)
-    assert document["version"] == 3
-    assert document["repository"]["validate"]["repository"]["steps"] == [
+    assert document["version"] == 4
+    assert document["repository"]["actions"]["validate"]["steps"] == [
         {"run": ["uv", "run", "--locked", "scripts/validate-repository.py"]}
     ]
     assert "deliverables" not in document
     live = contracts.load_contract(ROOT / "sdlc" / "sdlc.yml")
-    assert live["version"] == 3
+    assert live["version"] == 4
     entries = contracts.operation_entries(live)
     expected = {
-        "deliverables.skills.validate.ceratops-managed":
-            "ceratops-skill-lifecycle/source-validate",
-        "deliverables.skills.deploy-local.ceratops-managed":
-            "ceratops-skill-lifecycle/deploy",
-        "deliverables.tools.deploy-local.ceratops-managed":
-            "ceratops-tool-lifecycle/install",
+        "deliverables.skills.ceratops-repo-lifecycle.actions.validate":
+            ("ceratops-skill-lifecycle", "source-validate"),
+        "deliverables.skills.ceratops-repo-lifecycle.actions.install":
+            ("ceratops-skill-lifecycle", "deploy"),
     }
-    for location, handoff in expected.items():
-        assert entries[location] == {"handoff": handoff}
-    assert set(live["deliverables"]["skills"]["validate"]) == {"ceratops-managed"}
-    selection = entries["repository.test-selection.ci"]
+    for location, (lifecycle, action) in expected.items():
+        handoff = entries[location]["steps"][0]["handoff"]
+        assert handoff["lifecycle"] == lifecycle
+        assert handoff["action"] == action
+        assert handoff["inputs"] == {"skill": "ceratops-repo-lifecycle"}
+    selection = entries["repository.actions.test-selection"]
     assert selection["parameters"] == ["base", "head"]
     assert selection["steps"][0]["run"] == [
         "uv", "run", "--locked", "scripts/testing/run-tests.py", "--select-only",
         "--base", "{base}", "--head", "{head}",
     ]
-    assert entries["repository.validate.repository"]["steps"] == [
+    assert entries["repository.actions.validate"]["steps"] == [
         {"run": ["uv", "run", "--locked", "scripts/validate-repository.py"]},
     ]
-    assert entries["repository.tests.python"]["steps"] == [
+    assert entries["repository.actions.test"]["steps"] == [
         {
             "run": [
                 "uv", "run", "--locked", "scripts/testing/run-tests.py", "--auto",
             ]
         },
     ]
-    assert runner.validation_operations(ROOT) == [
-        "repository.validate.repository",
-        "deliverables.skills.validate.ceratops-managed",
-        "repository.tests.python",
-        "deliverables.skills.tests.repository",
-        "deliverables.hooks.tests.repository",
-        "deliverables.tools.tests.repository",
-    ]
+    validation = runner.validation_operations(ROOT)
+    assert validation[0] == "repository.actions.validate"
+    assert "deliverables.skills.ceratops-repo-lifecycle.actions.validate" in validation
+    assert "deliverables.hooks.codex-hooks.actions.validate" in validation
+    assert "deliverables.tools.ceratops-tool-manager.actions.validate" in validation
+    assert validation[-1] == "repository.actions.test"
 
 
 def test_absent_sdlc_section_is_a_successful_no_op(tmp_path: pathlib.Path) -> None:
@@ -794,7 +882,7 @@ def test_repository_bootstrap_resolves_platform_npm_and_preserves_failure(
     contract = contracts.load_contract(
         OPERATION_RUNNER.parents[3] / "sdlc" / "sdlc.yml"
     )
-    argv = contract["repository"]["bootstrap"]["development"]["steps"][-1]["run"]
+    argv = contract["repository"]["actions"]["bootstrap"]["steps"][-1]["run"]
     prepare_script_environment(tmp_path)
     result = subprocess.run(
         argv,
@@ -1113,7 +1201,7 @@ def test_supported_v1_compatibility_is_independent_of_installer_release(
     )
     result = checker.validate_ceratops_compatibility(tmp_path)
     assert result["valid"] is False
-    assert "current Ceratops compatibility requires SDLC version 3" in result["errors"]
+    assert "current Ceratops compatibility requires SDLC version 4" in result["errors"]
     assert all("INSTALLER_VERSION" not in error for error in result["errors"])
 
 
@@ -1121,10 +1209,10 @@ def test_materialization_preserves_supported_v1_without_migration(tmp_path: path
     materializer = importlib.import_module("ceratops_repo_compatibility_engine.apply_ceratops_compatibility")
     path = _write_v1(tmp_path, deploy={"deploy": {"handoff": "ceratops-skill-lifecycle/deploy"}})
     original = path.read_bytes()
-    for has_skills in (True, False):
-        with pytest.raises(RuntimeError, match="operation ownership must be mapped"):
+    for skill_names in (["alpha-tool"], []):
+        with pytest.raises(RuntimeError, match="action ownership must be mapped"):
             materializer.build_sdlc_contract_candidate(
-                tmp_path, has_skills=has_skills, apply_contract=True,
+                tmp_path, skill_names=skill_names, apply_contract=True,
             )
     assert path.read_bytes() == original
 
@@ -1170,14 +1258,14 @@ def test_health_migration_proposal_is_advisory_and_reaches_automation_summary(
     # These are the exact levels requested by Global Repo Health Consistency.
     summary = reports.build_summary_report(report, ["ERROR", "WARN", "NEEDS_AI_AGENT_REVIEW"])
     proposals = [f for f in summary["findings"] if f["check_id"] == "content.sdlc_migration"]
-    assert len(proposals) == (1 if version in (1, 2) else 0)
+    assert len(proposals) == 1
     if proposals:
         assert proposals[0]["actual"] == {
-            "repository": "owner/sample", "current_version": version, "recommended_version": 3,
+            "repository": "owner/sample", "current_version": version, "recommended_version": 4,
             "reason": facts["migration_proposal"]["reason"],
         }
         assert "owner/sample" in proposals[0]["message"]
-        assert f"version {version} to 3" in proposals[0]["message"]
+        assert f"version {version} to 4" in proposals[0]["message"]
         assert "do not automatically migrate" in proposals[0]["message"]
         assert not levels.has_blocking_findings(proposals)
     assert comparison == {"findings": [], "approved_drift": []}

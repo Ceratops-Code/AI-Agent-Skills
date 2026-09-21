@@ -1577,7 +1577,7 @@
           "path": "/local/workflows/text",
           "operator": "matches",
           "expected": "deploy-pages|upload-pages-artifact|gh-pages",
-          "when": "artifact_type contains static_docs_site || repository.pages.build_type == workflow"
+          "when": "artifact_type contains github_pages_site && repository.pages.build_type == workflow"
         },
         {
           "path": "/artifact/recorded_checks/consumer_smoke",

@@ -8,6 +8,7 @@ before compatibility application can write any target files.
 
 from __future__ import annotations
 
+import copy
 import json
 import pathlib
 from typing import Any
@@ -19,6 +20,27 @@ from .sdlc_contract_validation import load_contract, validation_errors
 
 BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[2]
 CONTRACT_NAME = "ceratops-compatibility-deterministic-contract.json"
+
+
+def _managed_skill_record(
+    contract: dict[str, Any], name: str,
+) -> dict[str, Any]:
+    """Materialize one typed v4 skill record from the owned action templates."""
+
+    actions = copy.deepcopy(contract["managed_skill_operations"])
+    expected_routes = {"validate": "source-validate", "install": "deploy"}
+    for action_name, route in expected_routes.items():
+        handoff = actions[action_name]["steps"][0]["handoff"]
+        if handoff["action"] != route or handoff["inputs"] != {"skill": "{skill}"}:
+            raise RuntimeError(
+                f"managed skill {action_name} action must route to {route} with the skill token"
+            )
+        handoff["inputs"]["skill"] = name
+    return {
+        "source": f"skills/{name}",
+        "prerequisites": [],
+        "actions": actions,
+    }
 
 
 def _load_document(path: pathlib.Path, schema_path: pathlib.Path) -> dict[str, Any]:
@@ -85,6 +107,7 @@ def load_compatibility_contract(bundle_root: pathlib.Path | None = None) -> dict
     destinations = {
         "validation_project": "scripts/pyproject.toml",
         "validator": "scripts/validate-repository.py", "python_test_runner": "scripts/run-tests.py",
+        "actionlint_runner": "scripts/run-actionlint.py",
     }
     if any(contract["surfaces"][key]["path"] != value for key, value in destinations.items()):
         raise RuntimeError("compatibility surface paths must match the portable template layout")
@@ -92,10 +115,25 @@ def load_compatibility_contract(bundle_root: pathlib.Path | None = None) -> dict
         raise RuntimeError("Dependabot must address the validator project")
     sdlc_template = references / "templates" / contract["surfaces"]["sdlc"]["template"]
     sdlc = load_contract(sdlc_template)
-    candidate = dict(sdlc, deliverables={"skills": contract["managed_skill_operations"]})
+    if sdlc["version"] != contract["sdlc_version"]:
+        raise RuntimeError("compatibility SDLC template version differs from its contract")
+    candidate = dict(
+        sdlc,
+        deliverables={
+            "skills": {
+                "managed-skill": _managed_skill_record(contract, "managed-skill")
+            }
+        },
+    )
     if errors := validation_errors(candidate):
         raise RuntimeError("invalid compatibility SDLC defaults: " + "; ".join(errors))
     return contract
+
+
+def managed_skill_record(name: str) -> dict[str, Any]:
+    """Return one fresh producer-owned v4 skill declaration."""
+
+    return _managed_skill_record(load_compatibility_contract(), name)
 
 
 def surface_path(surface: str) -> pathlib.Path:

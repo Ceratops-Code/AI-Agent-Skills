@@ -9,11 +9,11 @@ accept monotonic request expansions without replacing that baseline or cleanup
 ownership. Deterministic search evidence is reused only while its declared
 inputs still match; other checks rerun. One changed in-scope snapshot may start
 a correction generation after success; it invalidates the earlier success
-before checks and cannot be reopened after passing. Prepare and amend collect
-declared pytest nodes without running tests. Git whitespace preflight includes
-tracked and new files before declared
-checks, which use closed structured forms and run without a shell.
-Collection and verification own temporary check folders and remove them on exit.
+before checks and cannot be reopened after passing. Tests belong to the
+repository-declared SDLC test phase. Preparation never imports test modules.
+Git whitespace preflight includes tracked and new files before declared
+non-test checks, which use closed structured forms and run without a shell.
+Verification owns temporary check folders and removes them on exit.
 Source files are never patched, staged, committed, installed, promoted, or
 rolled back. Prepare records exact cleanup ownership and an active-update
 retention marker beneath the verified task temp root, verify retains detailed
@@ -39,11 +39,11 @@ from collections.abc import Mapping, Sequence
 
 from runtime.managed_runtime_builder import IGNORE_NAMES, payload_parts
 from skill_update_checks import (
-    MAX_COMPACT_DETAIL,
     CheckFailure,
     UpdateExecutionError,
     _run,
     _run_check,
+    validate_non_test_command,
 )
 from skill_update_scratch import check_environment
 from skill_update_state import (
@@ -52,7 +52,6 @@ from skill_update_state import (
     DISPOSABLE_ROLES,
     EVIDENCE_SCHEMA,
     GROUP_FIELDS,
-    PYTEST_NODE_RE,
     REQUEST_FIELDS,
     REQUEST_SCHEMA,
     RETENTION_MARKER,
@@ -153,32 +152,25 @@ def _validate_checks(
     if (
         not isinstance(raw_checks, Sequence)
         or isinstance(raw_checks, (str, bytes))
-        or not raw_checks
     ):
-        raise UpdateExecutionError("checks must be a nonempty list")
+        raise UpdateExecutionError("checks must be a list")
     checks: list[dict[str, object]] = []
     for index, raw in enumerate(raw_checks, start=1):
         if not isinstance(raw, Mapping):
             raise UpdateExecutionError(f"check {index} must be an object")
         kind = raw.get("kind")
+        if kind == "pytest":
+            raise UpdateExecutionError("test checks belong to repository SDLC tests")
         if not isinstance(kind, str) or kind not in CHECK_FIELDS:
             raise UpdateExecutionError(f"check {index} kind is invalid")
         _closed_fields(raw, CHECK_FIELDS[kind], f"check {index}")
         check = dict(raw)
-        if kind == "pytest":
-            nodes = _string_list(raw["nodes"], f"check {index} nodes")
-            for node in nodes:
-                if PYTEST_NODE_RE.fullmatch(node) is None:
-                    raise UpdateExecutionError(f"pytest node is invalid: {node}")
-                test_path = node.split("::", 1)[0]
-                target = _target(repo_root, test_path)
-                if target.is_symlink() or not target.is_file():
-                    raise UpdateExecutionError(f"pytest node file does not exist: {node}")
-            check["nodes"] = nodes
-        elif kind == "command":
-            argv = _string_list(raw["argv"], f"check {index} argv")
+        if kind == "command":
+            # Repeated arguments are meaningful and must reach the process intact.
+            argv = _string_list(raw["argv"], f"check {index} argv", unique=False)
             if any("\0" in value for value in argv):
                 raise UpdateExecutionError(f"check {index} argv contains NUL")
+            validate_non_test_command(argv)
             check["argv"] = argv
         else:
             pattern = raw["pattern"]
@@ -201,39 +193,6 @@ def _validate_checks(
             check["paths"] = paths
         checks.append(check)
     return checks
-
-
-def _collect_declared_pytest_nodes(
-    repo_root: pathlib.Path,
-    checks: Sequence[Mapping[str, object]],
-    task_temp_root: pathlib.Path,
-) -> None:
-    """Reject uncollectable declared pytest nodes before source edits begin."""
-
-    nodes: list[str] = []
-    for check in checks:
-        if check.get("kind") != "pytest":
-            continue
-        raw_nodes = check.get("nodes")
-        if not isinstance(raw_nodes, list) or not all(
-            isinstance(node, str) for node in raw_nodes
-        ):
-            raise UpdateExecutionError("validated pytest check is invalid")
-        nodes.extend(raw_nodes)
-    unique_nodes = list(dict.fromkeys(nodes))
-    if not unique_nodes:
-        return
-    with check_environment(task_temp_root) as environment:
-        result = _run(
-            [sys.executable, "-m", "pytest", "--collect-only", "-q", *unique_nodes],
-            cwd=repo_root, environment=environment,
-        )
-    if result.returncode:
-        detail = " ".join((result.stderr or result.stdout).split())
-        if len(detail) > MAX_COMPACT_DETAIL:
-            detail = detail[:MAX_COMPACT_DETAIL] + " [truncated]"
-        message = "pytest node collection failed"
-        raise UpdateExecutionError(f"{message}: {detail}" if detail else message)
 
 
 def _shared_source_owners(
@@ -306,7 +265,6 @@ def _validated_request(
     path: pathlib.Path,
     *,
     carried_paths: Sequence[str] = (),
-    collect_nodes: bool = True,
 ) -> tuple[
     dict[str, object],
     pathlib.Path,
@@ -442,8 +400,6 @@ def _validated_request(
         )
 
     checks = _validate_checks(request["checks"], repo_root, allowed_set)
-    if collect_nodes:
-        _collect_declared_pytest_nodes(repo_root, checks, task_temp_root)
     dirty = sorted(_dirty_paths(repo_root))
     baseline_dirty = {path: _snapshot(repo_root, path) for path in dirty}
     baseline_targets = {path: _snapshot(repo_root, path) for path in allowed}
@@ -874,8 +830,10 @@ def command_amend(request_path: pathlib.Path, state_path: pathlib.Path) -> None:
     ):
         raise UpdateExecutionError("pending evidence does not match prepared failure")
 
+    # Prepared new paths may now exist without being staged; retain their ownership.
+    carried = _string_list(state["allowed_paths"], "prepared allowed paths")
     candidate, repo_root, task_temp_root, candidate_evidence, disposable = (
-        _validated_request(resolved_request)
+        _validated_request(resolved_request, carried_paths=carried)
     )
     cleanup_root = cleanup["task_temp_root"]
     assert isinstance(cleanup_root, pathlib.Path)
@@ -1017,8 +975,6 @@ def _result_matches_check(
     kind = check.get("kind")
     if result.get("kind") != kind or result.get("returncode") != 0:
         return False
-    if kind == "pytest":
-        return result.get("nodes") == check.get("nodes")
     if kind == "command":
         return result.get("argv") == check.get("argv")
     if kind != "search":
@@ -1287,7 +1243,7 @@ def command_supersede(state_path: pathlib.Path, request_path: pathlib.Path, new_
     # Already-created maintenance files retain their validated original owner.
     carried = _string_list(old["allowed_paths"], "prepared allowed paths")
     state, repo, root, new_evidence, disposable = _validated_request(
-        request_path, carried_paths=carried, collect_nodes=False,
+        request_path, carried_paths=carried,
     )
     if (state["repo_root"] != old["repo_root"] or state["branch"] != old["branch"]
             or root != cleanup["task_temp_root"]):
@@ -1309,11 +1265,6 @@ def command_supersede(state_path: pathlib.Path, request_path: pathlib.Path, new_
         raise UpdateExecutionError("successor artifact paths overlap existing ownership")
     if destination.exists() or new_evidence.exists():
         raise UpdateExecutionError("refusing to overwrite successor outputs")
-    # Collection can import repository code. Reject scope and ownership changes
-    # before invoking any revised check, including collection-only pytest calls.
-    checks = state["checks"]
-    assert isinstance(checks, list)
-    _collect_declared_pytest_nodes(repo, checks, root)
     # The old baseline is authoritative for carried paths and unrelated dirt.
     state["head"] = old["head"]
     state["baseline_dirty"] = old["baseline_dirty"]

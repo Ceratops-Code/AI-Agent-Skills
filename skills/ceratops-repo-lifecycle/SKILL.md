@@ -42,9 +42,9 @@ and publication.
 - Target repository, checkout, task worktree, branch, selected source branches,
   PR, artifact, dependency queue, compatibility gap, or creation request that
   identifies the action.
-- Whether promotion stops at `release/local`, deploys selected deliverables,
-  or continues into shipping; capture ordered complete YAML operation locations
-  and keep these flow decisions outside the contract.
+- Whether promotion stops at the selected local promotion branch, deploys
+  selected deliverables, or continues into shipping; capture ordered complete
+  YAML operation locations and keep these flow decisions outside the contract.
 - Required live GitHub, local repository, CI, artifact, credential, and
   deployment context named by the selected action reference.
 
@@ -70,20 +70,20 @@ and publication.
 - Use supported SDLC formats through the shared loader without migration.
   Require an upgrade only when the requested operation cannot run safely;
   installer release-number differences alone do not establish incompatibility.
-- Apply current compatibility with SDLC version 3 and separate validation and
-  tests. Read v4 through the shared schema and operation adapter without
-  converting existing contracts; the compatibility producer upgrades older
-  formats only with clear operation ownership.
+- Apply current compatibility with SDLC version 4 and separate validation and
+  tests. Read supported older formats through the shared schema and operation
+  adapter without converting existing contracts; the compatibility producer
+  upgrades them only with clear operation ownership.
 - Read declared prerequisite metadata before setup; run only explicitly chosen
   bootstrap operations. Prerequisites and artifact identity are annotations,
   not inferred check or installation commands.
-- For SDLC version 3, run skill-owned deterministic action bindings through the
+- For SDLC version 4, run skill-owned deterministic action bindings through the
   SDLC engine. Return unresolved routes as blockers before dependent mutation.
   CI defers every skill handoff without claiming its action completed.
 - Require successful validation followed by separate tests before promotion
   continuation, shipping, publication, and deployment. Invoke repository
   runners for these gates; test runners own saved-result reuse. Explicit
-  selection cannot omit version-3 gates; a declared no-op must include its
+  selection cannot omit version-4 gates; a declared no-op must include its
   reason.
 - Treat `completed` as command completion; validate retained
   `step_results[].result` independently against the producer's schema and
@@ -125,15 +125,18 @@ and publication.
 - Use `create-or-publish`, `apply-ceratops-compatibility`,
   `repo-contracts-review`, `codeql-disposition`, `health-audit`, or
   `dependency-maintenance` for their named repository surfaces.
-- Use `promote` when selected committed branches should join a local
-  `release/local` branch without deployment.
+- Use `promote` when selected committed branches should join the local
+  promotion branch without deployment. The default is `release/local`; use
+  `promote/local` when an authoritative `release` branch occupies that Git ref
+  namespace.
 - Use `promote-and-deploy` when promotion should run explicitly selected
   `deploy-local` entries and use their advisory routing for domain work.
 - Use composed promotion and shipping when selected committed branches should
   enter the complete ship workflow immediately after promotion; only shipping
   may publish a release or deploy in this mode.
-- Use `ship` for staged-branch GitHub delivery and selected-source cleanup;
-  publication and local deployment run only when their operations are selected.
+- Use `ship` for GitHub delivery from the same branch selected during promotion
+  and for selected-source cleanup; publication and local deployment run only
+  when their operations are selected.
 - Use `merge-pr` only when standalone PR finalization is the whole task.
 - Use `publish-pr` when explicitly asked to publish selected changes as a PR;
   preserve repository branch and promotion policies, and stop after verifying
