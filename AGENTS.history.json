@@ -302,6 +302,14 @@
       "decision": "Name the release-entry gate SKILLS-PROMOTE-01, call the transition promotion, and update its two override relations. This supersedes the wording of the earlier 'Express local release staging as a positive authorization gate' decision.",
       "reason": "Repository lifecycle calls the move into release/local promotion; staging describes the assembled release batch.",
       "regression": "Continue requiring explicit promotion, shipping, or local-preview-sync intent before promoting skill-source changes; preserve the fast-change override, new-skill default-promotion exception, prior history decisions, and release/local shipping."
+    },
+    {
+      "rules": [
+        "SKILLS-RUNTIME-01"
+      ],
+      "decision": "Replace helper-location mechanics with repository ownership of alignment between the skill-runtime execution contract, its producers and consumers, and its behavioral tests.",
+      "reason": "Runtime selection and child execution belong to the executable contract; repeating those mechanics in repository and skill instructions creates source-of-truth drift.",
+      "regression": "Preserve portable installed-runtime use and keep interpreter and helper paths out of skill and action instructions."
     }
   ]
 }

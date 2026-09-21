@@ -70,10 +70,10 @@ Project-specific rules for this skills repository.
   filesystem paths unless an external runtime explicitly requires them; use
   repo-relative paths or portable variables such as `$CODEX_HOME`.
   - self: list-heavy
-- [SKILLS-RUNTIME-01] For skill runtime workflows, invoke shared helpers through
-  installed console commands, `python -m <module>` entrypoints, or scripts in
-  the installed skill folder; do not locate shared helpers by absolute paths or
-  by the repo's parent directory.
+- [SKILLS-RUNTIME-01] Keep every producer and consumer of the repository's
+  skill-runtime execution contract aligned with its behavioral tests; skill and
+  action instructions may declare logical operations and arguments but must not
+  construct interpreter or helper paths.
 - [SKILLS-MAINT-01] Run repository-maintenance executables only from
   `scripts/` in the active source checkout; installed skill folders are not
   maintenance fallbacks.
