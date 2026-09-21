@@ -197,10 +197,10 @@ Promotion validates the assembled local promotion commit. It uses
 `release/local` by default and `promote/local` when a repository's authoritative
 `release` branch makes the default Git ref impossible.
 `promote-and-deploy` additionally runs explicitly selected `deploy-local`
-entries after that single validation and test pass. Shipping requires both
-results before remote changes and repeats both on the synchronized commit before
-pending publication or deployment. Successful earlier checks do not suppress
-a later lifecycle
+entries after that single validation and test pass. Shipping uses the same
+selected promotion branch. It requires both results before remote changes and
+repeats both on the synchronized commit before pending publication or
+deployment. Successful earlier checks do not suppress a later lifecycle
 boundary. The agent repairs ordinary failures in the selected task worktree,
 commits and retries; a failed check never permits later mutation.
 
@@ -718,10 +718,12 @@ for normal use, or `release/local` for an active unpublished preview.
 After changing the installed source snapshot, use the installed lifecycle
 skill's `deploy` action for managed updates or the independent installer for
 an explicit overlay without validation or retirement.
-When shipping a staged batch, reuse the same `release/local` branch name locally
-and remotely by default. Use `$ceratops-repo-lifecycle` `promote` to assemble
-selected reviewed branches without installation, or `promote-and-deploy` to run
-an explicit ordered deploy-operation selection and any returned handoffs. Use
+When shipping a staged batch, reuse the selected promotion branch locally and
+remotely: `release/local` by default, or `promote/local` when an authoritative
+`release` branch occupies that ref namespace. Use `$ceratops-repo-lifecycle`
+`promote` to assemble selected reviewed branches without installation, or
+`promote-and-deploy` to run an explicit ordered deploy-operation selection and
+any returned handoffs. Use
 `ship` for
 the complete
 scoped pre-push check, exact-commit PR publication, readiness and review gates,

@@ -134,8 +134,9 @@ and publication.
 - Use composed promotion and shipping when selected committed branches should
   enter the complete ship workflow immediately after promotion; only shipping
   may publish a release or deploy in this mode.
-- Use `ship` for staged-branch GitHub delivery and selected-source cleanup;
-  publication and local deployment run only when their operations are selected.
+- Use `ship` for GitHub delivery from the same branch selected during promotion
+  and for selected-source cleanup; publication and local deployment run only
+  when their operations are selected.
 - Use `merge-pr` only when standalone PR finalization is the whole task.
 - Use `publish-pr` when explicitly asked to publish selected changes as a PR;
   preserve repository branch and promotion policies, and stop after verifying
