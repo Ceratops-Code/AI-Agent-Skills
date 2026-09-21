@@ -1115,6 +1115,90 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert "unclassified contract field root.unconsumed_policy" in consistency_result.stdout
 
 
+def test_explicit_app_test_ownership_does_not_generate_python_test_runner(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "app-repository"
+    repo.mkdir()
+    (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
+    (repo / "README.md").write_text(
+        "# App Repository\n", encoding="utf-8", newline="\n"
+    )
+    captured_tests = repo / "code" / "captured" / "tests"
+    captured_tests.mkdir(parents=True)
+    (captured_tests / "test_probe.py").write_text(
+        "def test_probe(): pass\n", encoding="utf-8", newline="\n"
+    )
+    (repo / "runtime").mkdir()
+    (repo / "runtime" / "app.json").write_text(
+        "{}\n", encoding="utf-8", newline="\n"
+    )
+    (repo / "sdlc").mkdir()
+    _write_current_sdlc(
+        repo,
+        deliverables={
+            "apps": {
+                "fixture-app": {
+                    "source": ".",
+                    "manifest": "runtime/app.json",
+                    "prerequisites": [],
+                    "actions": {
+                        "validate": {
+                            "requires": {"capabilities": []},
+                            "no-op": "Covered by repository validation.",
+                        },
+                        "test": {
+                            "requires": {"capabilities": ["python"]},
+                            "steps": [{"run": ["python", "-V"]}],
+                        },
+                        "install": {
+                            "requires": {"capabilities": []},
+                            "no-op": "Fixture has no installation side effect.",
+                        },
+                    },
+                }
+            }
+        },
+    )
+    contract_path = repo / "sdlc" / "sdlc.yml"
+    contract = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
+    contract["repository"]["capabilities"]["python"] = {"executable": "python"}
+    contract["repository"]["actions"]["test"] = {
+        "requires": {"capabilities": []},
+        "no-op": "The app deliverable owns executable tests.",
+    }
+    contract_path.write_text(
+        yaml.safe_dump(contract, sort_keys=False), encoding="utf-8", newline="\n"
+    )
+
+    result = run_compatibility_engine(
+        REPOSITORY_LIFECYCLE_SCRIPTS,
+        "apply",
+        "--target-repo-root",
+        str(repo),
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert "code/captured/tests/test_probe.py" in json.loads(result.stdout)["python_tests"]
+    assert not (repo / "scripts" / "run-tests.py").exists()
+    runtime = tomllib.loads((repo / "scripts" / "pyproject.toml").read_text())
+    assert not any(
+        dependency.split("=", 1)[0] == "pytest"
+        for dependency in runtime["project"]["dependencies"]
+    )
+    preserved = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
+    assert preserved["repository"]["actions"]["test"]["no-op"] == (
+        "The app deliverable owns executable tests."
+    )
+    assert preserved["deliverables"]["apps"]["fixture-app"]["actions"]["test"][
+        "steps"
+    ] == [{"run": ["python", "-V"]}]
+    validator = importlib.import_module(
+        "ceratops_repo_compatibility_engine.validate_ceratops_compatibility"
+    )
+    assert validator.validate_ceratops_compatibility(repo)["valid"] is True
+
+
 def test_compatibility_materializer_preserves_existing_validator_and_ci(
     tmp_path: pathlib.Path,
 ) -> None:

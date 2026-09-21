@@ -390,10 +390,28 @@ def validate_ceratops_compatibility(repo_root: pathlib.Path) -> CompatibilityRes
 
     errors: list[str] = []
     python_tests = discover_python_tests(root, contract["python_test_detection"])
+    sdlc: Mapping[str, Any] | None = None
+    sdlc_errors: list[str] = []
+    entries: dict[str, Mapping[str, Any]] = {}
+    if not _regular_file_error(root, paths["sdlc"]):
+        sdlc, sdlc_errors = read_contract(root / paths["sdlc"])
+        if sdlc:
+            entries = operation_entries(sdlc)
+    test_runner_relative = surfaces["python_test_runner"]["path"]
+    test_runner_selected = any(
+        test_runner_relative in step.get("run", [])
+        for name, operation in entries.items()
+        if operation_category(name) == "tests"
+        for step in operation.get("steps", [])
+    )
     for name, surface in surfaces.items():
         required = surface["required"] == "always" or (
             surface["required"] == "with_skills" and bool(source_skills)
-        ) or (surface["required"] == "with_python_tests" and bool(python_tests))
+        ) or (
+            surface["required"] == "with_python_tests"
+            and bool(python_tests)
+            and test_runner_selected
+        )
         if (required or name in present) and (error := _regular_file_error(root, paths[name])):
             errors.append(error)
     if not _regular_file_error(root, paths["workflow"]):
@@ -405,12 +423,10 @@ def validate_ceratops_compatibility(repo_root: pathlib.Path) -> CompatibilityRes
         )
         errors.extend(manifest_errors)
     if "sdlc" in present and not _regular_file_error(root, paths["sdlc"]):
-        sdlc, sdlc_errors = read_contract(root / paths["sdlc"])
         errors.extend(sdlc_errors)
         if sdlc and sdlc["version"] != contract["sdlc_version"]:
             errors.append("current Ceratops compatibility requires SDLC version " + str(contract["sdlc_version"]))
         elif sdlc:
-            entries = operation_entries(sdlc)
             errors.extend(_validation_coverage_errors(root, sdlc, validation_contract))
             expected = load_compatibility_contract()["runtime"]["project"]
             # uv supports project discovery from the script path and explicit

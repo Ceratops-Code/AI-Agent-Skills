@@ -36,7 +36,12 @@ from .compatibility_contract import (
 from .python_tests import discover_python_tests, test_operation
 from .python_tool_configuration import project_text, repository_configured
 from .repository_validation_contract import load_validation_contract
-from .sdlc_contract_validation import load_contract, validation_errors
+from .sdlc_contract_validation import (
+    load_contract,
+    operation_category,
+    operation_entries,
+    validation_errors,
+)
 from .validate_ceratops_compatibility import (
     action_assignment_errors,
     validate_ceratops_compatibility,
@@ -778,7 +783,7 @@ def build_sdlc_contract_candidate(
     *,
     skill_names: list[str],
     apply_contract: bool,
-) -> dict[str, object] | None:
+) -> dict[str, object]:
     """Preserve target capabilities and apply the typed v4 lifecycle.
 
     The template owns repository validation; the compatibility contract owns
@@ -1180,11 +1185,25 @@ def plan_ceratops_compatibility(
         action_errors = action_assignment_errors(repo_root, manifest)
         if action_errors:
             raise RuntimeError("; ".join(action_errors))
+    sdlc_contract = build_sdlc_contract_candidate(
+        repo_root,
+        skill_names=sorted(skill_names),
+        apply_contract=apply_sdlc_contract,
+    )
     validator_text, workflow_text, validation_checks, markdown_files = validation_surfaces(repo_root, ci_action_revision)
     compatibility_contract = load_compatibility_contract()
     python_tests = discover_python_tests(repo_root, compatibility_contract["python_test_detection"])
     test_runner = repo_root / surface_path("python_test_runner")
-    generate_python_test_runner = bool(python_tests) and not test_runner.is_file()
+    test_runner_relative = surface_path("python_test_runner").as_posix()
+    test_runner_selected = any(
+        test_runner_relative in step.get("run", [])
+        for name, operation in operation_entries(sdlc_contract).items()
+        if operation_category(name) == "tests"
+        for step in operation.get("steps", [])
+    )
+    generate_python_test_runner = (
+        bool(python_tests) and test_runner_selected and not test_runner.is_file()
+    )
     generated_runtime = runtime_files(
         repo_root,
         BUNDLE_ROOT,
@@ -1208,11 +1227,7 @@ def plan_ceratops_compatibility(
         manifest=manifest,
         skill_updates=skill_updates,
         canonical_sources=canonical_sources,
-        sdlc_contract=build_sdlc_contract_candidate(
-            repo_root,
-            skill_names=sorted(skill_names),
-            apply_contract=apply_sdlc_contract,
-        ),
+        sdlc_contract=sdlc_contract,
         validator_text=validator_text,
         workflow_text=workflow_text,
         markdown_files=markdown_files,

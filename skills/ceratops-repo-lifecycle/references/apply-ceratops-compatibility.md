@@ -100,9 +100,11 @@ Infer the source identity from stable repository evidence before asking.
 - Run repository Python entrypoints through `uv run --locked <script.py>`.
   Keep their project and lock in `scripts`; uv owns Python selection and
   dependency synchronization. Do not inject environment bootstrap code.
-- Generate `scripts/run-tests.py` when Python tests are detected. Preserve
-  repository-owned test implementation; generated Python test commands use the
-  scripts project. CI runs validation and tests without executing skill handoffs.
+- Generate `scripts/run-tests.py` when compatibility infers repository test
+  ownership and selects that runner in SDLC. Preserve explicit SDLC test
+  ownership without creating an unused runner; generated Python test commands
+  use the scripts project. CI runs validation and tests without executing skill
+  handoffs.
 - Review custom validators and configuration-defined scripts to ensure they
   never run tests. Move test execution into SDLC test operations without losing
   target behavior before claiming compatibility. Detection cannot prove this
