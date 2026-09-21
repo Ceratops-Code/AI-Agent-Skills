@@ -517,7 +517,7 @@ def test_repository_ship_rejects_noncanonical_release_branch_before_remote_proce
     _, loaded, args, log, state, _ = _setup(tmp_path)
     args.head_branch = "release/task"
     with pytest.raises(
-        loaded["RepositoryShipError"], match="Head branch must be release/local"
+        loaded["RepositoryShipError"], match="Head branch must be one of"
     ):
         loaded["ship_repository"](args)
     assert state["calls"] == 0 and not log.exists()
