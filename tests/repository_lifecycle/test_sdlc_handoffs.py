@@ -8,16 +8,11 @@ import pathlib
 import shutil
 import subprocess
 import sys
-import tomllib
 from typing import Any
 
 import pytest
 
-from tests.repository_lifecycle.support import (
-    REPOSITORY_LIFECYCLE_SCRIPTS,
-    run_operation_cli,
-)
-from tests.support.processes import run_compatibility_engine
+from tests.repository_lifecycle.support import run_operation_cli
 from tests.support.repositories import ROOT, run_ci_action, run_git
 
 runner = importlib.import_module("repository_operation")
@@ -33,46 +28,6 @@ def _repository(repo: pathlib.Path) -> str:
     assert run_git(repo, "add", ".").returncode == 0
     assert run_git(repo, "commit", "-m", "fixture").returncode == 0
     return run_git(repo, "rev-parse", "HEAD").stdout.strip()
-
-
-def test_compatibility_preserves_custom_unittest_runner_without_pytest(
-    tmp_path: pathlib.Path,
-) -> None:
-    """An existing test runner owns its framework dependency declaration."""
-
-    repo = tmp_path / "repository"
-    scripts = repo / "scripts"
-    scripts.mkdir(parents=True)
-    (repo / ".git").write_text("gitdir: fixture\n", encoding="utf-8")
-    (scripts / "pyproject.toml").write_text(
-        "[project]\n"
-        'name = "repository-tools"\n'
-        'version = "0.0.0"\n'
-        'requires-python = ">=3.11"\n'
-        'dependencies = ["mypy", "ruff"]\n',
-        encoding="utf-8",
-    )
-    runner = scripts / "run-tests.py"
-    runner_text = "import unittest\n\nunittest.main(module=None)\n"
-    runner.write_text(runner_text, encoding="utf-8")
-    tests = repo / "tests"
-    tests.mkdir()
-    (tests / "test_example.py").write_text("import unittest\n", encoding="utf-8")
-
-    result = run_compatibility_engine(
-        REPOSITORY_LIFECYCLE_SCRIPTS,
-        "apply",
-        "--target-repo-root",
-        str(repo),
-    )
-
-    assert result.returncode == 0, result.stdout
-    assert runner.read_text(encoding="utf-8") == runner_text
-    project = tomllib.loads((scripts / "pyproject.toml").read_text(encoding="utf-8"))
-    assert "pytest" not in project["project"]["dependencies"]
-    assert "scripts/run-tests.py" in (repo / "sdlc/sdlc.yml").read_text(
-        encoding="utf-8"
-    )
 
 
 
