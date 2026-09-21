@@ -310,7 +310,7 @@ class GHContractStateEngineTests(unittest.TestCase):
                 )
             )
 
-    def test_local_health_runs_repository_validator_once(self):
+    def test_local_health_reports_validation_readiness_without_running_checks(self):
         with tempfile.TemporaryDirectory() as repository_directory:
             with tempfile.TemporaryDirectory() as evidence_directory:
                 root = pathlib.Path(repository_directory)
@@ -318,13 +318,7 @@ class GHContractStateEngineTests(unittest.TestCase):
                 validator = root / "scripts" / "validate-repository.py"
                 validator.parent.mkdir()
                 validator.write_text(
-                    "import argparse, pathlib\n"
-                    "parser = argparse.ArgumentParser()\n"
-                    "parser.add_argument('--evidence-file', required=True)\n"
-                    "args = parser.parse_args()\n"
-                    "path = pathlib.Path(args.evidence_file)\n"
-                    "path.write_text('once', encoding='utf-8')\n"
-                    "print('OK')\n",
+                    "raise SystemExit('health must not run this validator')\n",
                     encoding="utf-8",
                 )
                 workflow = root / ".github" / "workflows" / "validate.yml"
@@ -337,14 +331,36 @@ class GHContractStateEngineTests(unittest.TestCase):
                     "--evidence-file evidence.log\n",
                     encoding="utf-8",
                 )
-
-                local = collect_local_repository(
-                    repository_directory,
-                    [{"id": "content.repository_validation"}],
-                    repository_validation_evidence_file=str(evidence),
+                contract = root / "sdlc" / "sdlc.yml"
+                contract.parent.mkdir()
+                contract.write_text(
+                    json.dumps(
+                        {
+                            "version": 2,
+                            "kind": "ceratops-sdlc",
+                            "repository": {"validate": {}},
+                        }
+                    ),
+                    encoding="utf-8",
                 )
 
-                self.assertEqual(evidence.read_text(encoding="utf-8"), "once")
+                real_run = subprocess.run
+
+                def run_git_only(*args, **kwargs):
+                    self.assertEqual(args[0][0], "git")
+                    return real_run(*args, **kwargs)
+
+                with mock.patch(
+                    "github_contract_engine.collectors.local_repository.subprocess.run",
+                    side_effect=run_git_only,
+                ):
+                    local = collect_local_repository(
+                        repository_directory,
+                        [{"id": "content.repository_validation"}],
+                        repository_validation_evidence_file=str(evidence),
+                    )
+
+                self.assertFalse(evidence.exists())
                 self.assertEqual(
                     local["repository_validation"],
                     {
