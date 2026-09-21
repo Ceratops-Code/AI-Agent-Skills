@@ -662,15 +662,6 @@ def promote(args: argparse.Namespace, *, timings: dict[str, float] | None = None
         raise PromotionError(
             f"release_branch must be one of {', '.join(PROMOTION_BRANCHES)}."
         )
-    has_release_ref = _ref_exists(repo_root, "refs/heads/release")
-    if args.release_branch == RELEASE_BRANCH and has_release_ref:
-        raise PromotionError(
-            "release/local conflicts with the existing release branch; select promote/local."
-        )
-    if args.release_branch == "promote/local" and not has_release_ref:
-        raise PromotionError(
-            "promote/local is reserved for repositories with an existing release branch."
-        )
     branches = list(dict.fromkeys(args.source_branch or []))
     ship_after_promotion = bool(getattr(args, "ship_after_promotion", False))
     if not ship_after_promotion and any(
@@ -735,6 +726,15 @@ def promote(args: argparse.Namespace, *, timings: dict[str, float] | None = None
     if args.parameter and args.run_operation is None:
         raise PromotionError("--parameter requires --run-operation.")
     parameters = parse_parameters(args.parameter or [])
+    has_release_ref = _ref_exists(repo_root, "refs/heads/release")
+    if args.release_branch == RELEASE_BRANCH and has_release_ref:
+        raise PromotionError(
+            "release/local conflicts with the existing release branch; select promote/local."
+        )
+    if args.release_branch == "promote/local" and not has_release_ref:
+        raise PromotionError(
+            "promote/local is reserved for repositories with an existing release branch."
+        )
     _clean(repo_root, "before promotion")
     source_states: dict[str, SourceState] = {}
     if not args.prepare_release_only:
@@ -984,7 +984,7 @@ def _validate_completion(receipt: object, *, repo_root: pathlib.Path, commit: st
         raise PromotionError("Deployment completion evidence lacks a transaction identity.")
 
 
-def _completed_deployment(result: object, commit: str, *, release_branch: str = RELEASE_BRANCH,
+def _completed_deployment(result: object, commit: str, *, release_branch: str | None = None,
                           repo_root: pathlib.Path | None = None,
                           external: dict[str, dict[str, Any]] | None = None,
                           record_binding: dict[str, Any] | None = None,
@@ -998,8 +998,10 @@ def _completed_deployment(result: object, commit: str, *, release_branch: str = 
     """
     if not isinstance(result, dict) or result.get("status") != "ready":
         raise PromotionError("Result is not a successful promote-and-deploy outcome.")
-    if result.get("head") != commit or result.get("release_branch") != release_branch:
-        raise PromotionError("Result head or promotion branch does not match finalization inputs.")
+    if result.get("head") != commit:
+        raise PromotionError("Result head does not match expected-commit.")
+    if release_branch is not None and result.get("release_branch") != release_branch:
+        raise PromotionError("Result promotion branch does not match finalization inputs.")
     operations = result.get("operations")
     if (not isinstance(operations, dict) or operations.get("status") != "completed"
             or operations.get("pending_operations") != []):

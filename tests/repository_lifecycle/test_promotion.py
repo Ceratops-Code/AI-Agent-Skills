@@ -1251,6 +1251,31 @@ def test_promote_repository_uses_conflict_free_branch_when_release_exists(
     assert run_git(repo, "branch", "--show-current").stdout.strip() == "promote/local"
     assert run_git(repo, "rev-parse", "release").stdout.strip() == main_head
     digest = hashlib.sha256(result_file.read_bytes()).hexdigest()
+    wrong_branch = subprocess.run(
+        [
+            sys.executable,
+            str(PROMOTE_REPOSITORY),
+            "--finalize-result",
+            "--promotion-only",
+            "--result-file",
+            str(result_file),
+            "--task-temp-root",
+            str(task_temp),
+            "--repo-root",
+            str(repo),
+            "--expected-commit",
+            approved_head,
+            "--verified-result-sha256",
+            digest,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+    assert wrong_branch.returncode == 1
+    assert "Promotion-only result is incomplete" in json.loads(wrong_branch.stderr)["message"]
+    assert result_file.is_file()
     finalized = subprocess.run(
         [
             sys.executable,
