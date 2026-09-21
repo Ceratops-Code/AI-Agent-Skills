@@ -1642,8 +1642,14 @@ def test_generated_scripts_and_skill_owned_ci_keep_environments_and_tests_separa
     facts = collector._repository_validation_facts(
         {"available": True, "root": str(repo)}, [{"id": "content.repository_validation"}], str(evidence),
     )
-    assert facts["valid"] is False
-    assert [entry["status"] for entry in facts["gate_results"]] == ["completed", "tests_failed"]
+    assert facts == {
+        "applicable": True,
+        "validator_present": True,
+        "workflow_present": True,
+        "valid": True,
+        "errors": [],
+    }
+    assert json.loads(evidence.read_text())["status"] == "tests_failed"
     probe.write_text("def test_probe():\n    assert True\n")
     passed = run_ci_action(repo, evidence, bundle)
     assert passed.returncode == 0, passed.stdout + passed.stderr
