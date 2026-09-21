@@ -460,18 +460,19 @@ def test_android_coverage_requires_declared_non_test_gradle_validation(
 
     sdlc_path = repo / "sdlc/sdlc.yml"
     sdlc = yaml.safe_load(sdlc_path.read_text(encoding="utf-8"))
-    sdlc["repository"]["prerequisites"].update(
+    sdlc["repository"]["capabilities"].update(
         {
             "jdk": {"executable": "java"},
             "android-sdk": {"executable": "sdkmanager"},
         }
     )
     android_operation = {
-        "prerequisites": ["jdk", "android-sdk"],
+        "requires": {"capabilities": ["jdk", "android-sdk"]},
         "validation-capabilities": ["android-lint", "android-build"],
         "steps": [{"run": ["python", "scripts/android-validation.py"]}],
     }
-    sdlc["repository"]["tests"]["android"] = android_operation
+    original_test = sdlc["repository"]["actions"]["test"]
+    sdlc["repository"]["actions"]["test"] = android_operation
     sdlc_path.write_text(
         yaml.safe_dump(sdlc, sort_keys=False), encoding="utf-8", newline="\n"
     )
@@ -479,14 +480,17 @@ def test_android_coverage_requires_declared_non_test_gradle_validation(
     assert tests_only["valid"] is False
     assert any("coverage android-gradle requires" in error for error in tests_only["errors"])
 
-    sdlc["repository"]["tests"].pop("android")
-    sdlc["repository"]["validate"]["android"] = android_operation
+    sdlc["repository"]["actions"]["test"] = original_test
+    validate = sdlc["repository"]["actions"]["validate"]
+    validate["requires"]["capabilities"].extend(["jdk", "android-sdk"])
+    validate["validation-capabilities"] = ["android-lint", "android-build"]
+    validate["steps"].append({"run": ["python", "scripts/android-validation.py"]})
     sdlc_path.write_text(
         yaml.safe_dump(sdlc, sort_keys=False), encoding="utf-8", newline="\n"
     )
     assert compatibility.validate_ceratops_compatibility(repo)["valid"] is True
 
-    android_operation["validation-capabilities"] = ["android-build"]
+    validate["validation-capabilities"] = ["android-build"]
     sdlc_path.write_text(
         yaml.safe_dump(sdlc, sort_keys=False), encoding="utf-8", newline="\n"
     )

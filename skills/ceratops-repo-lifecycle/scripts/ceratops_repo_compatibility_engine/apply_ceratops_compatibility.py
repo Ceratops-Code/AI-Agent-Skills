@@ -631,6 +631,7 @@ def _legacy_repository_action(
     if category == "test-selection" and len(operations) != 1:
         raise RuntimeError("legacy test-selection ownership must resolve to one action")
     capabilities: list[str] = []
+    validation_capabilities: list[str] = []
     steps: list[object] = []
     parameters: list[str] | None = None
     no_op: str | None = None
@@ -640,6 +641,7 @@ def _legacy_repository_action(
                 f"legacy repository {category} action ownership is ambiguous"
             )
         capabilities.extend(operation.get("prerequisites", []))
+        validation_capabilities.extend(operation.get("validation-capabilities", []))
         current_parameters = operation.get("parameters")
         if current_parameters is not None:
             if parameters is not None and parameters != current_parameters:
@@ -664,6 +666,10 @@ def _legacy_repository_action(
     action: dict[str, object] = {
         "requires": {"capabilities": list(dict.fromkeys(capabilities))}
     }
+    if validation_capabilities:
+        action["validation-capabilities"] = list(
+            dict.fromkeys(validation_capabilities)
+        )
     if parameters is not None:
         action["parameters"] = parameters
     if steps:

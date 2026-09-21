@@ -184,6 +184,15 @@
         "requires": {
           "$ref": "#/$defs/requirements"
         },
+        "validation-capabilities": {
+          "description": "Validation behavior supplied by this action and consumed by repository coverage requirements.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
         "parameters": {
           "type": "array",
           "uniqueItems": true,

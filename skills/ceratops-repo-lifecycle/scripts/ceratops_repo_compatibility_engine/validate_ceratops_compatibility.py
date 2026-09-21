@@ -57,6 +57,15 @@ def _repository_entrypoint(root: pathlib.Path, operation: Mapping[str, Any]) -> 
     return False
 
 
+def _operation_requirements(operation: Mapping[str, Any]) -> set[str]:
+    """Return required runtime capabilities across supported SDLC versions."""
+
+    requirements = operation.get("requires")
+    if isinstance(requirements, Mapping):
+        return set(requirements.get("capabilities", []))
+    return set(operation.get("prerequisites", []))
+
+
 def _validation_coverage_errors(
     root: pathlib.Path,
     sdlc: Mapping[str, Any],
@@ -82,7 +91,7 @@ def _validation_coverage_errors(
             and required_capabilities.issubset(
                 operation.get("validation-capabilities", [])
             )
-            and required_prerequisites.issubset(operation.get("prerequisites", []))
+            and required_prerequisites.issubset(_operation_requirements(operation))
             and (
                 not requirement["require_repository_entrypoint"]
                 or _repository_entrypoint(root, operation)
