@@ -88,20 +88,20 @@ owns selected post-merge publication, deployment and cleanup.
 3. For `promote-and-deploy`, repeat `--run-operation LOCATION` in order.
    Repeat `--parameter name=value` for required operation inputs; it is invalid
    without `--run-operation`.
-   The helper accepts only `deliverables.<name>.deploy-local.<operation>`,
+   The helper accepts only `deliverables.<kind>.<name>.actions.install`,
    prepares the entire selection before commands, runs applicable validation
    and tests once, and executes the prepared operations only while the checked
    commit stays clean and unchanged. Explicit missing locations are errors;
-   version-3 tests require declared commands, handoffs, or reasoned no-ops.
+   v4/v5 tests require declared commands, handoffs, or reasoned no-ops.
 4. For composed shipping, use `--ship-after-promotion`, one optional
    `--sdlc-contract PATH`, and repeated `--publish-operation LOCATION` or
    `--deploy-operation LOCATION` for requested post-merge work. Omitted mutation
    selections do nothing. The helper records the exact head and scope, runs
    promotion validation and tests, then invokes shipping with the same inputs.
 5. Let the SDLC engine execute registered deterministic skill actions for
-   version-3 handoffs. Resolve any returned judgment-required route within the
-   selected skill action; dependent mutation remains blocked. Preserve advisory
-   routing for older contracts and never claim a route alone completed work.
+   v4/v5 structured handoffs. Resolve any returned judgment-required route
+   within the selected skill action; dependent mutation remains blocked. SDLC
+   v1-v3 contracts are rejected before this workflow executes.
 6. Atomically normalize an exact version-1 pending-work scope to version 2
    before reuse. Retire a missing legacy source, keep a clean source contained
    in the legacy target as `retained`, and mark a dirty, unavailable, or

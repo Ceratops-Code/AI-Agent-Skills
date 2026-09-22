@@ -57,33 +57,29 @@ and publication.
   this skill.
 - Execute named SDLC entries through `scripts/repository_operation.py` with
   `--repo-root PATH --sdlc-contract PATH --operation LOCATION`; repeat the last
-  flag in order. Locations follow the YAML hierarchy, such as
-  `repository.bootstrap.runtime` or
-  `deliverables.skills.deploy-local.ceratops-managed`.
-  Version 1 locations use `deploy.operations.NAME` or `release.operations.NAME`.
-- For SDLC v4, select `repository.actions.ACTION` or
-  `deliverables.KIND.NAME.actions.ACTION`. Read the package prerequisites and
-  action locations returned by `--prepare-only` before a dependent action;
-  select prerequisite actions explicitly after checking their artifact state.
-  A structured `steps.handoff` is pending work for the named lifecycle, not
-  evidence that validation, installation, or publication completed.
-- Use supported SDLC formats through the shared loader without migration.
-  Require an upgrade only when the requested operation cannot run safely;
-  installer release-number differences alone do not establish incompatibility.
-- Apply current compatibility with SDLC version 4 and separate validation and
-  tests. Read supported older formats through the shared schema and operation
-  adapter without converting existing contracts; the compatibility producer
-  upgrades them only with clear operation ownership.
+  flag in order. Locations use `repository.actions.ACTION` or
+  `deliverables.KIND.NAME.actions.ACTION`.
+- For SDLC v4 or v5, read the package prerequisites and action locations
+  returned by `--prepare-only` before a dependent action; select prerequisite
+  actions explicitly after checking their artifact state. A structured
+  `steps.handoff` is pending work for the named lifecycle, not evidence that
+  validation, installation, or publication completed.
+- Reject SDLC v1 through v3 in the shared loader and require the repository to
+  upgrade its contract before any operation executes. Installer release-number
+  differences alone do not establish incompatibility.
+- Apply new compatibility declarations as SDLC v4 with separate validation and
+  tests. Read existing v5 declarations without migration and never rewrite them
+  to v4.
 - Read declared prerequisite metadata before setup; run only explicitly chosen
   bootstrap operations. Prerequisites and artifact identity are annotations,
   not inferred check or installation commands.
-- For SDLC version 4, run skill-owned deterministic action bindings through the
+- For SDLC v4 or v5, run skill-owned deterministic action bindings through the
   SDLC engine. Return unresolved routes as blockers before dependent mutation.
   CI defers every skill handoff without claiming its action completed.
 - Require successful validation followed by separate tests before promotion
   continuation, shipping, publication, and deployment. Invoke repository
   runners for these gates; test runners own saved-result reuse. Explicit
-  selection cannot omit version-4 gates; a declared no-op must include its
+  selection cannot omit declared gates; a declared no-op must include its
   reason.
 - Treat `completed` as command completion; validate retained
   `step_results[].result` independently against the producer's schema and

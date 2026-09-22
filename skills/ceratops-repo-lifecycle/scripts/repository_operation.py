@@ -42,7 +42,17 @@ PARAMETER_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 PLACEHOLDER_RE = re.compile(r"^\{(?P<name>[a-z][a-z0-9_]*)\}$")
 FAILURE_TAIL_LINES = 8
 FAILURE_TAIL_CHARS = 4096
-FAILED_STATUSES = frozenset({"operation_failed", "validation_failed", "tests_failed", "result_invalid", "state_changed", "handoff_required", "error"})
+FAILED_STATUSES = frozenset(
+    {
+        "operation_failed",
+        "validation_failed",
+        "tests_failed",
+        "result_invalid",
+        "state_changed",
+        "handoff_required",
+        "error",
+    }
+)
 MUTATION_CATEGORIES = frozenset({"build", "deploy-local", "publish"})
 
 
@@ -75,10 +85,9 @@ class PreparedOperation:
     category: str
     commit: str | None
     steps: tuple[PreparedStep, ...]
-    handoff: str | None
     prerequisites: Mapping[str, Any]
     no_op_reason: str | None = None
-    handoff_mode: str = "legacy"
+    handoff_mode: str = "skill"
     contract_path: pathlib.Path | None = None
     parameters: tuple[tuple[str, str], ...] = ()
     test_context: Mapping[str, str] | None = None
@@ -90,7 +99,10 @@ class OperationError(RuntimeError):
 
 
 def execute_handoff(
-    route: str, repo_root: pathlib.Path, *, inputs: Mapping[str, Any] | None = None,
+    route: str,
+    repo_root: pathlib.Path,
+    *,
+    inputs: Mapping[str, Any] | None = None,
     expected_commit: str | None = None,
 ) -> dict[str, object]:
     """Execute an installed-authorized skill action in its declared order.
@@ -105,21 +117,38 @@ def execute_handoff(
     """
 
     if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*", route):
-        return {"status": "handoff_required", "handoff": route, "message": "No deterministic skill/action binding."}
+        return {
+            "status": "handoff_required",
+            "handoff": route,
+            "message": "No deterministic skill/action binding.",
+        }
     skill, action = route.split("/")
     selected_skill = None
     if inputs is not None:
         selected_skill = inputs.get("skill")
         packages = inputs.get("prerequisite-packages", [])
-        if (skill != "ceratops-skill-lifecycle" or action not in {"source-validate", "deploy"}
-                or set(inputs) - {"skill", "prerequisite-packages"}
-                or not isinstance(selected_skill, str)
-                or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", selected_skill)
-                or not isinstance(packages, list)
-                or not all(isinstance(name, str) and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name) for name in packages)):
-            return {"status": "handoff_required", "handoff": route,
-                    "message": "No deterministic binding for these lifecycle inputs."}
-    skills = pathlib.Path(os.environ.get("CODEX_HOME", str(pathlib.Path.home() / ".codex"))) / "skills"
+        if (
+            skill != "ceratops-skill-lifecycle"
+            or action not in {"source-validate", "deploy"}
+            or set(inputs) - {"skill", "prerequisite-packages"}
+            or not isinstance(selected_skill, str)
+            or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", selected_skill)
+            or not isinstance(packages, list)
+            or not all(
+                isinstance(name, str)
+                and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name)
+                for name in packages
+            )
+        ):
+            return {
+                "status": "handoff_required",
+                "handoff": route,
+                "message": "No deterministic binding for these lifecycle inputs.",
+            }
+    skills = (
+        pathlib.Path(os.environ.get("CODEX_HOME", str(pathlib.Path.home() / ".codex")))
+        / "skills"
+    )
     installed_root = skills / skill
     installed_binding = installed_root / "references" / "action-executors.json"
     if (
@@ -127,17 +156,33 @@ def execute_handoff(
         or installed_binding.is_symlink()
         or not installed_binding.is_file()
     ):
-        return {"status": "handoff_required", "handoff": route, "message": "Installed skill has no executor binding."}
+        return {
+            "status": "handoff_required",
+            "handoff": route,
+            "message": "Installed skill has no executor binding.",
+        }
     root = installed_root
     binding = installed_binding
     uses_source_bundle = False
     source_root = repo_root / "skills" / skill
     source_binding = source_root / "references" / "action-executors.json"
     if source_binding.exists():
-        if source_root.is_symlink() or source_binding.is_symlink() or not source_binding.is_file():
-            return {"status": "handoff_required", "handoff": route, "message": "Source skill executor binding is unsafe."}
+        if (
+            source_root.is_symlink()
+            or source_binding.is_symlink()
+            or not source_binding.is_file()
+        ):
+            return {
+                "status": "handoff_required",
+                "handoff": route,
+                "message": "Source skill executor binding is unsafe.",
+            }
         if source_binding.read_bytes() != installed_binding.read_bytes():
-            return {"status": "handoff_required", "handoff": route, "message": "Source skill executor binding differs from the installed authorization."}
+            return {
+                "status": "handoff_required",
+                "handoff": route,
+                "message": "Source skill executor binding differs from the installed authorization.",
+            }
         root = source_root
         binding = source_binding
         uses_source_bundle = True
@@ -146,22 +191,39 @@ def execute_handoff(
     evidence: dict[str, object] = {"handoff": route, "steps": completed}
     try:
         document = json.loads(binding.read_text(encoding="utf-8"))
-        if set(document) != {"version", "actions"} or document.get("version") != 1 or not isinstance(document["actions"], dict):
+        if (
+            set(document) != {"version", "actions"}
+            or document.get("version") != 1
+            or not isinstance(document["actions"], dict)
+        ):
             raise ValueError("Unsupported executor binding document")
         entry = document.get("actions", {}).get(action)
         if entry is None:
-            return {"status": "handoff_required", "handoff": route, "message": "This action requires skill judgment."}
+            return {
+                "status": "handoff_required",
+                "handoff": route,
+                "message": "This action requires skill judgment.",
+            }
         if not isinstance(entry, dict) or set(entry) not in ({"run"}, {"steps"}):
             raise ValueError("Executor must declare run or ordered steps")
         steps = [entry] if "run" in entry else entry["steps"]
         if not isinstance(steps, list) or not steps:
             raise ValueError("Executor steps must be nonempty")
-        values = {"{python}": sys.executable, "{repo_root}": str(repo_root), "{skill_root}": str(root)}
+        values = {
+            "{python}": sys.executable,
+            "{repo_root}": str(repo_root),
+            "{skill_root}": str(root),
+        }
         commands: list[list[str]] = []
         # Prepare every step before side effects. The skill owns the whole
         # deterministic action, including its preconditions and cleanup.
         for step in steps:
-            if not isinstance(step, dict) or set(step) != {"run"} or not isinstance(step["run"], list) or not step["run"]:
+            if (
+                not isinstance(step, dict)
+                or set(step) != {"run"}
+                or not isinstance(step["run"], list)
+                or not step["run"]
+            ):
                 raise ValueError("Executor must declare nonempty argv")
             argv: list[str] = []
             for argument in step["run"]:
@@ -175,24 +237,52 @@ def execute_handoff(
                 # selected-skill interfaces, before running any action step.
                 script = step["run"][1] if len(step["run"]) > 1 else ""
                 if "--skill" in argv:
-                    return {**evidence, "status": "handoff_required", "message": "Binding already selects a skill."}
-                if script == "{skill_root}/scripts/skills-consistency-source-validator.py":
-                    if "--mode" not in argv or argv[argv.index("--mode") + 1:] != ["full"]:
-                        return {**evidence, "status": "handoff_required", "message": "Source validator binding has an unsupported selection interface."}
+                    return {
+                        **evidence,
+                        "status": "handoff_required",
+                        "message": "Binding already selects a skill.",
+                    }
+                if (
+                    script
+                    == "{skill_root}/scripts/skills-consistency-source-validator.py"
+                ):
+                    if "--mode" not in argv or argv[argv.index("--mode") + 1 :] != [
+                        "full"
+                    ]:
+                        return {
+                            **evidence,
+                            "status": "handoff_required",
+                            "message": "Source validator binding has an unsupported selection interface.",
+                        }
                     argv[argv.index("--mode") + 1] = "skill"
-                elif script != "{skill_root}/scripts/runtime/install-managed-skills.py" or action != "deploy":
-                    return {**evidence, "status": "handoff_required", "message": "Binding command does not support structured skill selection."}
+                elif (
+                    script != "{skill_root}/scripts/runtime/install-managed-skills.py"
+                    or action != "deploy"
+                ):
+                    return {
+                        **evidence,
+                        "status": "handoff_required",
+                        "message": "Binding command does not support structured skill selection.",
+                    }
                 argv.extend(["--skill", selected_skill])
             if step["run"][0] == "{python}" and not uses_source_bundle:
                 uv = shutil.which("uv")
                 metadata = installed_root / ".runtime-manifest.json"
                 if metadata.is_symlink() or not metadata.is_file() or uv is None:
-                    return {**evidence, "status": "handoff_required", "message": "Python action requires uv and an installed runtime manifest."}
+                    return {
+                        **evidence,
+                        "status": "handoff_required",
+                        "message": "Python action requires uv and an installed runtime manifest.",
+                    }
                 installed = json.loads(metadata.read_text(encoding="utf-8"))
                 selected = installed.get("python_runtime")
                 runtime_root = skills.parent / "runtimes/ceratops/versions"
                 if not isinstance(selected, str):
-                    return {**evidence, "status": "handoff_required", "message": "Installed skill has no pinned Python runtime."}
+                    return {
+                        **evidence,
+                        "status": "handoff_required",
+                        "message": "Installed skill has no pinned Python runtime.",
+                    }
                 python = pathlib.Path(selected)
                 if (
                     not python.is_absolute()
@@ -200,8 +290,20 @@ def execute_handoff(
                     or not python.is_file()
                     or not python.resolve().is_relative_to(runtime_root.resolve())
                 ):
-                    return {**evidence, "status": "handoff_required", "message": "Installed Python runtime is unavailable or unsafe."}
-                argv = [uv, "run", "--no-project", "--python", str(python), "python", *argv[1:]]
+                    return {
+                        **evidence,
+                        "status": "handoff_required",
+                        "message": "Installed Python runtime is unavailable or unsafe.",
+                    }
+                argv = [
+                    uv,
+                    "run",
+                    "--no-project",
+                    "--python",
+                    str(python),
+                    "python",
+                    *argv[1:],
+                ]
             commands.append(argv)
         for position, argv in enumerate(commands, 1):
             if expected_commit is not None:
@@ -209,16 +311,38 @@ def execute_handoff(
                     require_clean_commit(repo_root, expected_commit)
                 except OperationError as exc:
                     return {**evidence, "status": "state_changed", "message": str(exc)}
-            result = subprocess.run(argv, cwd=repo_root, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
+            result = subprocess.run(
+                argv,
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
             if result.returncode:
-                return {**evidence, "status": "operation_failed", "step": position, "exit_code": result.returncode, "stderr_tail": result.stderr[-4096:], "stdout_tail": result.stdout[-4096:]}
+                return {
+                    **evidence,
+                    "status": "operation_failed",
+                    "step": position,
+                    "exit_code": result.returncode,
+                    "stderr_tail": result.stderr[-4096:],
+                    "stdout_tail": result.stdout[-4096:],
+                }
             completed.append(position)
             captured = capture_step_result(result.stdout)
             if captured:
                 receipts.append({"step": position, **captured})
                 evidence["step_results"] = receipts
-            if expected_commit is not None and repository_commit(repo_root) != expected_commit:
-                return {**evidence, "status": "state_changed", "message": "HEAD changed during the skill action."}
+            if (
+                expected_commit is not None
+                and repository_commit(repo_root) != expected_commit
+            ):
+                return {
+                    **evidence,
+                    "status": "state_changed",
+                    "message": "HEAD changed during the skill action.",
+                }
     except (OSError, ValueError, TypeError, AttributeError) as exc:
         return {**evidence, "status": "operation_failed", "message": str(exc)}
     return {**evidence, "status": "completed"}
@@ -245,7 +369,11 @@ def read_repository_contract(
     if not resolved.is_relative_to(repo_root) or lexical.is_symlink():
         raise OperationError("SDLC contract must be a file inside the repository.")
     if not resolved.exists() and selected == DEFAULT_CONTRACT:
-        return {"version": 2, "kind": "ceratops-sdlc"}
+        return {
+            "version": 4,
+            "kind": "ceratops-sdlc",
+            "repository": {"capabilities": {}, "actions": {}},
+        }
     if not resolved.is_file():
         raise OperationError("Selected SDLC contract must be a repository file.")
     try:
@@ -358,7 +486,9 @@ def require_clean_commit(repo_root: pathlib.Path, commit: str) -> None:
         )
     status = subprocess.run(
         ["git", "-C", str(repo_root), "status", "--porcelain"],
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if status.returncode or status.stdout.strip():
         raise OperationError(
@@ -370,7 +500,8 @@ def prepare_operations(
     repo_root: pathlib.Path,
     requests: Sequence[OperationRequest],
     contract_path: pathlib.Path | None = None,
-    *, context: str = "skill",
+    *,
+    context: str = "skill",
 ) -> list[PreparedOperation]:
     """Validate all selected commands, parameters and cwd values before execution."""
 
@@ -385,12 +516,7 @@ def prepare_operations(
         category = operation_category(request.operation, version=contract["version"])
         selected = entries.get(request.operation)
         if selected is None:
-            absent_v1_section = (
-                contract.get("version") == 1
-                and request.operation.split(".")[0] in {"deploy", "release"}
-                and request.operation.split(".")[0] not in contract
-            )
-            if not request.if_declared and not absent_v1_section:
+            if not request.if_declared:
                 raise OperationError(
                     f"SDLC operation is not declared: {request.operation}"
                 )
@@ -401,10 +527,8 @@ def prepare_operations(
                     category,
                     commit,
                     (),
-                    None,
                     {},
-                    "contract_section_not_declared"
-                    if absent_v1_section else "operation_not_declared",
+                    "operation_not_declared",
                 )
             )
             continue
@@ -420,10 +544,9 @@ def prepare_operations(
                 category,
                 commit,
                 steps,
-                selected.get("handoff"),
                 operation_prerequisites(contract, request.operation),
                 selected.get("no-op"),
-                context if contract.get("version", 2) >= 3 or context == "ci" else "legacy",
+                context,
                 contract_path,
                 tuple(sorted(parameters.items())),
                 result_schema=selected.get("result-schema"),
@@ -438,40 +561,33 @@ def validation_operations(
     explicit: Sequence[str] | None = None,
     contract_path: pathlib.Path | None = None,
 ) -> list[str]:
-    """Select repository checks and checks of selected deliverables, in YAML order.
-
-    Versions 3 and 4 keep every applicable gate even with an explicit order.
-    Historical versions preserve their selection behavior. Categories own gate
-    semantics.
-    """
+    """Select repository checks and checks of selected deliverables, in YAML order."""
 
     contract = read_repository_contract(repo_root, contract_path)
-    current = contract.get("version", 2) >= 3
     if explicit is not None:
         for operation in explicit:
-            if operation_category(operation, version=contract["version"]) not in {"validate", "tests"}:
-                raise OperationError("Validation selections must name validate or tests entries.")
-        if not current:
-            return list(explicit)
+            if operation_category(operation, version=contract["version"]) not in {
+                "validate",
+                "tests",
+            }:
+                raise OperationError(
+                    "Validation selections must name validate or tests entries."
+                )
     selected_deliverables = {
         tuple(operation.split(".")[1:3])
-        if contract.get("version") in {4, 5}
-        else (operation.split(".")[1],)
         for operation in (*selected_operations, *(explicit or ()))
         if operation.startswith("deliverables.")
     }
     entries = operation_entries(contract)
     automatic = [
-        operation for operation in entries
-        if operation_category(operation, version=contract["version"]) in {"validate", "tests"}
+        operation
+        for operation in entries
+        if operation_category(operation, version=contract["version"])
+        in {"validate", "tests"}
         and (
             operation.startswith("repository.")
-            or (
-                tuple(operation.split(".")[1:3])
-                if contract.get("version") in {4, 5}
-                else (operation.split(".")[1],)
-            ) in selected_deliverables
-            or (current and not selected_deliverables)
+            or tuple(operation.split(".")[1:3]) in selected_deliverables
+            or not selected_deliverables
         )
     ]
     # In the current format an explicit selection can order checks, but cannot
@@ -494,7 +610,7 @@ def _execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object
     }
     if prepared.test_context is not None:
         base["test_context"] = dict(prepared.test_context)
-    if prepared.prerequisites:
+    if prepared.prerequisites and any(prepared.prerequisites.values()):
         base["prerequisites"] = dict(prepared.prerequisites)
     if prepared.no_op_reason is not None:
         return {**base, "status": "no_op", "reason": prepared.no_op_reason}
@@ -504,8 +620,6 @@ def _execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object
             "status": "state_changed",
             "message": "HEAD changed after preparation.",
         }
-    if prepared.handoff and prepared.handoff_mode == "ci" and not prepared.steps:
-        return {**base, "status": "deferred_handoff", "handoff": prepared.handoff}
     completed: list[int | str] = []
     step_results: list[dict[str, Any]] = []
     for step in prepared.steps:
@@ -522,15 +636,22 @@ def _execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object
                     }
             if prepared.handoff_mode != "skill":
                 return {
-                    **base, "steps": completed,
-                    "status": "deferred_handoff" if prepared.handoff_mode == "ci" else "handoff_required",
+                    **base,
+                    "steps": completed,
+                    "status": "deferred_handoff"
+                    if prepared.handoff_mode == "ci"
+                    else "handoff_required",
                     "handoff": dict(step.handoff),
                 }
             route = f"{step.handoff['lifecycle']}/{step.handoff['action']}"
             inputs = dict(step.handoff.get("inputs", {}))
             outcome = execute_handoff(
-                route, prepared.repo_root, inputs=inputs,
-                expected_commit=prepared.commit if prepared.category in MUTATION_CATEGORIES else None,
+                route,
+                prepared.repo_root,
+                inputs=inputs,
+                expected_commit=prepared.commit
+                if prepared.category in MUTATION_CATEGORIES
+                else None,
             )
             # A structured handoff is the final SDLC step. Preserve preceding
             # command evidence and number each executed lifecycle step in order
@@ -540,18 +661,28 @@ def _execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object
             action_receipts = outcome.get("step_results", [])
             assert isinstance(action_steps, list) and isinstance(action_receipts, list)
             combined = [*completed, *(offset + position for position in action_steps)]
-            receipts = [*step_results, *(
-                {**item, "step": offset + item["step"]} for item in action_receipts
-            )]
-            handoff_result = {**base, **outcome, "steps": combined,
-                      "handoff": route if outcome["status"] == "completed" else dict(step.handoff),
-                      "handoff_inputs": inputs}
+            receipts = [
+                *step_results,
+                *({**item, "step": offset + item["step"]} for item in action_receipts),
+            ]
+            handoff_result = {
+                **base,
+                **outcome,
+                "steps": combined,
+                "handoff": route
+                if outcome["status"] == "completed"
+                else dict(step.handoff),
+                "handoff_inputs": inputs,
+            }
             if receipts:
                 handoff_result["step_results"] = receipts
             if outcome["status"] == "completed":
                 handoff_result["handoff_completed"] = True
             if repository_commit(prepared.repo_root) != prepared.commit:
-                handoff_result.update(status="state_changed", message="HEAD changed during the skill action.")
+                handoff_result.update(
+                    status="state_changed",
+                    message="HEAD changed during the skill action.",
+                )
             return handoff_result
         if prepared.commit and prepared.category in MUTATION_CATEGORIES:
             try:
@@ -569,7 +700,9 @@ def _execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object
             # CreateProcess does not apply PATHEXT to bare npm/pnpm commands.
             # Resolve a bare executable while leaving repository-relative paths
             # bound to the declared cwd and preserving shell-free arguments.
-            if os.name == "nt" and not any(separator in argv[0] for separator in ("/", "\\")):
+            if os.name == "nt" and not any(
+                separator in argv[0] for separator in ("/", "\\")
+            ):
                 argv[0] = shutil.which(argv[0]) or argv[0]
             # Context belongs only to this test command, never the parent
             # process or later deployment commands.
@@ -577,7 +710,9 @@ def _execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object
             if prepared.test_context is not None:
                 process_options["env"] = {
                     **os.environ,
-                    "CERATOPS_SDLC_TEST_CONTEXT": json.dumps(dict(prepared.test_context)),
+                    "CERATOPS_SDLC_TEST_CONTEXT": json.dumps(
+                        dict(prepared.test_context)
+                    ),
                 }
             result = subprocess.run(
                 argv,
@@ -604,26 +739,27 @@ def _execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object
                 **base,
                 "status": "validation_failed"
                 if prepared.category == "validate"
-                else "tests_failed" if prepared.category == "tests" else "operation_failed",
+                else "tests_failed"
+                if prepared.category == "tests"
+                else "operation_failed",
                 "message": f"SDLC step failed: {prepared.operation} step {step.position}",
                 "steps": completed,
                 "failed_step": step.position,
                 "diagnostic": {
                     "exit_code": code,
                     "message": failure_excerpt(f"{stderr}\n{stdout}")
-                    or (f"Command exited with code {code}." if code is not None
-                        else "Command could not start."),
+                    or (
+                        f"Command exited with code {code}."
+                        if code is not None
+                        else "Command could not start."
+                    ),
                     "stdout_tail": _bounded_tail(stdout),
                     "stderr_tail": _bounded_tail(stderr),
                     **({"child_results": child_results} if child_results else {}),
                 },
             }
         completed.append(step.position)
-        expected_schema = (
-            prepared.result_schema
-            if step is prepared.steps[-1]
-            else None
-        )
+        expected_schema = prepared.result_schema if step is prepared.steps[-1] else None
         expected_stage = {
             "validate": "validation",
             "tests": "tests",
@@ -664,23 +800,6 @@ def _execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object
         "status": "completed" if prepared.steps else "advisory",
         "steps": completed,
     }
-    if prepared.handoff:
-        result_value["handoff"] = prepared.handoff
-        if prepared.handoff_mode == "skill":
-            if prepared.commit and prepared.category in MUTATION_CATEGORIES:
-                try:
-                    require_clean_commit(prepared.repo_root, prepared.commit)
-                except OperationError as exc:
-                    return {**base, "status": "state_changed", "message": str(exc)}
-            result_value.update(execute_handoff(prepared.handoff, prepared.repo_root))
-            if result_value["status"] == "completed":
-                result_value["handoff_completed"] = True
-            if repository_commit(prepared.repo_root) != prepared.commit:
-                result_value.update(status="state_changed", message="HEAD changed during the skill action")
-        elif prepared.handoff_mode == "return":
-            result_value["status"] = "handoff_required"
-        elif prepared.handoff_mode == "ci":
-            result_value["status"] = "deferred_handoff"
     return result_value
 
 
@@ -734,7 +853,15 @@ def execute_prepared_operations(
         "completed_operations": completed,
         "pending_operations": [],
         "results": results,
-        **({"deferred_handoffs": [item for item in results if item["status"] == "deferred_handoff"]} if any(item["status"] == "deferred_handoff" for item in results) else {}),
+        **(
+            {
+                "deferred_handoffs": [
+                    item for item in results if item["status"] == "deferred_handoff"
+                ]
+            }
+            if any(item["status"] == "deferred_handoff" for item in results)
+            else {}
+        ),
     }
 
 
@@ -751,7 +878,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--validation-operation",
         action="append",
-        help="Ordered validate/tests locations; v3 and v4 retain every applicable gate.",
+        help="Ordered validate/test locations; v4 and v5 retain every applicable gate.",
     )
     parser.add_argument(
         "--validate",
@@ -762,13 +889,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--parameter-if-declared", action="append", default=[])
     parser.add_argument("--if-declared", action="store_true")
     parser.add_argument("--prepare-only", action="store_true")
-    parser.add_argument("--ci", action="store_true", help="Execute commands only; never dispatch skill handoffs.")
-    parser.add_argument("--tests", action="store_true", help="Run only selected SDLC tests.")
     parser.add_argument(
-        "--test-trigger", choices=["promotion"],
+        "--ci",
+        action="store_true",
+        help="Execute commands only; never dispatch skill handoffs.",
+    )
+    parser.add_argument(
+        "--tests", action="store_true", help="Run only selected SDLC tests."
+    )
+    parser.add_argument(
+        "--test-trigger",
+        choices=["promotion"],
         help="Bind promotion test context to the required clean commit and current branch.",
     )
-    parser.add_argument("--return-handoffs", action="store_true", help="Return pending skill routes without dispatch.")
+    parser.add_argument(
+        "--return-handoffs",
+        action="store_true",
+        help="Return pending skill routes without dispatch.",
+    )
     parser.add_argument("--evidence-file", type=pathlib.Path)
     parser.add_argument(
         "--commit", help="Require this exact clean Git commit before and after checks."
@@ -788,15 +926,23 @@ def main(argv: list[str] | None = None) -> int:
         test_context = None
         if args.test_trigger:
             if not args.tests or not args.commit or args.ci:
-                raise OperationError("Promotion test context requires --tests and --commit outside CI.")
+                raise OperationError(
+                    "Promotion test context requires --tests and --commit outside CI."
+                )
             branch = subprocess.run(
-                ["git", "branch", "--show-current"], cwd=root,
-                capture_output=True, text=True, check=False,
+                ["git", "branch", "--show-current"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=False,
             )
             if branch.returncode or not branch.stdout.strip():
-                raise OperationError("Promotion tests require a checked-out release branch.")
+                raise OperationError(
+                    "Promotion tests require a checked-out release branch."
+                )
             test_context = {
-                "trigger": args.test_trigger, "branch": branch.stdout.strip(),
+                "trigger": args.test_trigger,
+                "branch": branch.stdout.strip(),
                 "commit": args.commit,
             }
         prepared = prepare_operations(
@@ -805,7 +951,8 @@ def main(argv: list[str] | None = None) -> int:
                 OperationRequest(operation, parameters, conditional, args.if_declared)
                 for operation in args.operation
             ],
-            args.sdlc_contract, context=context,
+            args.sdlc_contract,
+            context=context,
         )
         if not args.prepare_only and any(
             item.category in MUTATION_CATEGORIES for item in prepared
@@ -814,21 +961,25 @@ def main(argv: list[str] | None = None) -> int:
             if commit:
                 require_clean_commit(root, commit)
                 args.commit = args.commit or commit
-        selecting_delivery = any(item.category in {"deploy-local", "publish"} for item in prepared)
-        # Legacy advisory handoffs describe a route without executing delivery.
-        # Actual commands and current executable handoffs require the full stages.
-        checking_delivery = any(item.category == "publish" or (
-            item.category == "deploy-local" and (item.steps or item.handoff_mode != "legacy")
-        ) for item in prepared)
+        selecting_delivery = any(
+            item.category in {"deploy-local", "publish"} for item in prepared
+        )
+        checking_delivery = any(
+            item.category in {"deploy-local", "publish"} for item in prepared
+        )
         checking_build = any(item.category == "build" for item in prepared)
-        requires_validation = args.validate or args.tests or checking_delivery or checking_build
+        requires_validation = (
+            args.validate or args.tests or checking_delivery or checking_build
+        )
         validations = (
             prepare_operations(
                 root,
                 [
                     OperationRequest(
                         operation,
-                        parameters=parameters if (args.validate or args.tests) and not selecting_delivery else None,
+                        parameters=parameters
+                        if (args.validate or args.tests) and not selecting_delivery
+                        else None,
                         parameters_if_declared=conditional
                         if (args.validate or args.tests) and not selecting_delivery
                         else {**conditional, **parameters},
@@ -839,11 +990,17 @@ def main(argv: list[str] | None = None) -> int:
                         args.validation_operation,
                         args.sdlc_contract,
                     )
-                    if ((args.validate and operation_category(operation) == "validate")
+                    if (
+                        (args.validate and operation_category(operation) == "validate")
                         or (args.tests and operation_category(operation) == "tests")
-                        or ((checking_delivery or checking_build) and not (args.validate or args.tests)))
+                        or (
+                            (checking_delivery or checking_build)
+                            and not (args.validate or args.tests)
+                        )
+                    )
                 ],
-                args.sdlc_contract, context=context,
+                args.sdlc_contract,
+                context=context,
             )
             if requires_validation
             else []
@@ -857,10 +1014,14 @@ def main(argv: list[str] | None = None) -> int:
             if requirements:
                 result["prerequisites"] = requirements
         else:
-            checks = execute_prepared_operations([
-                replace(item, test_context=test_context) if item.category == "tests" else item
-                for item in validations
-            ])
+            checks = execute_prepared_operations(
+                [
+                    replace(item, test_context=test_context)
+                    if item.category == "tests"
+                    else item
+                    for item in validations
+                ]
+            )
             if checks["status"] in FAILED_STATUSES:
                 result = {
                     **checks,
@@ -876,10 +1037,14 @@ def main(argv: list[str] | None = None) -> int:
                 if args.commit:
                     require_clean_commit(root, args.commit)
                 result = (
-                    checks if args.validate or args.tests else execute_prepared_operations(prepared)
+                    checks
+                    if args.validate or args.tests
+                    else execute_prepared_operations(prepared)
                 )
                 advisory_checks = [
-                    item for item in checks["results"] if item.get("handoff") and not item.get("handoff_completed")
+                    item
+                    for item in checks["results"]
+                    if item.get("handoff") and not item.get("handoff_completed")
                 ]
                 if advisory_checks and not (args.validate or args.tests):
                     result["validation_handoffs"] = advisory_checks
@@ -889,7 +1054,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.evidence_file:
         if failed:
             args.evidence_file.parent.mkdir(parents=True, exist_ok=True)
-            args.evidence_file.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+            args.evidence_file.write_text(
+                json.dumps(result, indent=2) + "\n", encoding="utf-8"
+            )
         else:
             args.evidence_file.unlink(missing_ok=True)
     print(

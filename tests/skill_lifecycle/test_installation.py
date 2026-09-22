@@ -447,7 +447,13 @@ def test_bootstrap_full_install_materializes_lifecycle_bundle_with_source_runtim
         installed_lifecycle
         / "references"
         / "schemas"
-        / "sdlc.yml.schema.json"
+        / "sdlc.v4.schema.json"
+    ).is_file()
+    assert (
+        installed_lifecycle
+        / "references"
+        / "schemas"
+        / "sdlc.v5.schema.json"
     ).is_file()
     assert (
         installed_lifecycle / "scripts" / COMPATIBILITY_ENGINE / "__main__.py"
@@ -1185,9 +1191,18 @@ def test_shared_skill_python_environment_reuses_lock_and_repairs_missing_package
     )
     (repository / "sdlc").mkdir()
     (repository / "sdlc/sdlc.yml").write_text(json.dumps({
-        "version": 3, "kind": "ceratops-sdlc", "repository": {
-            "validate": {"target": {"steps": [{"run": [uv, "run", "--locked", "scripts/probe.py"]}]}},
-            "tests": {"none": {"no-op": "Environment boundary fixture."}},
+        "version": 4, "kind": "ceratops-sdlc", "repository": {
+            "capabilities": {},
+            "actions": {
+                "validate": {
+                    "requires": {"capabilities": []},
+                    "steps": [{"run": [uv, "run", "--locked", "scripts/probe.py"]}],
+                },
+                "test": {
+                    "requires": {"capabilities": []},
+                    "no-op": "Environment boundary fixture.",
+                },
+            },
         },
     }))
     through_skill = subprocess.run([

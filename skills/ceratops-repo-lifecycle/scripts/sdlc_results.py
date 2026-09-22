@@ -344,7 +344,7 @@ def verify_release_unit_build(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Expose only explicit read-only receipt verification; success prints OK."""
+    """Expose receipt verification; success prints RECEIPT_VERIFIED."""
 
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -369,7 +369,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except StepResultError as exc:
         print(" ".join(str(exc).split())[:1024], file=sys.stderr)
         return 2
-    print("OK")
+    print("RECEIPT_VERIFIED")
     return 0
 
 

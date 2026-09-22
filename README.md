@@ -206,24 +206,23 @@ boundary. The agent repairs ordinary failures in the selected task worktree,
 commits and retries; a failed check never permits later mutation.
 
 Operations are identified by their YAML location, such as
-`repository.bootstrap.runtime` or
-`deliverables.skills.deploy-local.ceratops-managed`.
+`repository.actions.validate` or
+`deliverables.skills.ceratops-managed.actions.install`.
 There are no extra IDs, defaults or full flows in the contract. Prerequisites
 are setup metadata; declaring them does not install dependencies. Bootstrap
 operations perform declared setup, and uv prepares the environment for commands
-invoked through it. Version-3 handoffs name a skill/action. For skill callers, the
+invoked through it. SDLC v4/v5 handoffs name a skill/action. For skill callers, the
 engine resolves the installed skill's `references/action-executors.json` and
 runs its declared argv or ordered steps; unresolved routes block dependent work.
- CI uses `--ci`, never dispatches skills, and reports deferred handoffs
-separately.
-Earlier SDLC versions retain advisory handoffs.
-Ceratops skill handoffs use the operation name `ceratops-managed`, including
-skill and tool deployment. Skill source validation stays under the generic
-`validate` category: `deliverables.skills.validate.ceratops-managed` hands off
-to `ceratops-skill-lifecycle/source-validate`; its skill-owned binding invokes
-the validator. Managed deployment binds source validation followed by the
-transactional installer. The compatible-repository producer
-adds these skill operations only for source skills in current-format contracts;
+CI uses `--ci`, never dispatches skills, and reports deferred handoffs
+separately. SDLC versions 1 through 3 are rejected and must be upgraded before
+lifecycle execution.
+Ceratops skill handoffs are declared on each named skill. Skill source
+validation at `deliverables.skills.<name>.actions.validate` hands off to
+`ceratops-skill-lifecycle/source-validate`; its skill-owned binding invokes the
+validator. The corresponding `actions.install` handoff runs the transactional
+installer. The compatible-repository producer adds these actions only for
+source skills in v4 contracts;
 the generic template declares repository validation and an explicit test no-op.
 SDLC v4 also supports separate packages, apps, tools, skills, and hooks.
 Its schema lives at
@@ -234,8 +233,8 @@ deployment handoffs pass the exact selected skill to the lifecycle CLI, retain
 completion receipts, and stop on source changes or unsupported inputs. CI still
 defers every handoff; package prerequisites never imply an automatic build.
 Tools built directly from source may declare no package prerequisite.
-The compatibility producer and this repository's live declaration use v4;
-existing repositories are not automatically migrated.
+The compatibility producer and this repository's live declaration use v4.
+Existing v1-v3 repositories are not automatically migrated.
 
 SDLC v5 adds optional `repository.release-units`. Each unit declares a nonempty
 `members` list of full deliverable references, such as
@@ -259,17 +258,19 @@ verifier checks a caller-selected identity, artifact and dependency files,
 supporting files, and artifact-bound test references. It reads only regular
 bundle files through safe relative paths and compares their sizes and SHA-256
 values. Verification does not establish test success, authenticity,
-immutability, or deployment permission. Version-1 result capture is unchanged;
-Build and installer integration remain later work.
+immutability, or deployment permission. The separate
+`ceratops-build-result.v1` action-result format is unchanged; Build and
+installer integration remain later work.
 
 Call `sdlc_results.py verify-release-unit-build` with `--receipt`,
 `--bundle-root`, and the expected `--repository`, `--source-commit`,
-`--release-unit`, `--channel`, `--version`, and `--target`. Success prints `OK`;
+`--release-unit`, `--channel`, `--version`, and `--target`. Success prints
+`RECEIPT_VERIFIED`;
 invalid input or a mismatch returns a nonzero exit code. The Python function
 `verify_release_unit_build` returns the checked receipt with its recorded
 build and test statuses unchanged. Neither interface writes bundle files.
 
-Tool deployment at `deliverables.tools.deploy-local.ceratops-managed` routes to
+Tool deployment at `deliverables.tools.<name>.actions.install` routes to
 `ceratops-tool-lifecycle/install`. That skill's installed executable binding
 calls the installed tool manager with `--source` set to the selected repository.
 The manager reads the tool name and version from that checkout's `pyproject.toml`.
@@ -348,30 +349,20 @@ continue using `prepare --request REQUEST` with the complete request format.
 
 Each repository owns one lifecycle contract:
 
-- Applying current compatibility creates `sdlc/sdlc.yml` version 3.
-  `repository` owns prerequisites, bootstrap, validation and shared tests;
-  every deliverable declares its own tests plus any validation, deployment,
-  publication and artifact identities. Each operation declares commands,
-  a skill handoff, or a nonempty `no-op` reason. Validation and tests are
-  separate gates; explicit selections cannot omit applicable version-3 gates.
-  The same engine still executes version 1 and 2 without automatic migration.
-  Version 1 uses `deploy.operations.NAME` and `release.operations.NAME`.
-  Applying current compatibility upgrades version 2; version 1 needs explicit
-  operation-ownership mapping before application. Installer release numbers
-  alone do not determine SDLC compatibility.
-- Version 4 has a schema and repository-neutral template under
+- Applying current compatibility creates `sdlc/sdlc.yml` version 4 from the
+  repository-neutral schema and template under
   `skills/ceratops-repo-lifecycle/references/`. It separates package build
   outputs from tools and skills, places structured lifecycle handoffs in
   ordered steps, and exposes declared package prerequisites without executing
   their build or installation actions. Tool installation can also run a
   repository-owned script directly. A tool may declare one package prerequisite
-  or none. Versions 1–3 retain their existing behavior and
-  locations.
+  or none. Version 5 adds release-unit declarations. The shared loader supports
+  only v4 and v5; v1 through v3 require an explicit repository-owned upgrade.
 - Operation `status: completed` records command completion. A successful step
   whose entire stdout is a JSON object with nonempty string `schema` and
   `status` fields is retained unchanged in `step_results` as
-  `{"step": POSITION, "result": OBJECT}`. `POSITION` is the declared version-1
-  step ID or the one-based version-2/3 step position. Domain success still
+  `{"step": POSITION, "result": OBJECT}`. `POSITION` is the step's one-based
+  position in the selected action. Domain success still
   requires the producer's schema, status and evidence checks; `OK` is not
   translated to `deployed`. Capture does not validate that domain schema.
   Stdout above 65,536 UTF-8 bytes yields
@@ -488,12 +479,10 @@ classify before closure. Repo-health summary JSON includes compact stale-state
 inventory counts and samples for PRs, branches, tags, releases, and local path
 references when present. It also reports the observed community-profile health
 percentage and its 100% contract target; inventory alone is not a finding.
-Local health validates each present `sdlc/sdlc.yml` against its version's schema
-and checks generic repository compatibility. Supported older formats produce
-advisory migration proposals with the repository, current and recommended
-versions, and reason. The existing Global Repo Health Consistency automation
-receives these through its health findings; proposals neither block execution
-nor migrate files. Ship validates selected publication operations before remote
+Local health validates each present `sdlc/sdlc.yml` against the v4 or v5 schema
+and checks generic repository compatibility. It rejects v1 through v3 instead
+of proposing an in-place migration. Ship validates selected publication
+operations before remote
 mutation. Local health runs SDLC validation and tests, including registered
 deterministic skill actions when declared. It retains direct validator
 execution for repositories without a validation-capable SDLC.
@@ -652,7 +641,7 @@ are local working data and do not authorize deployment. Deployment retains its
 immediate destination checks and producer-specific completion result.
 
 This source repository uses `scripts/pyproject.toml` and `scripts/uv.lock` for
-its maintenance scripts, Python tests, and Ruff and mypy settings. Its SDLC v3
+its maintenance scripts, Python tests, and Ruff and mypy settings. Its SDLC v4
 contract runs validation and tests separately.
 CI uses the local composite action in this checkout, preserving PR test selection;
 local and push gates run the full test suite. Other repositories use the same

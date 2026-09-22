@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import importlib
 import hashlib
+import importlib
 import io
 import json
 import os
@@ -10,10 +10,10 @@ import runpy
 import shutil
 import subprocess
 import sys
-import tomllib
 import zipfile
 
 import pytest
+import tomllib
 import yaml
 
 from tests.repository_lifecycle.support import (
@@ -32,7 +32,6 @@ from tests.support.repositories import (
     ROOT,
     create_compatible_repo,
     run_ci_action,
-    write_sdlc_contract,
 )
 
 
@@ -149,7 +148,7 @@ def _write_current_sdlc(
     *,
     deliverables: dict[str, object] | None = None,
 ) -> None:
-    """Replace the intentionally legacy shared fixture with the current template."""
+    """Replace the shared fixture with the current v4 template."""
 
     document = yaml.safe_load(SDLC_CONTRACT_TEMPLATE.read_text(encoding="utf-8"))
     if deliverables is not None:
