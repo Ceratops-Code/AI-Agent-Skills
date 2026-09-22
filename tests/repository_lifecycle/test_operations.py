@@ -1169,7 +1169,7 @@ def test_v1_duplicate_yaml_keys_and_invalid_schema_are_rejected(tmp_path: pathli
     path = tmp_path / "contract.yml"
     path.write_text(
         "version: 1\nkind: ceratops-sdlc\ndeploy:\n  operations:\n"
-        "    a:\n      handoff: skill/deploy\n    a:\n      handoff: skill/deploy\n",
+        "    duplicate:\n      handoff: skill/deploy\n    duplicate:\n      handoff: skill/deploy\n",
         encoding="utf-8",
     )
     assert "unique strings" in contracts.read_contract(path)[1][0]

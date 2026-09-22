@@ -857,7 +857,7 @@ class ProjectPythonRedirectionTests(unittest.TestCase):
         if shutil.which("pwsh") is None:
             self.skipTest("PowerShell 7 is required for native argument tests")
         cwd = self.project_paths["Docs-and-Claims"]["main"]
-        values = ['probe="value"', "", "two words", 'C:\\folder\\"quoted"\\', "O'Brien", "$(literal)"]
+        values = ['probe="value"', "", "two words", 'C:\\repo\\folder\\"quoted"\\', "O'Brien", "$(literal)"]
         code = "import json,sys; print(json.dumps(sys.argv[1:]))"
         arguments = " ".join(SANITY.powershell_quote(value) for value in values)
         for executable in ("python", "& " + SANITY.powershell_quote(sys.executable)):
