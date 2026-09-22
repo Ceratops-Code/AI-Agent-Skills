@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+from copy import deepcopy
 from typing import Any
 
 import pytest
@@ -775,3 +776,264 @@ def test_completed_handoff_record_survives_removed_result_directory(
     assert calls == ["completed"]
     assert json.loads(result_file.read_text()) == json.loads(capsys.readouterr().out)
     assert not list(result_file.parent.glob("*.tmp"))
+
+
+def _v5_fixture() -> dict[str, Any]:
+    """Two release units independently consume one separately owned package."""
+    document = _v4_fixture()
+    document["version"] = 5
+    document["repository"]["release-units"] = {
+        "core": {"members": ["deliverables.packages.core"]},
+        "claims": {"members": [
+            "deliverables.packages.claims", "deliverables.tools.insurance-claims-tool",
+        ]},
+        "desktop": {"members": ["deliverables.apps.claims-mobile"]},
+    }
+    tool = document["deliverables"]["tools"]["insurance-claims-tool"]
+    tool["project"] = "tools/insurance-claims-tool/pyproject.toml"
+    tool["artifact"] = {
+        "type": "python-wheel", "distribution": "insurance-claims-tool",
+        "output-directory": "dist/claims-tool", "filename-pattern": "insurance_claims_tool-*.whl",
+    }
+    tool["actions"]["build"] = _v4_action({"run": ["build-claims-tool"]})
+    app = document["deliverables"]["apps"]["claims-mobile"]
+    app["prerequisites"] = ["core"]
+    app["artifact"] = {
+        "type": "application-archive",
+        "output-directory": "dist/desktop", "filename-pattern": "desktop-*.zip",
+    }
+    app["actions"]["build"] = _v4_action({"run": ["build-desktop"]})
+    return document
+
+
+def test_v5_reader_keeps_shared_dependencies_out_of_membership(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = _v5_fixture()
+    original = deepcopy(document)
+    path = tmp_path / "sdlc.yml"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    files_before = list(tmp_path.iterdir())
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("Reading release units must not execute a command")
+
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    loaded = contracts.load_contract(path)
+    entries = contracts.release_unit_entries(loaded)
+    assert list(entries) == ["core", "claims", "desktop"]
+    assert entries["core"]["dependencies"] == {}
+    assert list(entries["claims"]["members"]) == [
+        "deliverables.packages.claims", "deliverables.tools.insurance-claims-tool",
+    ]
+    assert list(entries["desktop"]["members"]) == ["deliverables.apps.claims-mobile"]
+    for name in ("claims", "desktop"):
+        assert list(entries[name]["dependencies"]) == ["deliverables.packages.core"]
+        dependency = entries[name]["dependencies"]["deliverables.packages.core"]
+        assert dependency["release-unit"] == "core"
+        assert dependency["source"] == "packages/core"
+        assert dependency["artifact"]["type"] == "python-wheel"
+        assert dependency["action-locations"]["build"] == "deliverables.packages.core.actions.build"
+    tool = entries["claims"]["members"]["deliverables.tools.insurance-claims-tool"]
+    assert tool["action-locations"]["build"] == "deliverables.tools.insurance-claims-tool.actions.build"
+    assert tool["prerequisites"] == ["claims"]
+    tool["artifact"]["type"] = "changed-view"
+    entries["claims"]["dependencies"]["deliverables.packages.core"]["prerequisites"].append("changed-view")
+    assert loaded == original
+    assert document == original
+    assert list(tmp_path.iterdir()) == files_before
+
+
+def test_v5_reader_resolves_transitive_dependency_owners() -> None:
+    document = _v5_fixture()
+    app = document["deliverables"]["apps"]["claims-mobile"]
+    app["prerequisites"] = ["claims"]
+    assert contracts.validation_errors(document) == []
+    dependencies = contracts.release_unit_entries(document)["desktop"]["dependencies"]
+    assert list(dependencies) == ["deliverables.packages.core", "deliverables.packages.claims"]
+    assert [record["release-unit"] for record in dependencies.values()] == ["core", "claims"]
+
+
+@pytest.mark.parametrize("kind,name", [
+    ("packages", "claims"),
+    ("tools", "insurance-claims-tool"),
+    ("apps", "claims-mobile"),
+    ("skills", "claims-catalog-invoice"),
+    ("hooks", "example-hook"),
+])
+def test_v5_release_members_support_non_python_artifacts(kind: str, name: str) -> None:
+    document = _v5_fixture()
+    if kind == "hooks":
+        document["deliverables"]["hooks"] = {name: {
+            "source": "hooks", "prerequisites": ["core"],
+            "actions": {
+                "validate": {"requires": {"capabilities": []}, "no-op": "Covered by repository validation."},
+                "install": _v4_action({"run": ["install-hook"]}),
+            },
+        }}
+    record = document["deliverables"][kind][name]
+    record.pop("project", None)
+    record["artifact"] = {
+        "type": "zip", "output-directory": f"dist/{name}", "filename-pattern": f"{name}-*.zip",
+    }
+    record["actions"]["build"] = _v4_action({"run": ["build-archive"]})
+    reference = f"deliverables.{kind}.{name}"
+    units = document["repository"]["release-units"]
+    if kind in {"skills", "hooks"}:
+        units["extension"] = {"members": [reference]}
+    assert contracts.validation_errors(document) == []
+    entries = contracts.release_unit_entries(document)
+    owner = next(unit for unit in entries.values() if reference in unit["members"])
+    assert owner["members"][reference]["artifact"]["type"] == "zip"
+    assert contracts.operation_category(f"{reference}.actions.build", version=5) == "build"
+
+
+@pytest.mark.parametrize("problem", [
+    "empty_units", "empty_members", "duplicate_member", "duplicate_owner",
+    "unknown_member", "invalid_reference", "unknown_field", "unknown_dependency",
+    "unowned_dependency", "package_cycle", "no_artifact", "no_build", "noop_build",
+    "handoff_build", "wheel_without_project", "wheel_without_distribution",
+])
+def test_v5_rejects_invalid_release_declarations(problem: str, tmp_path: pathlib.Path) -> None:
+    document = _v5_fixture()
+    units = document["repository"]["release-units"]
+    tool = document["deliverables"]["tools"]["insurance-claims-tool"]
+    core = document["deliverables"]["packages"]["core"]
+    if problem == "empty_units":
+        units.clear()
+    elif problem == "empty_members":
+        units["claims"]["members"] = []
+    elif problem == "duplicate_member":
+        units["claims"]["members"].append("deliverables.packages.claims")
+    elif problem == "duplicate_owner":
+        units["desktop"]["members"].append("deliverables.packages.claims")
+    elif problem == "unknown_member":
+        units["claims"]["members"].append("deliverables.packages.missing")
+    elif problem == "invalid_reference":
+        units["claims"]["members"] = ["packages.claims"]
+    elif problem == "unknown_field":
+        units["claims"]["additional-inputs"] = ["outside/member.py"]
+    elif problem == "unknown_dependency":
+        core["prerequisites"] = ["missing"]
+    elif problem == "unowned_dependency":
+        del units["core"]
+    elif problem == "package_cycle":
+        core["prerequisites"] = ["claims"]
+    elif problem == "no_artifact":
+        del tool["artifact"]
+    elif problem == "no_build":
+        del tool["actions"]["build"]
+    elif problem == "noop_build":
+        tool["actions"]["build"] = {"requires": {"capabilities": []}, "no-op": "No build."}
+    elif problem == "handoff_build":
+        tool["actions"]["build"] = _v4_action({
+            "handoff": {"lifecycle": "some-builder", "action": "build", "inputs": {}},
+        })
+    elif problem == "wheel_without_project":
+        del tool["project"]
+    else:
+        del tool["artifact"]["distribution"]
+    errors = contracts.validation_errors(document)
+    assert errors, problem
+    path = tmp_path / "sdlc.yml"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(contracts.SdlcContractError):
+        contracts.load_contract(path)
+
+
+def test_v5_rejects_unit_cycle_even_when_package_graph_is_acyclic() -> None:
+    document = _v5_fixture()
+    packages = document["deliverables"]["packages"]
+    packages["left-leaf"] = deepcopy(packages["core"])
+    packages["right-root"] = deepcopy(packages["core"])
+    packages["right-root"]["prerequisites"] = ["left-leaf"]
+    units = document["repository"]["release-units"]
+    units["claims"]["members"].append("deliverables.packages.left-leaf")
+    units["core"]["members"].append("deliverables.packages.right-root")
+    errors = contracts.validation_errors(document)
+    assert any("release-unit dependency cycle" in error for error in errors)
+    assert not any("package prerequisite cycle" in error for error in errors)
+
+
+@pytest.mark.parametrize("field,bad_path", [
+    ("source", "../escape"),
+    ("source", "C:outside"),
+    ("source", "C:/outside"),
+    ("project", "/outside/pyproject.toml"),
+    ("manifest", r"tools\outside.json"),
+    ("output-directory", "dist/../../escape"),
+    ("filename-pattern", "../*.whl"),
+    ("filename-pattern", "C:*.whl"),
+    ("cwd", "../escape"),
+    ("cwd", r"tools\outside"),
+    ("source", "invalid\x00name"),
+    ("project", "invalid\nname"),
+])
+def test_v5_rejects_unsafe_paths(field: str, bad_path: str) -> None:
+    document = _v5_fixture()
+    tool = document["deliverables"]["tools"]["insurance-claims-tool"]
+    if field in {"output-directory", "filename-pattern"}:
+        tool["artifact"][field] = bad_path
+    elif field == "cwd":
+        tool["actions"]["build"]["steps"][0]["cwd"] = bad_path
+    else:
+        tool[field] = bad_path
+    assert contracts.validation_errors(document)
+
+
+def test_v5_does_not_change_v4_or_infer_units() -> None:
+    legacy = _v4_fixture()
+    before = deepcopy(legacy)
+    assert contracts.validation_errors(legacy) == []
+    assert contracts.release_unit_entries(legacy) == {}
+    assert contracts.migration_proposal(legacy, "example") is None
+    assert legacy == before
+    legacy["repository"]["release-units"] = {"claims": {"members": ["deliverables.packages.claims"]}}
+    assert contracts.validation_errors(legacy)
+    tool = before["deliverables"]["tools"]["insurance-claims-tool"]
+    tool["artifact"] = _v5_fixture()["deliverables"]["tools"]["insurance-claims-tool"]["artifact"]
+    tool["actions"]["build"] = _v4_action({"run": ["build-tool"]})
+    assert contracts.validation_errors(before)
+    document = _v5_fixture()
+    del document["repository"]["release-units"]
+    assert contracts.validation_errors(document) == []
+    assert contracts.release_unit_entries(document) == {}
+    assert contracts.artifact_entries(document) == []
+
+
+def test_v5_duplicate_yaml_unit_names_are_rejected(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "sdlc.yml"
+    path.write_text("version: 5\nrepository:\n  release-units:\n"
+                    "    duplicate: {}\n    duplicate: {}\n", encoding="utf-8")
+    with pytest.raises(contracts.SdlcContractError, match="unique strings"):
+        contracts.load_contract(path)
+
+
+def test_v5_prepare_and_gates_keep_typed_deliverable_selection(tmp_path: pathlib.Path) -> None:
+    document = _v5_fixture()
+    tools = document["deliverables"]["tools"]
+    tools["other-tool"] = deepcopy(tools["insurance-claims-tool"])
+    tools["other-tool"]["actions"]["install"]["steps"][0]["handoff"]["inputs"]["tool"] = "other-tool"
+    tools["other-tool"]["actions"]["test"] = _v4_action({"run": ["other-tests"]})
+    selected_tool = tools["insurance-claims-tool"]
+    selected_tool["actions"]["test"] = _v4_action({"run": ["selected-tests"]})
+    (tmp_path / "sdlc").mkdir()
+    (tmp_path / "sdlc/sdlc.yml").write_text(json.dumps(document), encoding="utf-8")
+    _repository(tmp_path)
+    location = "deliverables.tools.insurance-claims-tool.actions.build"
+    prepared = runner.prepare_operations(tmp_path, [runner.OperationRequest(location)])[0]
+    assert prepared.category == "build"
+    assert list(prepared.prerequisites["packages"]) == ["core", "claims"]
+    gates = runner.validation_operations(tmp_path, [location])
+    assert gates == [
+        "repository.actions.validate",
+        "deliverables.tools.insurance-claims-tool.actions.validate",
+        "repository.actions.test",
+        "deliverables.tools.insurance-claims-tool.actions.test",
+    ]
+    assert runner.validation_operations(tmp_path, [location], ["repository.actions.validate"]) == gates
+    result = run_operation_cli(tmp_path, location, prepare_only=True)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "prepared"
+    assert list(payload["prerequisites"]["packages"]) == ["core", "claims"]

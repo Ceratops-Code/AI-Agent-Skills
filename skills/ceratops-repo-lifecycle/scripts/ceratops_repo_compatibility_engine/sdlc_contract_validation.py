@@ -12,6 +12,7 @@ import json
 import pathlib
 import re
 from collections.abc import Mapping
+from copy import deepcopy
 from typing import Any, cast
 
 import jsonschema
@@ -19,8 +20,8 @@ import yaml
 
 SKILL_ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCHEMA = SKILL_ROOT / "references" / "schemas" / "sdlc.yml.schema.json"
-# Compatibility application owns v4. Older supported formats remain readable
-# and executable, but must not be converted without explicit action ownership.
+# Compatibility application stays on v4 until release-unit lifecycle integration.
+# V5 is opt-in; loading a contract never migrates it or executes its declarations.
 V4_SCHEMA = SCHEMA.with_name("sdlc.v4.schema.json")
 CURRENT_VERSION = 4
 VERSION_SCHEMAS = {
@@ -28,6 +29,7 @@ VERSION_SCHEMAS = {
     2: SCHEMA.with_name("sdlc.v2.schema.json"),
     3: SCHEMA,
     4: V4_SCHEMA,
+    5: SCHEMA.with_name("sdlc.v5.schema.json"),
 }
 OPERATION_CATEGORIES = frozenset({"bootstrap", "validate", "tests", "test-selection", "deploy-local", "publish"})
 NAME = r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*"
@@ -101,7 +103,7 @@ def operation_entries(contract: Mapping[str, Any]) -> dict[str, Mapping[str, Any
                 for name, operation in group["operations"].items():
                     entries[f"{section}.operations.{name}"] = operation
         return entries
-    if contract.get("version") == 4:
+    if contract.get("version") in {4, 5}:
         for action, operation in contract.get("repository", {}).get("actions", {}).items():
             entries[f"repository.actions.{action}"] = operation
         for kind, deliverables in contract.get("deliverables", {}).items():
@@ -124,14 +126,15 @@ def operation_entries(contract: Mapping[str, Any]) -> dict[str, Mapping[str, Any
     return entries
 
 
-def operation_category(location: str) -> str:
+def operation_category(location: str, *, version: int = 4) -> str:
     """Classify a native versioned location without guessing from operation names."""
 
     if isinstance(location, str):
         if match := V4_OPERATION_RE.fullmatch(location):
             action = match.group("repository") or match.group("action")
             kind = match.group("kind")
-            if kind is None or action in V4_ACTIONS_BY_KIND[kind]:
+            if (kind is None or action in V4_ACTIONS_BY_KIND[kind]
+                or (version == 5 and action == "build")):
                 return V4_ACTION_CATEGORIES[action]
         if match := CURRENT_OPERATION_RE.fullmatch(location):
             return match.group("repository") or match.group("deliverable")
@@ -143,9 +146,9 @@ def operation_category(location: str) -> str:
 def artifact_entries(contract: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Adapt versioned artifact ownership without changing records or precedence."""
 
-    # V4 package build outputs are prerequisites for local lifecycle actions,
+    # V4/v5 build outputs are prerequisites for local lifecycle actions,
     # not the external publication-identity records consumed by this adapter.
-    if contract.get("version") == 4:
+    if contract.get("version") in {4, 5}:
         return []
     groups = (
         [contract.get("release", {})]
@@ -228,7 +231,7 @@ def operation_prerequisites(
     """
 
     operation = operation_entries(contract).get(location, {})
-    if contract.get("version") != 4:
+    if contract.get("version") not in {4, 5}:
         requirements = contract.get("repository", {}).get("prerequisites", {})
         return {
             name: requirements[name]
@@ -253,7 +256,57 @@ def operation_prerequisites(
     }
 
 
-def _v4_semantic_errors(value: Mapping[str, Any]) -> list[str]:
+def release_unit_entries(contract: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Resolve a validated v5 contract without reading sources or running actions.
+
+    Members retain declaration order and exclude dependencies owned by other
+    units. External package dependencies are dependency-first records, including
+    transitive prerequisites and their release-unit owners. Metadata is copied
+    so a later caller cannot change the validated declaration through this view.
+    Callers must use load_contract or validation_errors before this adapter.
+    Earlier formats have no release units and return an empty mapping.
+    """
+
+    if contract.get("version") != 5:
+        return {}
+    units = contract["repository"].get("release-units", {})
+    owners = {
+        member: name
+        for name, unit in units.items()
+        for member in unit["members"]
+    }
+    operations = operation_entries(contract)
+    entries: dict[str, dict[str, Any]] = {}
+    for name, unit in units.items():
+        members: dict[str, dict[str, Any]] = {}
+        dependencies: dict[str, dict[str, Any]] = {}
+        for member in unit["members"]:
+            _, kind, deliverable_name = member.split(".")
+            record = contract["deliverables"][kind][deliverable_name]
+            metadata = deepcopy({
+                key: value for key, value in record.items() if key != "actions"
+            })
+            metadata["action-locations"] = {
+                action: f"{member}.actions.{action}"
+                for action in record["actions"]
+                if f"{member}.actions.{action}" in operations
+            }
+            members[member] = metadata
+            prerequisites = operation_prerequisites(
+                contract, f"{member}.actions.build",
+            )["packages"]
+            for package, prerequisite in prerequisites.items():
+                reference = f"deliverables.packages.{package}"
+                owner = owners[reference]
+                if owner != name:
+                    dependencies[reference] = {
+                        **deepcopy(prerequisite), "release-unit": owner,
+                    }
+        entries[name] = {"members": members, "dependencies": dependencies}
+    return entries
+
+
+def _typed_semantic_errors(value: Mapping[str, Any]) -> list[str]:
     """Validate references and lifecycle separation that JSON Schema cannot."""
 
     errors: list[str] = []
@@ -309,10 +362,10 @@ def _v4_semantic_errors(value: Mapping[str, Any]) -> list[str]:
                     )
     path_fields = {
         "packages": ("source", "project"),
-        "apps": ("source", "manifest"),
-        "tools": ("source", "manifest"),
-        "skills": ("source",),
-        "hooks": ("source",),
+        "apps": ("source", "manifest", "project"),
+        "tools": ("source", "manifest", "project"),
+        "skills": ("source", "project"),
+        "hooks": ("source", "project"),
     }
     for kind, fields in path_fields.items():
         for name, record in deliverables.get(kind, {}).items():
@@ -393,6 +446,79 @@ def _v4_semantic_errors(value: Mapping[str, Any]) -> list[str]:
     return errors
 
 
+def _v5_release_unit_errors(value: Mapping[str, Any]) -> list[str]:
+    """Reject incomplete release ownership before the reader can expose it.
+
+    The common typed checks have already verified the package graph. Unit
+    cycles are checked separately: grouping an acyclic package graph can still
+    produce mutually dependent release units. No filesystem or Git access is
+    needed to resolve this declaration-level ownership.
+    """
+
+    errors: list[str] = []
+    records = {
+        f"deliverables.{kind}.{name}": record
+        for kind, group in value.get("deliverables", {}).items()
+        for name, record in group.items()
+    }
+    units = value["repository"].get("release-units", {})
+    owners: dict[str, str] = {}
+    for name, unit in units.items():
+        for member in unit["members"]:
+            if member not in records:
+                errors.append(f"release unit {name} has unknown member {member}")
+                continue
+            if member in owners:
+                errors.append(
+                    f"{member} belongs to multiple release units: {owners[member]}, {name}"
+                )
+                continue
+            owners[member] = name
+            record = records[member]
+            build = record["actions"].get("build", {})
+            if not record.get("artifact") or not build.get("steps"):
+                errors.append(
+                    f"release unit {name} member {member} requires artifact metadata "
+                    "and an executable build action"
+                )
+            elif any("run" not in step for step in build["steps"]):
+                errors.append(
+                    f"release unit {name} member {member} build must contain only run steps"
+                )
+    if errors:
+        return errors
+    dependencies: dict[str, set[str]] = {name: set() for name in units}
+    for member, owner in owners.items():
+        packages = _v4_package_records(value, records[member]["prerequisites"])
+        for package in packages:
+            reference = f"deliverables.packages.{package}"
+            dependency_owner = owners.get(reference)
+            if dependency_owner is None:
+                errors.append(
+                    f"release unit {owner} depends on package {package} without a release unit"
+                )
+            elif dependency_owner != owner:
+                dependencies[owner].add(dependency_owner)
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(name: str) -> None:
+        if name in visiting:
+            errors.append(f"release-unit dependency cycle includes {name}")
+            return
+        if name in visited:
+            return
+        visiting.add(name)
+        for dependency in sorted(dependencies[name]):
+            visit(dependency)
+        visiting.remove(name)
+        visited.add(name)
+
+    for name in units:
+        visit(name)
+    return list(dict.fromkeys(errors))
+
+
 def _schema_validator(
     schema_path: pathlib.Path = SCHEMA,
 ) -> jsonschema.Draft202012Validator:
@@ -440,8 +566,11 @@ def validation_errors(
         errors.append(f"schema validation failed{suffix}: {error.message}")
     if errors or version == 1:
         return errors
-    if version == 4:
-        return _v4_semantic_errors(value)
+    if version in {4, 5}:
+        errors = _typed_semantic_errors(value)
+        if errors or version == 4:
+            return errors
+        return _v5_release_unit_errors(value)
     prerequisites = value.get("repository", {}).get("prerequisites", {})
     for name, requirement in prerequisites.items():
         version_source = requirement.get("version-from")

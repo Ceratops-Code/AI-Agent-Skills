@@ -104,6 +104,15 @@ executable bindings. This avoids each lifecycle helper implementing its own
 interpretation of those declarations. It does not move repository tests into
 the skill.
 
+The shared SDLC loader also owns the opt-in v5 release-unit reader. Units group
+artifact-producing deliverables for a shared release; package prerequisites
+remain separate dependencies whose release-unit owners are resolved without
+merging membership. The schema and semantic validator reject ambiguous owners,
+unresolved dependencies, cycles, unsafe paths, and missing build declarations.
+The reader returns metadata only. Automatic unit builds and receipt-based
+publication or deployment are later lifecycle integrations; the compatibility
+producer and the live repository configuration remain v4.
+
 The final direction removes generated repository `sdlc.py`, a local copy of the
 operation engine, and `scripts/runtime`. Those proposed extra layers were
 rejected. Installed skill bindings remain in the skills; target repositories

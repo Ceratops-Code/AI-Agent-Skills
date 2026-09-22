@@ -225,17 +225,33 @@ the validator. Managed deployment binds source validation followed by the
 transactional installer. The compatible-repository producer
 adds these skill operations only for source skills in current-format contracts;
 the generic template declares repository validation and an explicit test no-op.
-SDLC v4 also supports separate packages, apps, tools, skills, and hooks. Its schema
-lives at `skills/ceratops-repo-lifecycle/references/schemas/sdlc.v4.schema.json`;
+SDLC v4 also supports separate packages, apps, tools, skills, and hooks.
+Its schema lives at
+`skills/ceratops-repo-lifecycle/references/schemas/sdlc.v4.schema.json`;
 `scripts/repository_operation.py` resolves action locations and returns package
 prerequisites through `--prepare-only`. Registered v4 skill validation and
 deployment handoffs pass the exact selected skill to the lifecycle CLI, retain
 completion receipts, and stop on source changes or unsupported inputs. CI still
 defers every handoff; package prerequisites never imply an automatic build.
-Tools built directly from source may declare no package prerequisite. The
-compatibility producer and this
-repository's live declaration remain v3; v4 is not automatically migrated or
-installed.
+Tools built directly from source may declare no package prerequisite.
+The compatibility producer and this repository's live declaration use v4;
+existing repositories are not automatically migrated.
+
+SDLC v5 adds optional `repository.release-units`. Each unit declares a nonempty
+`members` list of full deliverable references, such as
+`deliverables.apps.desktop`. Members can be any supported deliverable kind;
+each member has a build action and artifact metadata and belongs to at most one
+unit. Package prerequisites remain dependencies, not additional members. Every
+package dependency of a unit must have its own declared release-unit owner or
+belong to the consuming unit; dependency cycles are rejected.
+
+The existing SDLC loader validates v5 and exposes
+`release_unit_entries(contract)`: member metadata and action locations, plus
+external package dependencies with their owning release units. Reading this
+information runs no commands. Existing action preparation and validation/test
+gates understand v5, but automatic release-unit Build, Promote, Ship, and Deploy
+are not connected yet. Compatibility generation remains v4. The v5 schema lives
+at `skills/ceratops-repo-lifecycle/references/schemas/sdlc.v5.schema.json`.
 
 Tool deployment at `deliverables.tools.deploy-local.ceratops-managed` routes to
 `ceratops-tool-lifecycle/install`. That skill's installed executable binding

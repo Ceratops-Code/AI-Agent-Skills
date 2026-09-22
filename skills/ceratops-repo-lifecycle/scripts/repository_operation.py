@@ -224,11 +224,11 @@ def execute_handoff(
     return {**evidence, "status": "completed"}
 
 
-def operation_category(operation: str) -> str:
+def operation_category(operation: str, *, version: int = 4) -> str:
     """Validate a complete versioned YAML location and return its category."""
 
     try:
-        return contract_operation_category(operation)
+        return contract_operation_category(operation, version=version)
     except SdlcContractError as exc:
         raise OperationError(str(exc)) from exc
 
@@ -382,7 +382,7 @@ def prepare_operations(
     commit = repository_commit(root)
     prepared: list[PreparedOperation] = []
     for request in requests:
-        category = operation_category(request.operation)
+        category = operation_category(request.operation, version=contract["version"])
         selected = entries.get(request.operation)
         if selected is None:
             absent_v1_section = (
@@ -449,13 +449,13 @@ def validation_operations(
     current = contract.get("version", 2) >= 3
     if explicit is not None:
         for operation in explicit:
-            if operation_category(operation) not in {"validate", "tests"}:
+            if operation_category(operation, version=contract["version"]) not in {"validate", "tests"}:
                 raise OperationError("Validation selections must name validate or tests entries.")
         if not current:
             return list(explicit)
     selected_deliverables = {
         tuple(operation.split(".")[1:3])
-        if contract.get("version") == 4
+        if contract.get("version") in {4, 5}
         else (operation.split(".")[1],)
         for operation in (*selected_operations, *(explicit or ()))
         if operation.startswith("deliverables.")
@@ -463,12 +463,12 @@ def validation_operations(
     entries = operation_entries(contract)
     automatic = [
         operation for operation in entries
-        if operation_category(operation) in {"validate", "tests"}
+        if operation_category(operation, version=contract["version"]) in {"validate", "tests"}
         and (
             operation.startswith("repository.")
             or (
                 tuple(operation.split(".")[1:3])
-                if contract.get("version") == 4
+                if contract.get("version") in {4, 5}
                 else (operation.split(".")[1],)
             ) in selected_deliverables
             or (current and not selected_deliverables)
