@@ -103,6 +103,7 @@ def build_checks(
     npm = npm_executable or ("npm.cmd" if sys.platform == "win32" else "npm")
     checks: tuple[Check, ...] = (
         Check("markdown-lint", (npm, "--prefix", "scripts", "run", "lint:markdown"), repo_root),
+        Check("actionlint", (python, "scripts/run-actionlint.py"), repo_root),
         Check(
             "yaml-lint",
             (

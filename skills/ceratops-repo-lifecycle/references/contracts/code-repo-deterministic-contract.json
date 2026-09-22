@@ -362,7 +362,7 @@
       ],
       "collection": {
         "regex_patterns": [
-          "(?<![A-Za-z0-9_])[A-Za-z]:\\\\",
+          "(?<![A-Za-z0-9_\\\\])[A-Za-z]:\\\\",
           "(?<![A-Za-z0-9._-])/Users/",
           "(?<![A-Za-z0-9._-])/home/[^/]+/"
         ],
@@ -373,7 +373,8 @@
           "%ProgramFiles(x86)%",
           "%SystemRoot%",
           "$CODEX_HOME",
-          "C:\\CodexProjects"
+          "C:\\CodexProjects",
+          "C:\\AI-Agents-Tools"
         ],
         "ignore_paths": [
           "exports/**",

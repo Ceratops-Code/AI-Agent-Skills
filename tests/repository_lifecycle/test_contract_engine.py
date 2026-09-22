@@ -169,6 +169,13 @@ class GHContractStateEngineTests(unittest.TestCase):
             self.assertEqual(local["scans"][rule["id"]]["matches"], [])
 
             fixture.write_text(
+                f'TIMESTAMP_RE = r"^{slash}d{{4}}-{slash}d{slash}dT{slash}d{slash}d:{slash}d{slash}d$"\n',
+                encoding="utf-8",
+            )
+            local = collect_local_repository(temporary_directory, [rule])
+            self.assertEqual(local["scans"][rule["id"]]["matches"], [])
+
+            fixture.write_text(
                 'DOCS = "https://docs.arc42.org/home/guide/"\n',
                 encoding="utf-8",
             )
@@ -567,6 +574,7 @@ class GHContractStateEngineTests(unittest.TestCase):
                         f'PROGRAMS_X86 = "C:{slash}Program Files (x86){slash}Tool"',
                         f'WINDOWS = "C:{slash}WINDOWS{slash}System32{slash}tool.exe"',
                         f'PROJECTS = "c:{escaped_slash}CODEXPROJECTS{escaped_slash}repo"',
+                        f'TOOLS = "C:{slash}AI-Agents-Tools{slash}tool"',
                         f'CODEX = "C:{slash}Users{slash}runner{slash}.codex{slash}skills"',
                     ]
                 ),

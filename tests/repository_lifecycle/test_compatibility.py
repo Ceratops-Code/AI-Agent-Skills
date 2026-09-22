@@ -1811,6 +1811,52 @@ def test_ci_action_reconciliation_preserves_pins_and_rejects_unsafe_bindings(
         generator.validation_surfaces(tmp_path)
 
 
+def test_source_repository_can_validate_its_checked_out_local_action(
+    tmp_path: pathlib.Path,
+) -> None:
+    ci = importlib.import_module("ceratops_repo_compatibility_engine.ci_workflow")
+    generator = importlib.import_module("ceratops_repo_compatibility_engine.apply_ceratops_compatibility")
+    action = generator.load_compatibility_contract()["ci_action"]
+    identity = action["uses"].split("/", 2)
+    local_action = tmp_path.joinpath(*pathlib.PurePosixPath(identity[2]).parts, "action.yml")
+    local_action.parent.mkdir(parents=True)
+    local_action.write_text("runs:\n  using: composite\n  steps: []\n", encoding="utf-8")
+    manifest = tmp_path / "skills/skill-sections.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        json.dumps({"runtime_source_id": "/".join(identity[:2])}),
+        encoding="utf-8",
+    )
+    workflow = tmp_path / ".github/workflows/validate.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text(
+        yaml.safe_dump(
+            {
+                "jobs": {
+                    "checks": {
+                        "steps": [
+                            {
+                                "uses": "./" + identity[2],
+                                "with": dict(action["inputs"]),
+                            }
+                        ]
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert ci.workflow_errors(workflow, action) == []
+    manifest.write_text(
+        json.dumps({"runtime_source_id": "different/repository"}),
+        encoding="utf-8",
+    )
+    assert ci.workflow_errors(workflow, action) == [
+        "CI validation workflow must call " + action["uses"] + " at a full commit pin"
+    ]
+
+
 def test_unpublished_ci_action_blocks_compatibility_before_target_writes(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
