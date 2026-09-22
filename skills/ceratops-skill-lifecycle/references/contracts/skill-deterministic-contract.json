@@ -164,7 +164,7 @@
         "skill top-level files and directories",
         "skills/<skill-name>/references/"
       ],
-      "pass_condition": "Each skill folder contains `SKILL.md` as the only top-level file and uses only profile-supported resource directories; the compatible profile may include `tests/`, while the ceratops profile allows `agents/`, `assets/`, `scripts/`, and `references/`. Reference files remain at the reference root or in the supported contracts, schemas, and templates collections. Multi-skill executable sources remain under `skills/sections/scripts`, separate from repository-maintenance scripts."
+      "pass_condition": "Each skill folder contains `SKILL.md` and may contain `README.md` as its only top-level files and uses only profile-supported resource directories; the compatible profile may include `tests/`, while the ceratops profile allows `agents/`, `assets/`, `scripts/`, and `references/`. Reference files remain at the reference root or in the supported contracts, schemas, and templates collections. Multi-skill executable sources remain under `skills/sections/scripts`, separate from repository-maintenance scripts."
     },
     {
       "id": "skill.runtime_payload_portability",
