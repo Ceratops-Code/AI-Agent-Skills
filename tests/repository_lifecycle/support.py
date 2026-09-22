@@ -138,7 +138,7 @@ def prepare_repository_lifecycle_repo(
         encoding="utf-8",
         newline="\n",
     )
-    operation: dict[str, object] = {
+    operation: dict[str, Any] = {
         "requires": {"capabilities": []},
         "steps": [
             {

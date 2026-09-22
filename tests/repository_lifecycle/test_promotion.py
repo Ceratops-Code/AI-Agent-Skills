@@ -275,7 +275,7 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
         "capabilities": {},
         "actions": {"validate": no_op, "test": no_op},
     }
-    deliverables = {
+    deliverables: dict[str, Any] = {
         "apps": {
             name: {
                 "source": ".",
