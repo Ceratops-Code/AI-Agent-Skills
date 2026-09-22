@@ -19,12 +19,14 @@ from tests.governance_lifecycle.support import (
 from tests.support.repositories import ROOT
 
 
+@pytest.mark.parametrize("accepted", [True, False])
 @pytest.mark.parametrize("target_name", ["contract.md", "automation.toml"])
 @pytest.mark.parametrize("prepare_mode", ["request", "construct"])
 def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     tmp_path: pathlib.Path,
     target_name: str,
     prepare_mode: str,
+    accepted: bool,
 ) -> None:
     constructing = prepare_mode == "construct"
     task_temp_root = tmp_path / "task-temp"
@@ -270,9 +272,9 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
             "--state",
             str(state),
             "--outcome",
-            "improved",
+            "improved" if accepted else "no-improvement",
             "--regressions",
-            "passed",
+            "passed" if accepted else "failed",
         ],
         capture_output=True,
         text=True,
@@ -293,6 +295,19 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     assert pathlib.Path(record["validation_evidence"]).is_file()
     champion_bytes = candidate_path.read_bytes()
     completed_state_text = state.read_text(encoding="utf-8")
+    assert (completed_state["champion"] is not None) is accepted
+    if accepted:
+        # A missing accepted record must not be mistaken for all-rejected work.
+        missing_champion = {**completed_state, "champion": None}
+        state.write_text(json.dumps(missing_champion) + "\n", encoding="utf-8")
+        refused = subprocess.run(
+            [sys.executable, str(PROPOSAL_WORKFLOW), "finalize", "--state", str(state)],
+            capture_output=True, text=True, check=False,
+        )
+        assert refused.returncode == 2 and "missing champion" in refused.stderr
+        assert request_path.is_file() and candidate_path.is_file()
+        assert not champion_output.exists()
+        state.write_text(completed_state_text, encoding="utf-8", newline="\n")
     escaped_state = json.loads(completed_state_text)
     outside_evidence = tmp_path / "outside-evidence.json"
     outside_evidence.write_text("Preserve\n", encoding="utf-8", newline="\n")
@@ -341,11 +356,13 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     )
     assert finalized.returncode == 0, finalized.stderr
     assert finalized.stdout.strip() == "OK"
-    assert champion_output.is_file()
-    assert champion_output.read_bytes() == champion_bytes
-    assert hashlib.sha256(champion_output.read_bytes()).hexdigest() == record[
-        "candidate_sha256"
-    ]
+    if accepted:
+        assert champion_output.read_bytes() == champion_bytes
+        assert hashlib.sha256(champion_output.read_bytes()).hexdigest() == record[
+            "candidate_sha256"
+        ]
+    else:
+        assert not champion_output.exists()
     assert not state.exists()
     assert not iterations.exists()
     assert not request_path.exists()

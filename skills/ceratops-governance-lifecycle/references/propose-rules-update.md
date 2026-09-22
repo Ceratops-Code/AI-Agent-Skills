@@ -109,7 +109,7 @@ history and selected rule IDs.
 
 The helper derives request paths and disposable ownership, captures current
 context rule text, and seeds the first candidate. It preserves the caller's
-spec; finalization removes generated inputs and retains the validated champion.
+spec; finalization removes generated inputs and retains any validated champion.
 For a supplied complete request with explicit paths or ownership, use
 `python scripts/proposal-workflow.py prepare --request REQUEST` instead.
 
@@ -135,13 +135,15 @@ applies.
   recording a semantic rejection; success records the fixed artifact,
   assessment, outcome, evidence, hashes, and state before opening a successor.
 - (D) Before final output, run `python scripts/proposal-workflow.py finalize
-  --state STATE`. The helper must reject incomplete runs, path escapes, links,
-  repository or governed targets, undeclared artifacts, and changed owned
-  inputs; copy the exact validated champion to the declared protected output;
-  preserve user-owned or undeclared inputs; delegate controller cleanup; and
-  remove every owned request, original/regression input, context evidence,
-  state, and iteration artifact. Emit only `OK` or one compact actionable
-  error.
+  --state STATE`.
+- Finalization must reject incomplete runs, path escapes, links, repository or
+  governed targets, undeclared artifacts, and changed owned inputs; preserve
+  user-owned or undeclared inputs; delegate controller cleanup; and remove every
+  owned request, original/regression input, context evidence, state, and iteration
+  artifact. Emit only `OK` or one compact actionable error.
+- Copy the exact validated champion to the declared protected output when one
+  exists. A completed run with only rejected candidates must clean up without
+  creating a champion; a missing champion for an accepted candidate is an error.
 - For each issued iteration, complete steps 5-7. After submission, post one
   compact commentary status; do not repeat iteration logs in the final answer.
 
