@@ -1163,7 +1163,7 @@ def command_finalize(state: pathlib.Path) -> str:
         # Rejection is a valid completed controller outcome, not an accepted
         # artifact. Require its recorded decisions before allowing cleanup.
         records = controller_state.get("records")
-        if not records or any(
+        if not isinstance(records, list) or not records or any(
             record.get("outcome") != "no-improvement"
             or record.get("regressions") not in {"passed", "failed"}
             for record in records
