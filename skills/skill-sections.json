@@ -29,13 +29,24 @@
   },
   "runtime_payloads": {
     "ceratops-repo-lifecycle": [
-      "skills/sections/*.md"
+      {
+        "source": "skills/sections/core.md",
+        "target": "references/templates/sections/core.md"
+      },
+      {
+        "source": "skills/sections/multi-action-skill.md",
+        "target": "references/templates/sections/multi-action-skill.md"
+      }
     ],
     "ceratops-skill-lifecycle": [
-      "skills/sections/*.md"
-    ],
-    "ceratops-openai-docs-managed": [
-      "skills/ceratops-openai-docs-managed/scripts/openai_docs_retrieval.py"
+      {
+        "source": "skills/sections/core.md",
+        "target": "references/templates/sections/core.md"
+      },
+      {
+        "source": "skills/sections/multi-action-skill.md",
+        "target": "references/templates/sections/multi-action-skill.md"
+      }
     ],
     "*": []
   },

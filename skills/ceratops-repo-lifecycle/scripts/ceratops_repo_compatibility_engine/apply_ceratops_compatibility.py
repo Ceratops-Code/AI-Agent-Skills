@@ -57,7 +57,9 @@ from .validation_environment import (
 BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[2]
 SOURCE_REPO_ROOT = BUNDLE_ROOT.parents[1]
 SOURCE_CANONICAL_SECTIONS = SOURCE_REPO_ROOT / "skills" / "sections"
-INSTALLED_CANONICAL_SECTIONS = BUNDLE_ROOT / "skills" / "sections"
+INSTALLED_CANONICAL_SECTIONS = (
+    BUNDLE_ROOT / "references" / "templates" / "sections"
+)
 START = "<!-- CERATOPS_SHARED_SECTIONS_START -->"
 END = "<!-- CERATOPS_SHARED_SECTIONS_END -->"
 SOURCE_RE = re.compile(r"<!-- SECTION SOURCE: skills/sections/([^ ]+) -->")

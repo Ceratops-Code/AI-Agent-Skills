@@ -42,7 +42,9 @@ BOOTSTRAP_INSTALLER = ROOT / "scripts" / "deploy-skills.py"
 SOURCE_CANONICAL_SECTIONS = (
     LIFECYCLE_BUNDLE_ROOT.parents[1] / "skills" / "sections"
 )
-INSTALLED_CANONICAL_SECTIONS = LIFECYCLE_BUNDLE_ROOT / "skills" / "sections"
+INSTALLED_CANONICAL_SECTIONS = (
+    LIFECYCLE_BUNDLE_ROOT / "references" / "templates" / "sections"
+)
 SKILL_DETERMINISTIC_CONTRACT = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts/skill-deterministic-contract.json")
 SKILL_NONDETERMINISTIC_CONTRACT = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts/skill-nondeterministic-contract.json")
 REQUIRED_CONTRACT_FILES = [

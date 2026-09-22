@@ -438,11 +438,28 @@ def test_bootstrap_full_install_materializes_lifecycle_bundle_with_source_runtim
         / "templates"
         / "skill-sections.json.tmpl"
     ).is_file()
-    assert (installed_lifecycle / "skills" / "sections" / "core.md").is_file()
-    assert not (installed_lifecycle / "skills" / "sections" / "python").exists()
+    for lifecycle_name in (
+        "ceratops-repo-lifecycle",
+        "ceratops-skill-lifecycle",
+    ):
+        installed_skill = install_root / lifecycle_name
+        installed_sections = (
+            installed_skill / "references" / "templates" / "sections"
+        )
+        assert (installed_sections / "core.md").is_file()
+        assert (installed_sections / "multi-action-skill.md").is_file()
+        assert not (installed_skill / "skills" / "sections").exists()
+    installed_openai_docs = install_root / "ceratops-openai-docs-managed"
     assert (
-        installed_lifecycle / "skills" / "sections" / "multi-action-skill.md"
+        installed_openai_docs / "scripts" / "openai_docs_retrieval.py"
     ).is_file()
+    assert not (
+        installed_openai_docs
+        / "skills"
+        / "ceratops-openai-docs-managed"
+        / "scripts"
+        / "openai_docs_retrieval.py"
+    ).exists()
     assert (
         installed_lifecycle
         / "references"
@@ -458,6 +475,26 @@ def test_bootstrap_full_install_materializes_lifecycle_bundle_with_source_runtim
     assert (
         installed_lifecycle / "scripts" / COMPATIBILITY_ENGINE / "__main__.py"
     ).is_file()
+    installed_validator = (
+        install_root
+        / "ceratops-skill-lifecycle"
+        / "scripts"
+        / "skills-consistency-source-validator.py"
+    )
+    validated = subprocess.run(
+        [
+            sys.executable,
+            str(installed_validator),
+            "--repo-root",
+            str(ROOT),
+            "--mode",
+            "sections",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert validated.returncode == 0, validated.stderr
     target_repo = tmp_path / "installed-bundle-target"
     create_compatible_repo(target_repo, "stale/source", ["alpha-tool"])
     prepare_script_environment(target_repo)

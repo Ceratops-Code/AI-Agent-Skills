@@ -401,7 +401,10 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     # through contract data, without changing any executable implementation.
     bundle = tmp_path / "alternate-bundle"
     shutil.copytree(REPOSITORY_LIFECYCLE_SOURCE, bundle)
-    shutil.copytree(ROOT / "skills/sections", bundle / "skills/sections")
+    sections = bundle / "references/templates/sections"
+    sections.mkdir()
+    for name in ("core.md", "multi-action-skill.md"):
+        shutil.copy2(ROOT / "skills/sections" / name, sections / name)
     contract_path = bundle / "references/contracts/ceratops-compatibility-deterministic-contract.json"
     defaults = json.loads(contract_path.read_text(encoding="utf-8"))
     defaults["surfaces"]["skill_bootstrap"]["path"] = "scripts/bootstrap-skills.py"
@@ -1353,10 +1356,10 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
 ) -> None:
     lifecycle_bundle = tmp_path / "lifecycle-bundle"
     shutil.copytree(REPOSITORY_LIFECYCLE_SOURCE, lifecycle_bundle)
-    shutil.copytree(
-        ROOT / "skills" / "sections",
-        lifecycle_bundle / "skills" / "sections",
-    )
+    sections = lifecycle_bundle / "references/templates/sections"
+    sections.mkdir()
+    for name in ("core.md", "multi-action-skill.md"):
+        shutil.copy2(ROOT / "skills/sections" / name, sections / name)
     workflow_template = (
         lifecycle_bundle / "references" / "templates" / "validate.yml.tmpl"
     )
