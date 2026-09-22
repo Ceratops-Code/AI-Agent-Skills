@@ -1118,7 +1118,7 @@ def test_v1_absent_section_and_optional_operation_remain_no_ops(tmp_path: pathli
         runner.prepare_operations(tmp_path, [runner.OperationRequest("deploy.operations.absent")])
 
 
-@pytest.mark.parametrize("version", [None, True, 1.0, "1", 0, 5, [], {}])
+@pytest.mark.parametrize("version", [None, True, 1.0, "1", 0, max(contracts.VERSION_SCHEMAS) + 1, [], {}])
 def test_loader_rejects_unsupported_or_unversioned_contracts(
     tmp_path: pathlib.Path, version: object,
 ) -> None:
