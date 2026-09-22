@@ -253,6 +253,22 @@ gates understand v5, but automatic release-unit Build, Promote, Ship, and Deploy
 are not connected yet. Compatibility generation remains v4. The v5 schema lives
 at `skills/ceratops-repo-lifecycle/references/schemas/sdlc.v5.schema.json`.
 
+Build receipts use `ceratops-build-result.v2` in the existing
+`operation-result.v1.schema.json`. The repository-owned `sdlc_results.py`
+verifier checks a caller-selected identity, artifact and dependency files,
+supporting files, and artifact-bound test references. It reads only regular
+bundle files through safe relative paths and compares their sizes and SHA-256
+values. Verification does not establish test success, authenticity,
+immutability, or deployment permission. Version-1 result capture is unchanged;
+Build and installer integration remain later work.
+
+Call `sdlc_results.py verify-release-unit-build` with `--receipt`,
+`--bundle-root`, and the expected `--repository`, `--source-commit`,
+`--release-unit`, `--channel`, `--version`, and `--target`. Success prints `OK`;
+invalid input or a mismatch returns a nonzero exit code. The Python function
+`verify_release_unit_build` returns the checked receipt with its recorded
+build and test statuses unchanged. Neither interface writes bundle files.
+
 Tool deployment at `deliverables.tools.deploy-local.ceratops-managed` routes to
 `ceratops-tool-lifecycle/install`. That skill's installed executable binding
 calls the installed tool manager with `--source` set to the selected repository.

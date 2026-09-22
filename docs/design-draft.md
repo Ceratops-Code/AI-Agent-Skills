@@ -113,6 +113,16 @@ The reader returns metadata only. Automatic unit builds and receipt-based
 publication or deployment are later lifecycle integrations; the compatibility
 producer and the live repository configuration remain v4.
 
+`sdlc_results.py` owns explicit build-receipt verification alongside bounded
+operation-result capture. The existing operation-result schema adds a v2 build
+record with the complete release selection, exact output and dependency files,
+supporting files, and artifact-bound test evidence. Callers supply the expected
+selection independently; the verifier checks records, reference consistency,
+path boundaries, byte sizes, and SHA-256 values without building, installing,
+or changing test statuses. Verification is a point-in-time integrity check, not
+proof of test success, provenance, immutability, or permission to deploy.
+Capture remains free of artifact reads, and installer integration is deferred.
+
 The final direction removes generated repository `sdlc.py`, a local copy of the
 operation engine, and `scripts/runtime`. Those proposed extra layers were
 rejected. Installed skill bindings remain in the skills; target repositories

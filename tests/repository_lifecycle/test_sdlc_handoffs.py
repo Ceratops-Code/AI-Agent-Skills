@@ -1,6 +1,7 @@
 """SDLC lifecycle boundaries, registered handoffs, and completion evidence."""
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import os
@@ -8,11 +9,12 @@ import pathlib
 import shutil
 import subprocess
 import sys
-import tomllib
 from copy import deepcopy
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import tomllib
 
 from tests.repository_lifecycle.support import (
     REPOSITORY_LIFECYCLE_SCRIPTS,
@@ -23,6 +25,7 @@ from tests.support.repositories import ROOT, run_ci_action, run_git
 
 runner = importlib.import_module("repository_operation")
 contracts = importlib.import_module("ceratops_repo_compatibility_engine.sdlc_contract_validation")
+results = importlib.import_module("sdlc_results")
 
 
 def _repository(repo: pathlib.Path) -> str:
@@ -321,6 +324,343 @@ def test_v4_prerequisites_are_exposed_without_build_or_install(tmp_path: pathlib
     assert app_prepared.prerequisites["packages"]["claims"]["action-locations"] == {
         "build": "deliverables.packages.claims.actions.build"
     }
+
+
+def _build_receipt_fixture(tmp_path: pathlib.Path):
+    """The repository runner owns cleanup of all files beneath this pytest root."""
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+
+    def file(path: str, content: bytes, kind: str, deliverable: str | None = None):
+        target = bundle / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        record = {"type": kind, "path": path, "size": len(content),
+                  "sha256": hashlib.sha256(content).hexdigest()}
+        return {**record, **({"deliverable": deliverable} if deliverable else {})}
+
+    identity = {"repository": "example/project", "sourceCommit": "a" * 40,
+                "releaseUnit": "claims", "channel": "beta", "version": "1.2.0b1",
+                "target": "python-3.14-windows"}
+    artifact = file("wheels/claims.whl", b"primary wheel", "python-wheel", "deliverables.packages.claims")
+    app = file("apps/desktop.zip", b"non-python artifact", "zip", "deliverables.apps.desktop")
+    dependency = file("dependencies/converter.whl", b"dependency wheel", "python-wheel", "deliverables.packages.converter")
+    lock = file("locks/pylock.toml", b"", "dependency-lock")
+    evidence = file("tests/results.json", b'{"status":"passed"}\n', "test-evidence")
+    def reference(entry):
+        return {key: entry[key] for key in ("path", "sha256")}
+    receipt = {
+        "schema": "ceratops-build-result.v2", "status": "passed", "identity": identity,
+        "artifacts": [artifact, app],
+        "dependencies": [{"identity": {**identity, "releaseUnit": "converter", "version": "0.4.0"},
+                          "artifacts": [dependency]}],
+        "supportingFiles": [lock, evidence],
+        "tests": [{"id": "installed-artifact", "status": "passed",
+                   "artifacts": [reference(artifact), reference(app), reference(dependency)],
+                   "evidence": reference(evidence)}],
+    }
+    path = tmp_path / "receipt.json"
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+    return path, bundle, receipt, dict(identity)
+
+
+def _save_build_receipt(path: pathlib.Path, receipt: dict[str, Any]) -> None:
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+
+
+def test_build_receipt_verifies_complete_bundle_without_mutation(tmp_path, monkeypatch) -> None:
+    path, bundle, receipt, expected = _build_receipt_fixture(tmp_path)
+    before = {item: (item.read_bytes(), item.stat().st_mtime_ns)
+              for item in tmp_path.rglob("*") if item.is_file()}
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("Verifier must not execute commands"))
+    checked = results.verify_release_unit_build(path, bundle, expected=expected)
+    assert checked == receipt
+    assert {item: (item.read_bytes(), item.stat().st_mtime_ns)
+            for item in tmp_path.rglob("*") if item.is_file()} == before
+
+
+def test_build_receipt_ignores_metadata_only_change_time(tmp_path, monkeypatch) -> None:
+    path, bundle, receipt, expected = _build_receipt_fixture(tmp_path)
+    original_plain_path = results._plain_path
+
+    def changed_metadata(*args, **kwargs):
+        checked, info = original_plain_path(*args, **kwargs)
+        values = {field: getattr(info, field) for field in
+                  ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")}
+        values["st_ctime_ns"] += 1
+        return checked, SimpleNamespace(**values)
+
+    # Simulate Windows metadata changes without touching file identity or bytes.
+    monkeypatch.setattr(results, "_plain_path", changed_metadata)
+    assert results.verify_release_unit_build(path, bundle, expected=expected) == receipt
+
+
+@pytest.mark.parametrize("build_status", ["passed", "failed", "blocked"])
+@pytest.mark.parametrize("test_status", ["passed", "failed", "blocked", "skipped", None])
+def test_build_receipt_integrity_does_not_establish_test_success(
+    tmp_path, build_status: str, test_status: str | None,
+) -> None:
+    path, bundle, receipt, expected = _build_receipt_fixture(tmp_path)
+    receipt["status"] = build_status
+    if test_status is None:
+        receipt["tests"] = []
+    else:
+        receipt["tests"][0]["status"] = test_status
+        if test_status in {"blocked", "skipped"}:
+            receipt["tests"][0]["evidence"] = None
+    _save_build_receipt(path, receipt)
+    assert results.verify_release_unit_build(path, bundle, expected=expected) == receipt
+
+
+@pytest.mark.parametrize("field", ["repository", "sourceCommit", "releaseUnit", "channel", "version", "target"])
+def test_build_receipt_checks_each_expected_identity_before_payload_reads(tmp_path, monkeypatch, field) -> None:
+    path, bundle, _, expected = _build_receipt_fixture(tmp_path)
+    expected[field] = "different"
+    monkeypatch.setattr(results, "_verify_bundle_file", lambda *a: pytest.fail("Identity must be checked first"))
+    with pytest.raises(results.StepResultError, match=f"identity mismatch: {field}"):
+        results.verify_release_unit_build(path, bundle, expected=expected)
+
+
+@pytest.mark.parametrize("problem", ["missing", "extra", "empty", "non-string", "not-mapping"])
+def test_build_receipt_requires_complete_independent_selection(tmp_path, problem) -> None:
+    path, bundle, _, expected = _build_receipt_fixture(tmp_path)
+    if problem == "missing":
+        expected.pop("channel")
+    elif problem == "extra":
+        expected["unexpected"] = "value"
+    elif problem == "empty":
+        expected["target"] = " "
+    elif problem == "non-string":
+        expected["version"] = 1
+    else:
+        expected = None
+    with pytest.raises(results.StepResultError, match="all six"):
+        results.verify_release_unit_build(path, bundle, expected=expected)
+
+
+@pytest.mark.parametrize("problem", [
+    "missing-field", "unknown-field", "bad-channel", "bad-commit", "bad-owner",
+    "bad-digest", "negative-size", "boolean-size", "no-artifacts", "missing-test-evidence",
+])
+def test_build_receipt_rejects_invalid_schema(tmp_path, problem) -> None:
+    path, bundle, receipt, expected = _build_receipt_fixture(tmp_path)
+    if problem == "missing-field":
+        receipt.pop("dependencies")
+    elif problem == "unknown-field":
+        receipt["extra"] = "value"
+    elif problem in {"bad-channel", "bad-commit"}:
+        receipt["identity"]["channel" if problem == "bad-channel" else "sourceCommit"] = "invalid"
+    elif problem == "no-artifacts":
+        receipt["artifacts"] = []
+    elif problem == "missing-test-evidence":
+        receipt["tests"][0]["evidence"] = None
+    else:
+        key, value = {
+            "bad-owner": ("deliverable", "packages.claims"), "bad-digest": ("sha256", "xyz"),
+            "negative-size": ("size", -1), "boolean-size": ("size", True),
+        }[problem]
+        receipt["artifacts"][0][key] = value
+    _save_build_receipt(path, receipt)
+    with pytest.raises(results.StepResultError, match="schema"):
+        results.verify_release_unit_build(path, bundle, expected=expected)
+
+
+@pytest.mark.parametrize("problem", [
+    "duplicate-artifact", "case-alias", "dependency-path", "support-path",
+    "duplicate-dependency", "competing-version", "self-dependency", "duplicate-test",
+    "unknown-tested-file", "wrong-tested-hash", "duplicate-tested-file",
+    "unknown-evidence", "wrong-evidence-hash", "wrong-evidence-type",
+])
+def test_build_receipt_rejects_ambiguous_inventory_before_payload_reads(tmp_path, monkeypatch, problem) -> None:
+    path, bundle, receipt, expected = _build_receipt_fixture(tmp_path)
+    artifact = receipt["artifacts"][0]
+    test = receipt["tests"][0]
+    if problem in {"duplicate-artifact", "case-alias"}:
+        duplicate = deepcopy(artifact)
+        if problem == "case-alias":
+            duplicate["path"] = duplicate["path"].upper()
+        receipt["artifacts"].append(duplicate)
+    elif problem == "dependency-path":
+        receipt["dependencies"][0]["artifacts"][0]["path"] = artifact["path"]
+    elif problem == "support-path":
+        receipt["supportingFiles"][0]["path"] = artifact["path"]
+    elif problem in {"duplicate-dependency", "competing-version"}:
+        duplicate = deepcopy(receipt["dependencies"][0])
+        if problem == "competing-version":
+            duplicate["identity"]["version"] = "9.0.0"
+        receipt["dependencies"].append(duplicate)
+    elif problem == "self-dependency":
+        receipt["dependencies"][0]["identity"]["releaseUnit"] = expected["releaseUnit"]
+    elif problem == "duplicate-test":
+        receipt["tests"].append(deepcopy(test))
+    elif problem == "unknown-tested-file":
+        test["artifacts"][0]["path"] = "unknown.whl"
+    elif problem == "wrong-tested-hash":
+        test["artifacts"][0]["sha256"] = "b" * 64
+    elif problem == "duplicate-tested-file":
+        test["artifacts"].append(deepcopy(test["artifacts"][0]))
+    elif problem == "unknown-evidence":
+        test["evidence"]["path"] = "unknown.json"
+    elif problem == "wrong-evidence-hash":
+        test["evidence"]["sha256"] = "b" * 64
+    else:
+        receipt["supportingFiles"][1]["type"] = "dependency-lock"
+    _save_build_receipt(path, receipt)
+    monkeypatch.setattr(results, "_verify_bundle_file", lambda *a: pytest.fail("Inventory must be checked first"))
+    with pytest.raises(results.StepResultError):
+        results.verify_release_unit_build(path, bundle, expected=expected)
+
+
+@pytest.mark.parametrize("bad_path", [
+    "../outside.whl", "/absolute.whl", "C:/absolute.whl", r"C:\absolute.whl",
+    r"\\server\share\wheel.whl", "wheels/../claims.whl", "wheels//claims.whl",
+    "wheels/./claims.whl", "wheels/", "wheels/claims.whl:stream", "wheels/claims.whl.",
+    "wheels/claims.whl ", "wheels/NUL.whl", "wheels/COM1/file.whl", "wheels/a?.whl",
+    "wheels/a\n.whl", "wheels/a\0.whl",
+])
+def test_build_receipt_rejects_nonportable_or_escaping_paths(tmp_path, monkeypatch, bad_path) -> None:
+    path, bundle, receipt, expected = _build_receipt_fixture(tmp_path)
+    receipt["artifacts"][0]["path"] = bad_path
+    _save_build_receipt(path, receipt)
+    monkeypatch.setattr(results, "_verify_bundle_file", lambda *a: pytest.fail("Unsafe paths must be rejected first"))
+    with pytest.raises(results.StepResultError):
+        results.verify_release_unit_build(path, bundle, expected=expected)
+
+
+@pytest.mark.parametrize("group", ["artifact", "dependency", "lock", "evidence"])
+@pytest.mark.parametrize("problem", ["missing", "size", "hash", "directory"])
+def test_build_receipt_verifies_every_file_category(tmp_path, group, problem) -> None:
+    path, bundle, receipt, expected = _build_receipt_fixture(tmp_path)
+    record = {"artifact": receipt["artifacts"][0],
+              "dependency": receipt["dependencies"][0]["artifacts"][0],
+              "lock": receipt["supportingFiles"][0],
+              "evidence": receipt["supportingFiles"][1]}[group]
+    target = bundle / record["path"]
+    if problem in {"missing", "directory"}:
+        target.unlink()
+        if problem == "directory":
+            target.mkdir()
+    elif problem == "size":
+        target.write_bytes(target.read_bytes() + b"x")
+    else:
+        record["sha256"] = "b" * 64
+        if group == "evidence":
+            receipt["tests"][0]["evidence"]["sha256"] = record["sha256"]
+        for reference in receipt["tests"][0]["artifacts"]:
+            if reference["path"] == record["path"]:
+                reference["sha256"] = record["sha256"]
+    _save_build_receipt(path, receipt)
+    with pytest.raises(results.StepResultError):
+        results.verify_release_unit_build(path, bundle, expected=expected)
+
+
+@pytest.mark.parametrize("problem", ["json", "duplicate-key", "nonfinite", "depth", "large", "utf8", "array", "old-schema"])
+def test_build_receipt_rejects_unusable_json(tmp_path, problem) -> None:
+    path, bundle, receipt, expected = _build_receipt_fixture(tmp_path)
+    raw = {
+        "json": b"{", "duplicate-key": b'{"schema":"a","schema":"b","status":"passed"}',
+        "nonfinite": b'{"schema":"a","status":"passed","extra":NaN}',
+        "depth": ('{"schema":"a","status":"passed","extra":' + "[" * 70 + "0" + "]" * 70 + "}").encode(),
+        "large": b" " * (results.STEP_RESULT_BYTES + 1), "utf8": b"\xff", "array": b"[]",
+        "old-schema": json.dumps({**receipt, "schema": "ceratops-build-result.v1"}).encode(),
+    }[problem]
+    path.write_bytes(raw)
+    with pytest.raises(results.StepResultError):
+        results.verify_release_unit_build(path, bundle, expected=expected)
+
+
+def test_build_receipt_rejects_hardlinked_payload(tmp_path) -> None:
+    path, bundle, receipt, expected = _build_receipt_fixture(tmp_path)
+    os.link(bundle / receipt["artifacts"][0]["path"], tmp_path / "other-link.whl")
+    with pytest.raises(results.StepResultError, match="regular and unlinked"):
+        results.verify_release_unit_build(path, bundle, expected=expected)
+
+
+@pytest.mark.parametrize("linked_root", [False, True])
+def test_build_receipt_rejects_directory_links(tmp_path, linked_root) -> None:
+    path, bundle, receipt, expected = _build_receipt_fixture(tmp_path)
+    link = tmp_path / "linked-bundle" if linked_root else bundle / "linked-wheels"
+    target = bundle if linked_root else bundle / "wheels"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        if os.name != "nt":
+            raise
+        made = subprocess.run(["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)],
+                              capture_output=True, text=True, check=False)
+        assert made.returncode == 0, made.stderr
+    try:
+        if linked_root:
+            bundle = link
+        else:
+            receipt["artifacts"][0]["path"] = "linked-wheels/claims.whl"
+            receipt["tests"][0]["artifacts"][0]["path"] = "linked-wheels/claims.whl"
+            _save_build_receipt(path, receipt)
+        with pytest.raises(results.StepResultError, match="traverses a link"):
+            results.verify_release_unit_build(path, bundle, expected=expected)
+    finally:
+        # Remove only the test-owned link, never its target or descendants.
+        if link.is_symlink():
+            link.unlink()
+        else:
+            link.rmdir()
+
+
+def test_build_receipt_detects_changes_during_hashing(tmp_path, monkeypatch) -> None:
+    path, bundle, receipt, expected = _build_receipt_fixture(tmp_path)
+    target = bundle / receipt["artifacts"][0]["path"]
+    original_hash = hashlib.sha256
+
+    class ChangingHash:
+        def __init__(self):
+            self.digest = original_hash()
+
+        def update(self, data):
+            self.digest.update(data)
+            target.write_bytes(b"changed")
+
+        def hexdigest(self):
+            return self.digest.hexdigest()
+
+    monkeypatch.setattr(results.hashlib, "sha256", ChangingHash)
+    with pytest.raises(results.StepResultError, match="changed while reading"):
+        results.verify_release_unit_build(path, bundle, expected=expected)
+
+
+@pytest.mark.parametrize("schema", ["ceratops-build-result.v1", "ceratops-build-result.v2"])
+def test_build_receipt_does_not_add_artifact_reads_to_capture(tmp_path, monkeypatch, schema) -> None:
+    _, _, receipt, _ = _build_receipt_fixture(tmp_path)
+    value = receipt if schema.endswith("v2") else {
+        "schema": schema, "status": "passed",
+        "artifact": {key: receipt["artifacts"][0][key] for key in ("type", "path", "sha256", "size")},
+    }
+    monkeypatch.setattr(results, "_plain_path", lambda *a, **k: pytest.fail("Capture must not inspect artifacts"))
+    assert results.capture_step_result(json.dumps(value), expected_schema=schema) == {"result": value}
+
+
+def test_build_receipt_cli_works_from_isolated_skill_and_preserves_inputs(tmp_path) -> None:
+    path, bundle, _, expected = _build_receipt_fixture(tmp_path)
+    installed = tmp_path / "installed-skill"
+    script = installed / "scripts/sdlc_results.py"
+    schema = installed / "references/schemas/operation-result.v1.schema.json"
+    script.parent.mkdir(parents=True)
+    schema.parent.mkdir(parents=True)
+    shutil.copy2(REPOSITORY_LIFECYCLE_SCRIPTS / script.name, script)
+    shutil.copy2(results.OPERATION_RESULT_SCHEMA, schema)
+    argv = [sys.executable, "-B", str(script), "verify-release-unit-build",
+            "--receipt", str(path), "--bundle-root", str(bundle)]
+    for field, flag in zip(results.BUILD_SELECTION_FIELDS,
+                           ["--repository", "--source-commit", "--release-unit", "--channel", "--version", "--target"], strict=True):
+        argv.extend([flag, expected[field]])
+    before = {item: item.read_bytes() for item in tmp_path.rglob("*") if item.is_file()}
+    passed = subprocess.run(argv, cwd=tmp_path, capture_output=True, text=True, check=False)
+    assert (passed.returncode, passed.stdout.strip(), passed.stderr) == (0, "OK", "")
+    assert {item: item.read_bytes() for item in tmp_path.rglob("*") if item.is_file()} == before
+    wrong = subprocess.run([*argv[:-1], "wrong-target"], cwd=tmp_path, capture_output=True, text=True, check=False)
+    assert wrong.returncode == 2 and "identity mismatch: target" in wrong.stderr
+    assert not wrong.stdout
+    missing = subprocess.run(argv[:-2], cwd=tmp_path, capture_output=True, text=True, check=False)
+    assert missing.returncode == 2 and "--target" in missing.stderr
 
 
 def test_v4_source_installed_tool_needs_no_package_artifact(tmp_path: pathlib.Path) -> None:

@@ -17,6 +17,9 @@
       "$ref": "#/$defs/buildResult"
     },
     {
+      "$ref": "#/$defs/buildReceipt"
+    },
+    {
       "$ref": "#/$defs/deploymentResult"
     }
   ],
@@ -25,6 +28,7 @@
       "enum": [
         "ceratops-repository-stage-result.v1",
         "ceratops-build-result.v1",
+        "ceratops-build-result.v2",
         "ceratops-deployment-result.v1"
       ]
     },
@@ -391,6 +395,276 @@
           }
         }
       ]
+    },
+    "buildSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "sourceCommit",
+        "releaseUnit",
+        "channel",
+        "version",
+        "target"
+      ],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "sourceCommit": {
+          "$ref": "#/$defs/gitCommit"
+        },
+        "releaseUnit": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+        },
+        "channel": {
+          "enum": [
+            "alpha",
+            "beta",
+            "release"
+          ]
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        }
+      }
+    },
+    "bundlePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^\\\\:\\u0000-\\u001f\\u007f]+$",
+      "not": {
+        "anyOf": [
+          {
+            "pattern": "^/"
+          },
+          {
+            "pattern": "(^|/)\\.{1,2}(/|$)"
+          },
+          {
+            "pattern": "//|/$"
+          }
+        ]
+      }
+    },
+    "bundleFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "path",
+        "sha256",
+        "size"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+        },
+        "path": {
+          "$ref": "#/$defs/bundlePath"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "buildArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deliverable",
+        "type",
+        "path",
+        "sha256",
+        "size"
+      ],
+      "properties": {
+        "deliverable": {
+          "type": "string",
+          "pattern": "^deliverables\\.(packages|apps|tools|skills|hooks)\\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+        },
+        "type": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+        },
+        "path": {
+          "$ref": "#/$defs/bundlePath"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "buildFileReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/bundlePath"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "buildDependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity",
+        "artifacts"
+      ],
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/buildSelection"
+        },
+        "artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/buildArtifact"
+          }
+        }
+      }
+    },
+    "buildTest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "status",
+        "artifacts",
+        "evidence"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "status": {
+          "enum": [
+            "passed",
+            "failed",
+            "blocked",
+            "skipped"
+          ]
+        },
+        "artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/buildFileReference"
+          }
+        },
+        "evidence": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/buildFileReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "passed",
+                  "failed"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "evidence": {
+                "$ref": "#/$defs/buildFileReference"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "buildReceipt": {
+      "description": "A release-unit build inventory. Verification establishes file integrity only; build/test statuses remain producer claims and never authorize deployment.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "status",
+        "identity",
+        "artifacts",
+        "dependencies",
+        "supportingFiles",
+        "tests"
+      ],
+      "properties": {
+        "schema": {
+          "const": "ceratops-build-result.v2"
+        },
+        "status": {
+          "$ref": "#/$defs/terminalStatus"
+        },
+        "identity": {
+          "$ref": "#/$defs/buildSelection"
+        },
+        "artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/buildArtifact"
+          }
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/buildDependency"
+          }
+        },
+        "supportingFiles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bundleFile"
+          }
+        },
+        "tests": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/buildTest"
+          }
+        }
+      }
     },
     "deploymentResult": {
       "type": "object",
