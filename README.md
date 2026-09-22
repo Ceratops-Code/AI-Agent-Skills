@@ -482,10 +482,9 @@ percentage and its 100% contract target; inventory alone is not a finding.
 Local health validates each present `sdlc/sdlc.yml` against the v4 or v5 schema
 and checks generic repository compatibility. It rejects v1 through v3 instead
 of proposing an in-place migration. Ship validates selected publication
-operations before remote
-mutation. Local health runs SDLC validation and tests, including registered
-deterministic skill actions when declared. It retains direct validator
-execution for repositories without a validation-capable SDLC.
+operations before remote mutation. Local health records structural
+compatibility and validation readiness, but does not execute repository
+validators, SDLC actions, or tests.
 
 Collect review evidence for non-deterministic checks with:
 
