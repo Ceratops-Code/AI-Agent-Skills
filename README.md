@@ -211,8 +211,8 @@ Operations are identified by their YAML location, such as
 There are no extra IDs, defaults or full flows in the contract. Prerequisites
 are setup metadata; declaring them does not install dependencies. Bootstrap
 operations perform declared setup, and uv prepares the environment for commands
-invoked through it. SDLC v4/v5 handoffs name a skill/action. For skill callers, the
-engine resolves the installed skill's `references/action-executors.json` and
+invoked through it. SDLC v4/v5 handoffs name a skill/action. For skill callers,
+the engine resolves the installed skill's `references/action-executors.json` and
 runs its declared argv or ordered steps; unresolved routes block dependent work.
 CI uses `--ci`, never dispatches skills, and reports deferred handoffs
 separately. SDLC versions 1 through 3 are rejected and must be upgraded before
