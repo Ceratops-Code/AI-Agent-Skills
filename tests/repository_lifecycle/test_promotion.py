@@ -987,7 +987,7 @@ def test_promote_repository_ship_after_promotion_preserves_blocked_state(
     )
 
 
-def test_promote_repository_rejects_linked_repo_root_without_branch_drift(
+def test_promote_repository_routes_linked_repo_root_without_branch_drift(
     tmp_path: pathlib.Path,
 ) -> None:
     repo, _approved_head, _log, environment = prepare_repository_lifecycle_repo(
@@ -1026,15 +1026,18 @@ def test_promote_repository_rejects_linked_repo_root_without_branch_drift(
         env=environment,
     )
 
-    assert result.returncode == 1
-    assert "must be the primary checkout" in json.loads(result.stderr)["message"]
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "ready"
+    assert payload["merged_branches"] == ["task-runner"]
     assert run_git(task_worktree, "branch", "--show-current").stdout.strip() == (
         "task-runner"
     )
     assert run_git(task_worktree, "rev-parse", "HEAD").stdout.strip() == task_head
     assert run_git(task_worktree, "status", "--porcelain").stdout == ""
     assert run_git(repo, "branch", "--show-current").stdout.strip() == "release/local"
-    assert run_git(repo, "rev-parse", "HEAD").stdout.strip() == release_head
+    assert run_git(repo, "rev-parse", "HEAD").stdout.strip() == task_head
+    assert run_git(repo, "merge-base", "--is-ancestor", release_head, "HEAD").returncode == 0
 
 
 def test_release_preparation_failure_restores_original_checkout_and_refs(

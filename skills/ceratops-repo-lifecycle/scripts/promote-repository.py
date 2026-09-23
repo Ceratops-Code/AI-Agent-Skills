@@ -121,12 +121,50 @@ def _selected_worktree(repo_root: pathlib.Path, branch: str) -> pathlib.Path | N
     return pathlib.Path(raw).resolve() if raw else None
 
 
+def _primary_checkout(repo_root: pathlib.Path) -> pathlib.Path:
+    """Resolve a linked-worktree invocation to its primary checkout.
+
+    Promotion keeps the caller's task worktree as the source-branch owner. Git
+    permits ``main`` and ``release/local`` switching only in the checkout that
+    owns those branches, so the helper performs release preparation from the
+    primary checkout instead of asking the caller or model to rerun there.
+    """
+
+    common_dir = pathlib.Path(
+        require_output(
+            _git(
+                repo_root,
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ),
+            cwd=repo_root,
+        ).strip()
+    ).resolve()
+    if common_dir.name != ".git":
+        raise PromotionError(
+            "Promotion requires a non-bare repository with a primary checkout."
+        )
+    primary_root = common_dir.parent.resolve()
+    if not primary_root.is_dir():
+        raise PromotionError("The repository primary checkout is unavailable.")
+    primary_git_dir = pathlib.Path(
+        require_output(
+            _git(primary_root, "rev-parse", "--absolute-git-dir"),
+            cwd=primary_root,
+        ).strip()
+    ).resolve()
+    if primary_git_dir != common_dir:
+        raise PromotionError("Could not verify the repository primary checkout.")
+    return primary_root
+
+
 def _preflight_release_checkout(
     repo_root: pathlib.Path,
     main_branch: str,
     release_branch: str,
 ) -> ReleaseCheckoutState:
-    """Reject an ineligible checkout before any local branch is switched."""
+    """Reject an ineligible primary checkout before any branch is switched."""
 
     git_dir = pathlib.Path(
         require_output(
@@ -146,9 +184,7 @@ def _preflight_release_checkout(
         ).strip()
     ).resolve()
     if git_dir != common_dir:
-        raise PromotionError(
-            "Promotion --repo-root must be the primary checkout, not a linked worktree."
-        )
+        raise PromotionError("Promotion did not resolve to the primary checkout.")
 
     current_branch = require_output(
         _git(repo_root, "branch", "--show-current"),
@@ -929,7 +965,8 @@ def promote(
     if timings is None:
         timings = {}
 
-    repo_root = args.repo_root.expanduser().resolve(strict=True)
+    requested_root = args.repo_root.expanduser().resolve(strict=True)
+    repo_root = _primary_checkout(requested_root)
     if not repo_root.is_dir():
         raise PromotionError("Repository root is not a directory.")
     if args.release_branch not in PROMOTION_BRANCHES:
