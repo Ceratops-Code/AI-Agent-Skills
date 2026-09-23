@@ -72,6 +72,16 @@ class SourceState:
     worktree: pathlib.Path | None
 
 
+@dataclass(frozen=True)
+class ReleaseCheckoutState:
+    """Exact clean checkout state restored when release preparation fails."""
+
+    branch: str
+    head: str
+    main_head: str
+    release_head: str | None
+
+
 def _git(repo_root: pathlib.Path, *args: str) -> list[str]:
     return ["git", "-C", str(repo_root), *args]
 
@@ -109,6 +119,178 @@ def _selected_worktree(repo_root: pathlib.Path, branch: str) -> pathlib.Path | N
         cwd=repo_root,
     ).strip()
     return pathlib.Path(raw).resolve() if raw else None
+
+
+def _preflight_release_checkout(
+    repo_root: pathlib.Path,
+    main_branch: str,
+    release_branch: str,
+) -> ReleaseCheckoutState:
+    """Reject an ineligible checkout before any local branch is switched."""
+
+    git_dir = pathlib.Path(
+        require_output(
+            _git(repo_root, "rev-parse", "--absolute-git-dir"),
+            cwd=repo_root,
+        ).strip()
+    ).resolve()
+    common_dir = pathlib.Path(
+        require_output(
+            _git(
+                repo_root,
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ),
+            cwd=repo_root,
+        ).strip()
+    ).resolve()
+    if git_dir != common_dir:
+        raise PromotionError(
+            "Promotion --repo-root must be the primary checkout, not a linked "
+            "worktree."
+        )
+
+    current_branch = require_output(
+        _git(repo_root, "branch", "--show-current"),
+        cwd=repo_root,
+    ).strip()
+    if not current_branch:
+        raise PromotionError("Promotion --repo-root must be on a local branch.")
+
+    for branch in dict.fromkeys((main_branch, release_branch)):
+        owner = _selected_worktree(repo_root, branch)
+        if owner is not None and owner != repo_root:
+            raise PromotionError(
+                f"Promotion branch is checked out in another worktree: "
+                f"{branch} at {owner}"
+            )
+
+    return ReleaseCheckoutState(
+        branch=current_branch,
+        head=_branch_head(repo_root, current_branch),
+        main_head=_branch_head(repo_root, main_branch),
+        release_head=(
+            _branch_head(repo_root, release_branch)
+            if _ref_exists(repo_root, f"refs/heads/{release_branch}")
+            else None
+        ),
+    )
+
+
+def _restore_release_checkout(
+    repo_root: pathlib.Path,
+    main_branch: str,
+    release_branch: str,
+    state: ReleaseCheckoutState,
+) -> None:
+    """Restore every local ref changed while preparing the release checkout."""
+
+    current_branch = require_output(
+        _git(repo_root, "branch", "--show-current"),
+        cwd=repo_root,
+    ).strip()
+    if current_branch != state.branch:
+        require_success(
+            _git(repo_root, "switch", state.branch),
+            cwd=repo_root,
+        )
+    require_success(
+        _git(repo_root, "reset", "--hard", state.head),
+        cwd=repo_root,
+    )
+
+    if state.branch != main_branch:
+        require_success(
+            _git(repo_root, "branch", "--force", main_branch, state.main_head),
+            cwd=repo_root,
+        )
+    if state.release_head is None:
+        if _ref_exists(repo_root, f"refs/heads/{release_branch}"):
+            require_success(
+                _git(repo_root, "branch", "--delete", "--force", release_branch),
+                cwd=repo_root,
+            )
+    elif state.branch != release_branch:
+        require_success(
+            _git(
+                repo_root,
+                "branch",
+                "--force",
+                release_branch,
+                state.release_head,
+            ),
+            cwd=repo_root,
+        )
+
+    restored_branch = require_output(
+        _git(repo_root, "branch", "--show-current"),
+        cwd=repo_root,
+    ).strip()
+    if restored_branch != state.branch:
+        raise PromotionError("Could not restore the original checkout branch.")
+    if _branch_head(repo_root, state.branch) != state.head:
+        raise PromotionError("Could not restore the original checkout commit.")
+    if _branch_head(repo_root, main_branch) != state.main_head:
+        raise PromotionError("Could not restore the original main commit.")
+    release_exists = _ref_exists(repo_root, f"refs/heads/{release_branch}")
+    if state.release_head is None:
+        if release_exists:
+            raise PromotionError("Could not remove the newly created release branch.")
+    elif not release_exists or _branch_head(repo_root, release_branch) != state.release_head:
+        raise PromotionError("Could not restore the original release commit.")
+    _clean(repo_root, "after restoring failed release preparation")
+
+
+def _prepare_release_checkout(
+    repo_root: pathlib.Path,
+    main_branch: str,
+    release_branch: str,
+    remote_main: str,
+    state: ReleaseCheckoutState,
+) -> None:
+    """Prepare the release checkout as one rollback-safe local transaction."""
+
+    try:
+        require_success(
+            _git(repo_root, "switch", main_branch),
+            cwd=repo_root,
+        )
+        require_success(
+            _git(repo_root, "merge", "--ff-only", remote_main),
+            cwd=repo_root,
+        )
+        if state.release_head is not None:
+            require_success(
+                _git(repo_root, "switch", release_branch),
+                cwd=repo_root,
+            )
+        else:
+            require_success(
+                _git(
+                    repo_root,
+                    "switch",
+                    "-c",
+                    release_branch,
+                    main_branch,
+                ),
+                cwd=repo_root,
+            )
+        _clean(repo_root, f"after preparing {release_branch}")
+    except Exception as exc:
+        try:
+            _restore_release_checkout(
+                repo_root,
+                main_branch,
+                release_branch,
+                state,
+            )
+        except Exception as restore_exc:
+            raise PromotionError(
+                f"Release checkout preparation failed: {exc}; restoring the "
+                f"original checkout also failed: {restore_exc}"
+            ) from exc
+        raise
 
 
 def _preflight_sources(
@@ -825,6 +1007,13 @@ def promote(
             "promote/local is reserved for repositories with an existing release branch."
         )
     _clean(repo_root, "before promotion")
+    if not _ref_exists(repo_root, f"refs/heads/{args.main_branch}"):
+        raise PromotionError(f"Local main branch does not exist: {args.main_branch}")
+    checkout_state = _preflight_release_checkout(
+        repo_root,
+        args.main_branch,
+        args.release_branch,
+    )
     source_states: dict[str, SourceState] = {}
     if not args.prepare_release_only:
         source_states = _preflight_sources(repo_root, branches)
@@ -837,38 +1026,18 @@ def promote(
         cwd=repo_root,
     )
     remote_main = f"{args.remote_name}/{args.main_branch}"
-    if not _ref_exists(repo_root, f"refs/heads/{args.main_branch}"):
-        raise PromotionError(f"Local main branch does not exist: {args.main_branch}")
     if not _ref_exists(
         repo_root,
         f"refs/remotes/{args.remote_name}/{args.main_branch}",
     ):
         raise PromotionError(f"Remote main branch does not exist: {remote_main}")
-    require_success(
-        _git(repo_root, "switch", args.main_branch),
-        cwd=repo_root,
+    _prepare_release_checkout(
+        repo_root,
+        args.main_branch,
+        args.release_branch,
+        remote_main,
+        checkout_state,
     )
-    require_success(
-        _git(repo_root, "merge", "--ff-only", remote_main),
-        cwd=repo_root,
-    )
-    if _ref_exists(repo_root, f"refs/heads/{args.release_branch}"):
-        require_success(
-            _git(repo_root, "switch", args.release_branch),
-            cwd=repo_root,
-        )
-    else:
-        require_success(
-            _git(
-                repo_root,
-                "switch",
-                "-c",
-                args.release_branch,
-                args.main_branch,
-            ),
-            cwd=repo_root,
-        )
-    _clean(repo_root, f"after preparing {args.release_branch}")
     release_start = _branch_head(repo_root, args.release_branch)
 
     if args.prepare_release_only:

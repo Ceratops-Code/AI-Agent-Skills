@@ -987,6 +987,113 @@ def test_promote_repository_ship_after_promotion_preserves_blocked_state(
     )
 
 
+def test_promote_repository_rejects_linked_repo_root_without_branch_drift(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo, _approved_head, _log, environment = prepare_repository_lifecycle_repo(
+        tmp_path
+    )
+    assert run_git(repo, "switch", "-c", "release/local", "main").returncode == 0
+    release_head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    task_worktree = tmp_path / "task-worktree"
+    assert (
+        run_git(
+            repo,
+            "worktree",
+            "add",
+            "-b",
+            "task-runner",
+            str(task_worktree),
+            "approved",
+        ).returncode
+        == 0
+    )
+    task_head = run_git(task_worktree, "rev-parse", "HEAD").stdout.strip()
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(PROMOTE_REPOSITORY),
+            "--repo-root",
+            str(task_worktree),
+            "--source-branch",
+            "task-runner",
+            "--no-run-operation",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+
+    assert result.returncode == 1
+    assert "must be the primary checkout" in json.loads(result.stderr)["message"]
+    assert run_git(task_worktree, "branch", "--show-current").stdout.strip() == (
+        "task-runner"
+    )
+    assert run_git(task_worktree, "rev-parse", "HEAD").stdout.strip() == task_head
+    assert run_git(task_worktree, "status", "--porcelain").stdout == ""
+    assert run_git(repo, "branch", "--show-current").stdout.strip() == "release/local"
+    assert run_git(repo, "rev-parse", "HEAD").stdout.strip() == release_head
+
+
+def test_release_preparation_failure_restores_original_checkout_and_refs(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo, approved_head, _log, _environment = prepare_repository_lifecycle_repo(
+        tmp_path
+    )
+    original_main = run_git(repo, "rev-parse", "main").stdout.strip()
+    remote = run_git(repo, "remote", "get-url", "origin").stdout.strip()
+    writer = tmp_path / "remote-writer"
+    cloned = subprocess.run(
+        ["git", "clone", "--branch", "main", remote, str(writer)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert cloned.returncode == 0, cloned.stderr
+    assert run_git(writer, "config", "user.email", "tests@example.invalid").returncode == 0
+    assert run_git(writer, "config", "user.name", "Tests").returncode == 0
+    (writer / "remote.txt").write_text("remote advance\n", encoding="utf-8")
+    assert run_git(writer, "add", "remote.txt").returncode == 0
+    assert run_git(writer, "commit", "-m", "remote advance").returncode == 0
+    assert run_git(writer, "push", "origin", "main").returncode == 0
+
+    loaded = runpy.run_path(str(PROMOTE_REPOSITORY))
+    promote = loaded["promote"]
+    promotion_error = loaded["PromotionError"]
+    original_clean = promote.__globals__["_clean"]
+
+    def fail_after_preparation(repo_root: pathlib.Path, phase: str) -> None:
+        if phase == "after preparing release/local":
+            raise promotion_error("forced release preparation failure")
+        original_clean(repo_root, phase)
+
+    promote.__globals__["_clean"] = fail_after_preparation
+    args = loaded["build_parser"]().parse_args(
+        [
+            "--repo-root",
+            str(repo),
+            "--source-branch",
+            "approved",
+            "--no-run-operation",
+        ]
+    )
+
+    with pytest.raises(promotion_error, match="forced release preparation failure"):
+        promote(args)
+
+    assert run_git(repo, "branch", "--show-current").stdout.strip() == "approved"
+    assert run_git(repo, "rev-parse", "HEAD").stdout.strip() == approved_head
+    assert run_git(repo, "rev-parse", "main").stdout.strip() == original_main
+    assert (
+        run_git(repo, "show-ref", "--verify", "refs/heads/release/local").returncode
+        != 0
+    )
+    assert run_git(repo, "status", "--porcelain").stdout == ""
+
+
 def test_promote_repository_prepare_only_mode_remains_unchanged(
     tmp_path: pathlib.Path,
 ) -> None:
