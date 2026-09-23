@@ -96,23 +96,22 @@ repo docs, then update the narrowest correct source that exists.
   detailed evidence, and emit only `OK` or one compact actionable error.
 - Repository-declared SDLC tests own test selection, collection, and execution.
   Do not put test checks or test-runner commands in an update request.
-- (D) For a monotonic expansion after failed verification, replace the request
-  and run `python scripts/skill-update-workflow.py amend --request REQUEST
-  --state STATE`.
+- Keep caller-declared allowed paths in this iteration. Deriving the task's
+  complete changed-file scope from Git belongs to a separate general refactor.
+- (D) For an approved monotonic scope expansion while the record is active,
+  replace the request and run `python scripts/skill-update-workflow.py amend
+  --request REQUEST --state STATE`.
 - Amendment must preserve the original HEAD and dirty baselines, branch,
-  correction generation, artifact ownership, and existing scope; accept only
-  added selected skills, allowed paths, group paths or groups, and non-test
-  checks that pass the original ownership, path, link, and committed-scope
-  gates. Reuse an earlier successful check only when its hashed failed evidence
-  and deterministic declared inputs still match. Failed, invalidated,
-  non-deterministic, and added checks must run on the next `verify`.
-- After passed verification, `verify` may start one correction generation only
-  when the current task HEAD or complete prepared scope snapshot differs from
-  the passed evidence. Atomically make the earlier success non-finalizable
-  before correction checks, accept only the prepared HEAD or a descendant whose
-  committed paths stay declared, rerun declared checks, preserve retryable
-  pending state on failure, reject unchanged retries and scope broadening, and
-  permanently invalidate state changed after the correction generation.
+  artifact ownership, and existing scope. Added scope and checks must pass
+  the original ownership, path, link, and committed-scope gates. Amendment
+  makes verification pending without requiring a failed check or finalization.
+  Reuse successful searches only from intact failed-run evidence whose declared
+  inputs still match; rerun every other declared check.
+- After each passed verification, a changed task HEAD or prepared scope may
+  start another correction generation. Make the earlier success non-finalizable
+  before checks; accept only the original HEAD or an in-scope descendant and
+  retain pending state on failure. Reject unchanged retries and unapproved scope
+  expansion. Finalize only after the requested work and verification finish.
 - Do not use the workflow for skill-local text-only updates.
 - The update helper must count manifest-declared shared sources as ownership
   for their selected skill consumers and reject selected skills without an

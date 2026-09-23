@@ -574,7 +574,7 @@ def _validated_verification(value: object) -> dict[str, object] | None:
     if (
         not isinstance(generation, int)
         or isinstance(generation, bool)
-        or generation not in {0, 1}
+        or generation < 0
         or (status == "invalidated" and generation != 1)
     ):
         raise UpdateExecutionError("state verification generation is invalid")

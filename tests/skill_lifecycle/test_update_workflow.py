@@ -22,8 +22,48 @@ from tests.support.repositories import (
 )
 
 
+@pytest.mark.parametrize("verified", [False, True])
+def test_amend_active_scope_without_failed_check_or_reopening(tmp_path, verified) -> None:
+    worktree, _, temp = prepare_skill_update_workflow_worktree(tmp_path)
+    source = "skills/alpha-tool/scripts/tool.py"
+    baseline_file = worktree / "notes.txt"
+    baseline_file.write_text("unrelated initial work\n", encoding="utf-8")
+    request, state, evidence = [temp / name for name in ("request.json", "state.json", "evidence.json")]
+    declaration: dict[str, Any] = {
+        "schema": "ceratops-skill-update-request.v2", "repo_root": str(worktree),
+        "task_temp_root": str(temp), "evidence_output": str(evidence),
+        "disposable_artifacts": ["request", "state", "evidence"],
+        "selected_skills": ["alpha-tool"], "allowed_paths": [source],
+        "change_groups": [{"name": "runtime", "paths": [source]}], "checks": [],
+    }
+    request.write_text(json.dumps(declaration), encoding="utf-8")
+    assert run_skill_update_workflow("prepare", "--request", str(request), "--state", str(state)).returncode == 0
+    original = json.loads(state.read_text())
+    (worktree / source).write_text("VALUE = 2\n", encoding="utf-8")
+    if verified:
+        assert run_skill_update_workflow("verify", "--state", str(state), "--evidence-output", str(evidence)).returncode == 0
+    for additional in ("skills/alpha-tool/SKILL.md", "skills/beta-tool/notes.txt"):
+        declaration["allowed_paths"].append(additional)
+        declaration["change_groups"][0]["paths"].append(additional)
+        request.write_text(json.dumps(declaration), encoding="utf-8")
+        amended = run_skill_update_workflow("amend", "--request", str(request), "--state", str(state))
+        assert amended.returncode == 0, amended.stderr
+        current = json.loads(state.read_text())
+        assert current["head"] == original["head"]
+        assert current["baseline_dirty"] == original["baseline_dirty"]
+        assert current["baseline_targets"][source] == original["baseline_targets"][source]
+        assert current["verification"]["status"] == "pending"
+        assert run_skill_update_workflow("finalize", "--state", str(state)).returncode == 2
+        target = worktree / additional
+        target.write_text(target.read_text() + "\nApproved change\n", encoding="utf-8")
+    assert run_skill_update_workflow("verify", "--state", str(state), "--evidence-output", str(evidence)).returncode == 0
+    assert baseline_file.read_text() == "unrelated initial work\n"
+    assert run_skill_update_workflow("finalize", "--state", str(state)).returncode == 0
+    assert not temp.exists()
+
+
 def _supersede_case(tmp_path: pathlib.Path, *, preexisting: bool = False, new_maintenance: bool = False):
-    worktree, scope, temp = prepare_skill_update_workflow_worktree(tmp_path)
+    worktree, _scope, temp = prepare_skill_update_workflow_worktree(tmp_path)
     source = "skills/alpha-tool/scripts/tool.py"
     request = temp / "request.json"
     state = temp / "state.json"
@@ -96,7 +136,7 @@ def test_supersede_preserves_baseline_failed_records_and_transfers_cleanup(tmp_p
 
 @pytest.mark.parametrize("problem", ["evidence", "missing", "missing_marker_record", "scope", "collision", "same_request", "new_dirt", "passed", "invalidated"])
 def test_supersede_refuses_without_changing_failed_ownership(tmp_path: pathlib.Path, problem: str) -> None:
-    worktree, request, state, evidence, new_request, successor, new_evidence = _supersede_case(tmp_path)
+    worktree, request, state, evidence, new_request, successor, _new_evidence = _supersede_case(tmp_path)
     declaration = json.loads(new_request.read_text())
     if problem == "evidence":
         evidence.write_text("{}", encoding="utf-8")
@@ -1163,9 +1203,7 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
         str(evidence_path),
     )
     assert corrected.returncode == 0, corrected.stderr
-    corrected_state_text = state_path.read_text(encoding="utf-8")
-    corrected_evidence_text = evidence_path.read_text(encoding="utf-8")
-    corrected_state = json.loads(corrected_state_text)
+    corrected_state = json.loads(state_path.read_text(encoding="utf-8"))
     assert corrected_state["verification"]["status"] == "passed"
     assert corrected_state["verification"]["generation"] == 1
     assert check_log.read_text(encoding="utf-8").splitlines() == ["run", "run"]
@@ -1175,37 +1213,31 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
         encoding="utf-8",
         newline="\n",
     )
-    exhausted = run_skill_update_workflow(
+    repeated = run_skill_update_workflow(
         "verify",
         "--state",
         str(state_path),
         "--evidence-output",
         str(evidence_path),
     )
-    assert exhausted.returncode == 2
-    assert "changed after the correction generation" in exhausted.stderr
-    assert check_log.read_text(encoding="utf-8").splitlines() == ["run", "run"]
-    blocked_state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert blocked_state["verification"]["status"] == "invalidated"
-    assert blocked_state["verification"]["generation"] == 1
+    assert repeated.returncode == 0, repeated.stderr
+    assert check_log.read_text(encoding="utf-8").splitlines() == ["run", "run", "run"]
+    repeated_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert repeated_state["verification"]["status"] == "passed"
+    assert repeated_state["verification"]["generation"] == 2
+    helper.write_text("VALUE = 3\n", encoding="utf-8", newline="\n")
     blocked_finalize = run_skill_update_workflow(
         "finalize",
         "--state",
         str(state_path),
     )
     assert blocked_finalize.returncode == 2
-    assert "before successful verification" in blocked_finalize.stderr
-    helper.write_text(
-        "VALUE = 2\n# lint correction\n",
-        encoding="utf-8",
-        newline="\n",
+    assert "changed" in blocked_finalize.stderr
+    repeated = run_skill_update_workflow(
+        "verify", "--state", str(state_path), "--evidence-output", str(evidence_path),
     )
-    state_path.write_text(corrected_state_text, encoding="utf-8", newline="\n")
-    evidence_path.write_text(
-        corrected_evidence_text,
-        encoding="utf-8",
-        newline="\n",
-    )
+    assert repeated.returncode == 0, repeated.stderr
+    assert json.loads(evidence_path.read_text())["generation"] == 3
 
     undeclared_input = task_temp_root / "user-input.txt"
     undeclared_input.write_text("preserve\n", encoding="utf-8", newline="\n")

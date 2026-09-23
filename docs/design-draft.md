@@ -2,11 +2,12 @@
 
 ## Scope and status
 
-This draft records the decisions made in the discussion about repository
-validation, Python environments, SDLC v3, and deployment helpers. It uses only
-that discussion. It is not a complete design, an implementation audit, or a new
-governing contract. The linked files identify the owners discussed in the
-thread; they were not investigated to extend this draft's scope.
+This unfinished draft records repository validation, Python environments,
+SDLC, and deployment decisions. The release-unit, receipt, bundle-transaction,
+and update-correction sections additionally describe their scoped implementation
+and behavior tests. Other sections remain discussion-derived, not a complete
+implementation audit or a new governing contract. The README owns general
+methodology and output-lifetime policy; this draft records implementation detail.
 
 The intended users are agents and CI working on Ceratops-compatible
 repositories, including repositories other than AI-Agent-Skills and
@@ -91,7 +92,7 @@ SDLC here means the repository's lifecycle configuration in `sdlc/sdlc.yml`.
 An operation is an entry such as a deliverable's validation or local deployment
 command. A handoff names an installed skill and action that owns the next step.
 
-Version 3 gives every deliverable a `tests` section. A deliverable may declare
+Supported SDLC v4 and v5 place tests in explicit actions. A deliverable may declare
 a no-op with a reason, including coverage by repository-wide tests. Different
 deliverables can name different test entrypoints. The repository validator
 does not execute tests; promotion, shipping, and CI require both applicable
@@ -133,12 +134,81 @@ deferred. It does not dispatch skills. A skill-driven workflow can execute
 those handoffs. AI-Agent-Skills uses its local composite action; other
 repositories can use a pinned published action.
 
-For this repository, the thread reported migration to SDLC v3, repository-wide
-tests, and explicit deliverable test no-ops. Its runner supports individual
+This repository currently declares SDLC v4 and a repository-wide test action;
+the shared loader no longer supports v1–3. Its runner supports individual
 test paths or node IDs and optional automatic selection: all tests locally and
 on pushes, with impact selection from the exact pull-request base/head in CI.
 That impact-selection implementation is repository-specific, not a requirement
 imposed on every compatible repository.
+
+## Exact-artifact bundle transaction
+
+Steps 1a and 1b provide metadata and verification; 1c makes skill-update
+corrections resumable; 1d supplies internal artifact storage.
+`repository_operation.build_bundle` coordinates adapters, tests and publication.
+`sdlc_results.verify_release_unit_build` remains the read-only integrity owner;
+it neither stores bundles nor decides whether required tests passed.
+
+The caller provides all six selection fields (repository, commit, unit, channel,
+version, target), resolved locked inputs, required test IDs and two adapter
+callbacks. Selection is validated before output creation. Its canonical JSON
+SHA-256 is the build key. Git's absolute common directory identifies the shared
+store, so different worktrees use the same key and location. No separate index,
+caller-selected diagnostic path or wildcard selection is involved.
+
+The transaction uses the following sequence:
+
+1. Acquire one native repository-store lock using pinned `filelock`, with a
+   bounded wait and no soft-lock fallback. Keep that single lock file to avoid
+   waiter races. While holding it, remove every recognizable abandoned staging
+   directory and interrupted diagnostic write left by earlier instances, then
+   apply completed-bundle retention.
+2. If the final directory exists, verify its receipt and every file, require
+   the exact required passed test set, and compare canonical recorded inputs.
+   Reuse the exact receipt path; corruption or changed inputs never cause a
+   replacement build under that identity.
+3. Otherwise create `.staging/<key>/bundle` and a separate `work` directory.
+   The build adapter gets both locations and returns explicit output descriptors,
+   not supplied hashes. The transaction measures artifacts and dependency files
+   before testing. Scratch source copies and environments belong only in `work`.
+4. Give the test adapter the measured artifact inventory and require every
+   declared test result to pass, provide evidence and identify its tested hashes.
+   Every built artifact must be referenced. Measure supporting evidence, add
+   `supporting-files/build-inputs.json`, and create the v2 receipt. Verify all
+   files again, including unchanged pre-test artifact hashes; refuse unlisted
+   files before publishing.
+5. Rename the complete bundle directory to `builds/<key>` on the same
+   filesystem, apply retention again, return its exact `receipt.json` path and
+   clean remaining private work. A retained directory is never overwritten.
+   Later consumers must still verify saved bytes; this is not a signature or
+   authenticity guarantee.
+
+Callbacks must finish their child processes before returning. Their required
+test implementation and resolved dependency/toolchain inputs belong in the
+caller-supplied locked inputs. The store checks that these inputs agree on reuse;
+it does not discover missing dependencies or infer test coverage from source.
+Real package/skill adapters and installed-artifact tests arrive in later steps.
+The existing SDLC commands and installers are unchanged.
+
+The README's generated-output table is the retention policy. Completed bundles
+are grouped by repository, release unit, channel and target. Transaction startup
+and successful publication retain the newest three per group, ordered by
+completion-directory modification time and then build key, and remove older
+helper-owned directories. Failed work creates no completed receipt. Its error,
+required tests and bounded evidence excerpts atomically replace the one
+`.diagnostics/<group-key>.json` report; success removes that report. Read-only
+scratch files are cleaned without changing linked or unrecognized targets.
+Cleanup errors remain failures with diagnostics. On a killed process, the kernel
+releases the repository lock; the next transaction cleans all recognizable
+orphaned staging before reuse or building. This is call-triggered recovery, not
+a background sweeper or a power-loss durability guarantee.
+
+Existing `tests/repository_lifecycle/test_sdlc_handoffs.py` exercises exact reuse,
+input conflicts, failed/missing tests, changed artifacts, corruption, concurrent
+callers, worktree sharing, bounded retention, killed-owner recovery and cleanup
+failure. The store keeps one reusable lock, at most three completed bundles per
+release group and one current diagnostic per group. No public Build command is
+introduced.
 
 ## Promotion, installation, and update recovery
 
@@ -167,7 +237,18 @@ binding invokes the installed manager with `--source` set to the selected
 repository. That checkout supplies the tool name and version. "SDLC install"
 was shorthand in an earlier answer, not a separate command.
 
-`supersede` is a subcommand of `skill-update-workflow.py` for an explicitly
+`skill-update-workflow.py` retains its original Git baseline and explicit
+allowed file list throughout normal corrections. `amend` expands approved
+scope before any check or after passed/failed verification without replacing
+that baseline. Added paths are compared against the original commit or initial
+dirty snapshot, not their state at amendment time. Passed evidence becomes
+pending on amendment; changed inputs after each success start another numbered
+verification generation with no arbitrary one-correction limit. Original
+branch, descendant-commit, ownership and unrelated-change checks still apply.
+Tests remain in the repository runner, not this helper. Finalization is the
+explicit end-of-work cleanup trigger, never an intermediate correction step.
+
+`supersede` remains a subcommand of `skill-update-workflow.py` for an explicitly
 revised update request after failed verification. It creates a successor
 request/state while retaining the original source baseline and failed records.
 It may expand the declared scope but cannot hide unrelated changes. Only after
@@ -206,8 +287,8 @@ model intervention for decisions and skill work that actually require it.
 
 The thread does not settle a complete architecture, security model, concurrency
 design, performance targets, every public interface, or all persistent record
-schemas. It also leaves the proposed health-audit rename unresolved. No
-additional research or design decisions are supplied here.
+schemas. The bundle section supplies scoped concurrency and recovery details,
+not a system-wide audit. The proposed health-audit rename remains unresolved.
 
 This draft has no individually assigned design owner. A later full design
 would need an owner and implementation review. Changes to the recorded contract
@@ -230,7 +311,10 @@ means the thread's decision is recorded, not that the whole system was audited.
     {"path": "skills/ceratops-repo-lifecycle/references/contracts/repository-validation-contract.json", "role": "Reusable validation behavior"},
     {"path": "skills/ceratops-repo-lifecycle/references/contracts/ceratops-compatibility-deterministic-contract.json", "role": "Mechanically checked compatibility requirements"},
     {"path": "skills/ceratops-repo-lifecycle/references/contracts/ceratops-compatibility-nondeterministic-contract.json", "role": "Internal compatibility review"},
-    {"path": "skills/skill-sections.json", "role": "Live shared section and payload assignments"}
+    {"path": "skills/skill-sections.json", "role": "Live shared section and payload assignments"},
+    {"path": "skills/ceratops-repo-lifecycle/scripts/repository_operation.py", "role": "Operation execution and internal build transaction"},
+    {"path": "skills/ceratops-repo-lifecycle/scripts/sdlc_results.py", "role": "Read-only build receipt verification"},
+    {"path": "skills/ceratops-skill-lifecycle/scripts/skill-update-workflow.py", "role": "Skill update baseline, corrections and finalization"}
   ],
   "update_triggers": [
     "A recorded ownership, contract, environment, routing, or cleanup decision changes",
@@ -251,7 +335,7 @@ means the thread's decision is recorded, not that the whole system was audited.
     "quality": {"heading": "Verification, limits, and unresolved points", "status": "unverified", "reason": "The thread has no complete measurable quality requirements."},
     "risks": {"heading": "Verification, limits, and unresolved points", "status": "unverified", "reason": "Only risks and unresolved questions raised in the thread are included."},
     "glossary": {"heading": "Operations, tests, and CI", "status": "documented"},
-    "verification": {"heading": "Verification, limits, and unresolved points", "status": "unverified", "reason": "Historical test reports are retained; no new implementation audit was performed."},
+    "verification": {"heading": "Verification, limits, and unresolved points", "status": "unverified", "reason": "Foundation and correction behavior has scoped tests; no complete implementation audit was performed."},
     "governance": {"heading": "Verification, limits, and unresolved points", "status": "unverified", "reason": "A full design owner and maintenance process were not assigned in the thread."}
   }
 }

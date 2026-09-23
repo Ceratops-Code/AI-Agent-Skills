@@ -14,17 +14,21 @@ status is preserved separately from command completion and checkpointed by calle
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import pathlib
 import re
 import shutil
+import stat
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from typing import Any
 
+import sdlc_results
 from ceratops_repo_compatibility_engine.sdlc_contract_validation import (
     SdlcContractError,
     load_contract,
@@ -54,6 +58,8 @@ FAILED_STATUSES = frozenset(
     }
 )
 MUTATION_CATEGORIES = frozenset({"build", "deploy-local", "publish"})
+BUILD_BUNDLE_RETENTION = 3
+BUILD_KEY_RE = re.compile(r"^[a-f0-9]{64}$")
 
 
 @dataclass(frozen=True)
@@ -96,6 +102,392 @@ class PreparedOperation:
 
 class OperationError(RuntimeError):
     """A malformed selection or unsafe repository boundary."""
+
+
+@dataclass(frozen=True)
+class BuildProduct:
+    """Adapter outputs relative to the supplied bundle directory.
+
+    File descriptors contain type/path and, for artifacts, deliverable. The
+    transaction measures size/hash itself before handing those bytes to tests.
+    Dependencies pair an exact receipt identity with their copied artifacts.
+    Scratch source trees and test environments belong in the separate work dir.
+    """
+
+    artifacts: Sequence[Mapping[str, Any]]
+    dependencies: Sequence[Mapping[str, Any]] = ()
+    supporting_files: Sequence[Mapping[str, Any]] = ()
+
+
+def _build_json(value: object) -> bytes:
+    return (json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            + "\n").encode("utf-8")
+
+
+def _build_directory(path: pathlib.Path) -> pathlib.Path:
+    """Create only real directories, never following a pre-existing junction."""
+    if not path.exists() and not path.is_symlink():
+        _build_directory(path.parent)
+        path.mkdir(exist_ok=True)
+    return sdlc_results._plain_path(path, directory=True)[0]
+
+
+def _build_store(repo_root: pathlib.Path) -> pathlib.Path:
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode:
+        raise OperationError("Build storage requires a Git repository.")
+    common = sdlc_results._plain_path(pathlib.Path(result.stdout.strip()), directory=True)[0]
+    return _build_directory(common / "ceratops" / "builds")
+
+
+def _build_file(root: pathlib.Path, descriptor: Mapping[str, Any]) -> dict[str, Any]:
+    record = dict(descriptor)
+    if set(record) not in ({"type", "path"}, {"type", "path", "deliverable"}):
+        raise OperationError("Build adapters return file descriptors, not supplied hashes.")
+    path = root.joinpath(*sdlc_results._bundle_relative_path(record["path"]).parts)
+    path, before = sdlc_results._plain_path(path)
+    if not path.is_relative_to(root):
+        raise OperationError("Build output escapes its private bundle.")
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        remaining = before.st_size + 1
+        while remaining and (chunk := stream.read(min(1024 * 1024, remaining))):
+            digest.update(chunk)
+            remaining -= len(chunk)
+    record.update(size=before.st_size, sha256=digest.hexdigest())
+    sdlc_results._verify_bundle_file(root, record)
+    return record
+
+
+def _build_test_gate(receipt: Mapping[str, Any], required_tests: Sequence[str]) -> None:
+    tests = receipt["tests"]
+    if (receipt["status"] != "passed"
+            or sorted(test["id"] for test in tests) != sorted(required_tests)
+            or any(test["status"] != "passed" or not test["evidence"] for test in tests)):
+        raise OperationError("Every required artifact test must pass with recorded evidence.")
+    tested = {item["path"] for test in tests for item in test["artifacts"]}
+    if not {item["path"] for item in receipt["artifacts"]}.issubset(tested):
+        raise OperationError("Required tests do not cover every built artifact.")
+
+
+def _build_inventory(root: pathlib.Path, receipt: Mapping[str, Any]) -> None:
+    """Do not publish unlisted scratch, environments, or linked payloads."""
+    expected = {"receipt.json", *(item["path"] for item in sdlc_results._build_files(receipt))}
+    actual: set[str] = set()
+    for parent, directories, files in os.walk(root, followlinks=False):
+        for name in directories:
+            sdlc_results._plain_path(pathlib.Path(parent) / name, directory=True)
+        for name in files:
+            path = pathlib.Path(parent) / name
+            sdlc_results._plain_path(path)
+            actual.add(path.relative_to(root).as_posix())
+    if actual != expected:
+        raise OperationError("Build bundle contains missing or unlisted files.")
+
+
+def _remove_build_tree(path: pathlib.Path, parent: pathlib.Path, label: str) -> None:
+    """Remove one helper-owned hash directory without following links."""
+    if path.parent != parent or BUILD_KEY_RE.fullmatch(path.name) is None:
+        raise OperationError(f"Unsafe {label} cleanup target.")
+    if path.exists() or path.is_symlink():
+        sdlc_results._plain_path(path, directory=True)
+
+        def remove_readonly(function: Callable[..., Any], name: str, error: BaseException) -> None:
+            target = pathlib.Path(name).absolute()
+            if not isinstance(error, PermissionError) or not target.is_relative_to(path):
+                raise error
+            # Git copies and test environments can contain read-only files on
+            # Windows. Never chmod a link/hardlink or an unrelated target.
+            _resolved, info = sdlc_results._plain_path(target, directory=target.is_dir())
+            if info.st_mode & stat.S_IWRITE:
+                raise error
+            target.chmod(info.st_mode | stat.S_IWRITE)
+            function(name)
+
+        # Python rmtree does not traverse directory junctions or symlink entries.
+        shutil.rmtree(path, onexc=remove_readonly)
+    if path.exists() or path.is_symlink():
+        raise OperationError(f"{label.capitalize()} cleanup did not complete.")
+
+
+def _discard_build_work(staging: pathlib.Path, staging_root: pathlib.Path) -> None:
+    _remove_build_tree(staging, staging_root, "build staging")
+
+
+def _cleanup_build_staging(staging_root: pathlib.Path) -> None:
+    """Remove every recognizable orphan after the repository lock is held."""
+    for path in staging_root.iterdir():
+        if BUILD_KEY_RE.fullmatch(path.name):
+            _discard_build_work(path, staging_root)
+
+
+def _build_group(identity: Mapping[str, str]) -> dict[str, str]:
+    """Group successive local builds that serve the same release purpose."""
+    return {
+        name: identity[name]
+        for name in ("repository", "releaseUnit", "channel", "target")
+    }
+
+
+def _build_group_key(identity: Mapping[str, str]) -> str:
+    return hashlib.sha256(_build_json(_build_group(identity))).hexdigest()
+
+
+def _build_diagnostic_path(diagnostics: pathlib.Path, identity: Mapping[str, str]) -> pathlib.Path:
+    return diagnostics / f"{_build_group_key(identity)}.json"
+
+
+def _clear_build_diagnostic(path: pathlib.Path) -> None:
+    if path.exists() or path.is_symlink():
+        sdlc_results._plain_path(path)
+        path.unlink()
+
+
+def _cleanup_build_diagnostic_temps(diagnostics: pathlib.Path) -> None:
+    """Discard interrupted writes; stable reports are overwritten by group."""
+    for path in diagnostics.iterdir():
+        if re.fullmatch(r"[a-f0-9]{64}\.tmp", path.name):
+            sdlc_results._plain_path(path)
+            path.unlink()
+
+
+def _completed_build_groups(
+    store: pathlib.Path, validator: Any,
+) -> dict[str, list[tuple[int, str, pathlib.Path]]]:
+    """Classify well-formed completed bundles without reading artifact bytes."""
+    groups: dict[str, list[tuple[int, str, pathlib.Path]]] = {}
+    for path in store.iterdir():
+        if BUILD_KEY_RE.fullmatch(path.name) is None:
+            continue
+        _resolved, info = sdlc_results._plain_path(path, directory=True)
+        receipt_path, receipt_info = sdlc_results._plain_path(path / "receipt.json")
+        if receipt_info.st_size > sdlc_results.STEP_RESULT_BYTES:
+            raise OperationError("Completed build receipt is too large for retention.")
+        try:
+            receipt = json.loads(
+                receipt_path.read_bytes(), object_pairs_hook=sdlc_results._unique_result_object,
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise OperationError(f"Completed build receipt is unreadable: {path.name}") from exc
+        errors = list(validator.iter_errors(receipt))
+        if errors or receipt.get("schema") != sdlc_results.BUILD_RECEIPT_SCHEMA:
+            detail = errors[0].message if errors else "unexpected schema"
+            raise OperationError(f"Completed build receipt is invalid: {detail}")
+        identity = receipt["identity"]
+        if path.name != hashlib.sha256(_build_json(identity)).hexdigest():
+            raise OperationError("Completed build directory does not match its identity.")
+        group = _build_group_key(identity)
+        groups.setdefault(group, []).append((info.st_mtime_ns, path.name, path))
+    return groups
+
+
+def _prune_completed_builds(
+    store: pathlib.Path, validator: Any, *, current_key: str | None = None,
+) -> None:
+    """Keep the current bundle and two predecessors for every release group."""
+    for entries in _completed_build_groups(store, validator).values():
+        entries.sort(
+            key=lambda item: (item[1] == current_key, item[0], item[1]), reverse=True,
+        )
+        for _mtime, _key, path in entries[BUILD_BUNDLE_RETENTION:]:
+            _remove_build_tree(path, store, "completed build")
+
+
+def _build_diagnostic(
+    destination: pathlib.Path, identity: Mapping[str, str], error: str,
+    required_tests: Sequence[str], tests: Sequence[Mapping[str, Any]], bundle: pathlib.Path,
+) -> None:
+    """Preserve bounded failure evidence before private test files are removed.
+
+    Diagnostic excerpts are not verification evidence. Unsafe/missing evidence
+    remains an error description, never a reason to read outside the bundle.
+    """
+    excerpts = []
+    for result in tests[:20]:
+        if not isinstance(result, Mapping):
+            continue
+        entry: dict[str, Any] = {
+            "id": str(result.get("id", ""))[:256],
+            "status": str(result.get("status", ""))[:32],
+        }
+        evidence = result.get("evidence")
+        if isinstance(evidence, Mapping) and isinstance(evidence.get("path"), str):
+            try:
+                path = bundle.joinpath(*sdlc_results._bundle_relative_path(evidence["path"]).parts)
+                path, _info = sdlc_results._plain_path(path)
+                if not path.is_relative_to(bundle):
+                    raise OperationError("Diagnostic evidence escapes the bundle.")
+                with path.open("rb") as stream:
+                    raw = stream.read(16385)
+                entry["evidence"] = raw[:16384].decode("utf-8", errors="replace")
+                entry["truncated"] = len(raw) > 16384
+            except (OSError, StepResultError, OperationError) as exc:
+                entry["evidence_error"] = str(exc)[:1024]
+        excerpts.append(entry)
+    temporary = destination.with_suffix(".tmp")
+    if temporary.exists() or temporary.is_symlink():
+        sdlc_results._plain_path(temporary)
+        temporary.unlink()
+    with temporary.open("xb") as stream:
+        stream.write(_build_json({
+            "identity": identity, "error": error[:4096],
+            "requiredTests": list(required_tests), "tests": excerpts,
+            "omittedTests": max(0, len(tests) - 20),
+        }))
+        stream.flush()
+        os.fsync(stream.fileno())
+    if destination.exists() or destination.is_symlink():
+        sdlc_results._plain_path(destination)
+    temporary.replace(destination)
+
+
+def build_bundle(
+    repo_root: pathlib.Path,
+    *,
+    selection: Mapping[str, str],
+    inputs: Mapping[str, Any],
+    required_tests: Sequence[str],
+    build: Callable[[pathlib.Path, pathlib.Path], BuildProduct],
+    test: Callable[[pathlib.Path, Sequence[Mapping[str, Any]], pathlib.Path],
+                   Sequence[Mapping[str, Any]]],
+) -> pathlib.Path:
+    """Internal build/test/store transaction; no public Build or deploy command.
+
+    Callers resolve the complete identity, exact dependency/build inputs and
+    required test IDs before entry. Build writes to bundle and scratch paths;
+    test receives the measured artifact inventory and returns v2 test records,
+    with evidence paths relative to the bundle. Callbacks must finish their
+    subprocesses before returning. Only all-passed results create a receipt.
+
+    One repository lock protects publication, bounded retention and startup
+    recovery. Each identity has private staging, removed on exit; the next caller
+    removes recognizable staging left by any killed transaction. Completed
+    bundles are grouped by repository, release unit, channel and target, retaining
+    the newest three by completion time. One helper-owned diagnostic per group is
+    atomically overwritten on failure and removed on successful completion/reuse.
+    Diagnostic excerpts are never test evidence.
+    This is process-crash recovery, not a power-loss durability guarantee.
+    """
+    from filelock import FileLock
+
+    validator = sdlc_results._operation_result_validator()
+    identity_validator = validator.evolve(schema={
+        "$ref": "#/$defs/buildSelection", "$defs": validator.schema["$defs"],
+    })
+    errors = list(identity_validator.iter_errors(dict(selection)))
+    if errors:
+        raise OperationError(f"Invalid build selection: {errors[0].message}")
+    if (isinstance(required_tests, (str, bytes)) or not required_tests
+            or any(not isinstance(item, str) or not item.strip() for item in required_tests)
+            or len(set(required_tests)) != len(required_tests)):
+        raise OperationError("Build requires a nonempty unique list of required test IDs.")
+    identity = json.loads(_build_json(dict(selection)))
+    locked_inputs = _build_json({"inputs": inputs, "requiredTests": sorted(required_tests)})
+    key = hashlib.sha256(_build_json(identity)).hexdigest()
+    store = _build_store(repo_root)
+    staging_root = _build_directory(store / ".staging")
+    locks = _build_directory(store / ".locks")
+    diagnostics = _build_directory(store / ".diagnostics")
+    completed = store / key
+    staging = staging_root / key
+    diagnostic_path = _build_diagnostic_path(diagnostics, identity)
+    lock_path = locks / "store.lock"
+    if lock_path.exists() or lock_path.is_symlink():
+        sdlc_results._plain_path(lock_path)
+    # One persistent lock avoids unlink/recreate races and makes cleanup of
+    # earlier transactions safe. OS ownership ends when a process dies.
+    with FileLock(lock_path, timeout=30, fallback_to_soft=False, preserve_lock_file=True):
+        tests: list[Mapping[str, Any]] = []
+        failure = ""
+        bundle = staging / "bundle"
+        try:
+            _cleanup_build_staging(staging_root)
+            _cleanup_build_diagnostic_temps(diagnostics)
+            _prune_completed_builds(store, validator)
+            if completed.exists() or completed.is_symlink():
+                receipt_path = completed / "receipt.json"
+                receipt = sdlc_results.verify_release_unit_build(
+                    receipt_path, completed, expected=identity,
+                )
+                _build_test_gate(receipt, required_tests)
+                _build_inventory(completed, receipt)
+                recorded = completed / "supporting-files" / "build-inputs.json"
+                if (not any(item["path"] == "supporting-files/build-inputs.json"
+                            and item["type"] == "build-inputs"
+                            for item in receipt["supportingFiles"])
+                        or recorded.read_bytes() != locked_inputs):
+                    raise OperationError("Completed build has different locked inputs; it cannot be replaced.")
+                _clear_build_diagnostic(diagnostic_path)
+                return receipt_path
+
+            work = _build_directory(staging / "work")
+            bundle = _build_directory(staging / "bundle")
+            product = build(bundle, work)
+            artifacts = [_build_file(bundle, item) for item in product.artifacts]
+            dependencies = [
+                {"identity": deepcopy(item["identity"]),
+                 "artifacts": [_build_file(bundle, artifact) for artifact in item["artifacts"]]}
+                for item in product.dependencies
+            ]
+            supporting = [_build_file(bundle, item) for item in product.supporting_files]
+            all_artifacts = artifacts + [
+                artifact for dependency in dependencies for artifact in dependency["artifacts"]
+            ]
+            receipt = {
+                "schema": sdlc_results.BUILD_RECEIPT_SCHEMA, "status": "passed",
+                "identity": identity, "artifacts": artifacts, "dependencies": dependencies,
+                "supportingFiles": supporting, "tests": [],
+            }
+            # Malformed adapter inventories never start tests. The final receipt
+            # is still absent until required evidence has passed the gate.
+            errors = list(validator.iter_errors(receipt))
+            if errors:
+                raise OperationError(f"Invalid adapter output: {errors[0].message}")
+            sdlc_results._build_files(receipt)
+            tests = list(test(bundle, deepcopy(all_artifacts), work))
+            # Tests bind their reported outcomes to the pre-test artifact hashes.
+            receipt["tests"] = tests
+            _build_test_gate(receipt, required_tests)
+            for evidence_path in sorted({item["evidence"]["path"] for item in tests}):
+                supporting.append(_build_file(bundle, {"type": "test-evidence", "path": evidence_path}))
+            inputs_path = bundle / "supporting-files" / "build-inputs.json"
+            _build_directory(inputs_path.parent)
+            with inputs_path.open("xb") as stream:
+                stream.write(locked_inputs)
+            supporting.append(_build_file(bundle, {
+                "type": "build-inputs", "path": "supporting-files/build-inputs.json",
+            }))
+            receipt_path = bundle / "receipt.json"
+            with receipt_path.open("xb") as stream:
+                stream.write(_build_json(receipt))
+                stream.flush()
+                os.fsync(stream.fileno())
+            sdlc_results.verify_release_unit_build(receipt_path, bundle, expected=identity)
+            _build_inventory(bundle, receipt)
+            if completed.exists() or completed.is_symlink():
+                raise OperationError("Completed build appeared during the reserved transaction.")
+            bundle.rename(completed)
+            os.utime(completed, None)
+            _prune_completed_builds(store, validator, current_key=key)
+            _clear_build_diagnostic(diagnostic_path)
+            return completed / "receipt.json"
+        except BaseException as exc:
+            failure = f"{type(exc).__name__}: {exc}"
+            _build_diagnostic(diagnostic_path, identity, failure, required_tests, tests, bundle)
+            raise
+        finally:
+            try:
+                _discard_build_work(staging, staging_root)
+            except (OSError, StepResultError, OperationError) as cleanup_error:
+                _build_diagnostic(
+                    diagnostic_path, identity,
+                    f"{failure}\nStaging cleanup failed: {cleanup_error}".strip(),
+                    required_tests, tests, bundle,
+                )
+                raise
 
 
 def execute_handoff(

@@ -4,12 +4,12 @@
 The helper records the caller's pre-existing Git baseline before source edits,
 then verifies that only declared paths changed and that undeclared dirty state
 was preserved. Selected skills may own shared sources through the repository's
-section assignments and runtime payload mappings. A failed preparation may
+section assignments and runtime payload mappings. An active preparation may
 accept monotonic request expansions without replacing that baseline or cleanup
 ownership. Deterministic search evidence is reused only while its declared
-inputs still match; other checks rerun. One changed in-scope snapshot may start
-a correction generation after success; it invalidates the earlier success
-before checks and cannot be reopened after passing. Tests belong to the
+inputs still match; other checks rerun. Each changed in-scope snapshot starts
+another correction generation after success, making the earlier success
+non-finalizable before checks. Tests belong to the
 repository-declared SDLC test phase. Preparation never imports test modules.
 Git whitespace preflight includes tracked and new files before declared
 non-test checks, which use closed structured forms and run without a shell.
@@ -796,7 +796,12 @@ def _validate_amended_groups(
 
 
 def command_amend(request_path: pathlib.Path, state_path: pathlib.Path) -> None:
-    """Monotonically expand one failed preparation without replacing its baseline."""
+    """Expand an active request without replacing its baseline or closing it.
+
+    A passed check is not a prerequisite failure to manufacture: an approved
+    expansion makes it pending again. Only unchanged failed-run search evidence
+    remains reusable; amendments before the first check need no evidence.
+    """
 
     resolved_request = _absolute(request_path)
     state = _validated_state(
@@ -804,12 +809,10 @@ def command_amend(request_path: pathlib.Path, state_path: pathlib.Path) -> None:
         mutable_request_path=resolved_request,
     )
     verification = state["verification"]
-    if not isinstance(verification, Mapping) or verification.get("status") != "pending":
-        raise UpdateExecutionError("amend requires recorded pending verification")
-    evidence_sha256 = verification.get("evidence_sha256")
-    if not _valid_sha256(evidence_sha256):
-        raise UpdateExecutionError("pending verification lacks trusted failed evidence")
-    assert isinstance(evidence_sha256, str)
+    assert verification is None or isinstance(verification, Mapping)
+    if isinstance(verification, Mapping) and verification.get("status") == "invalidated":
+        raise UpdateExecutionError("state is permanently invalidated")
+    evidence_sha256 = verification.get("evidence_sha256") if verification else None
     cleanup = state["cleanup"]
     assert isinstance(cleanup, Mapping)
     owned_artifacts = cleanup["owned_artifacts"]
@@ -819,16 +822,19 @@ def command_amend(request_path: pathlib.Path, state_path: pathlib.Path) -> None:
     )
     evidence_path = evidence_record["path"]
     assert isinstance(evidence_path, pathlib.Path)
-    evidence = _validated_evidence(evidence_path, evidence_sha256)
-    if (
-        evidence["status"] != "failed"
-        or evidence["branch"] != state["branch"]
-        or evidence["generation"] != verification["generation"]
-        or evidence["input_sha256"] != verification["input_sha256"]
-        or evidence["selected_skills"] != state["selected_skills"]
-        or not evidence["failures"]
-    ):
-        raise UpdateExecutionError("pending evidence does not match prepared failure")
+    if evidence_sha256 is not None:
+        assert isinstance(evidence_sha256, str) and isinstance(verification, Mapping)
+        evidence = _validated_evidence(evidence_path, evidence_sha256)
+        if (
+            evidence["branch"] != state["branch"]
+            or evidence["generation"] != verification["generation"]
+            or (verification["status"] == "passed" and (
+                evidence["status"] != "passed"
+                or evidence["selected_skills"] != state["selected_skills"]
+                or evidence["input_sha256"] != verification["input_sha256"]
+            ))
+        ):
+            raise UpdateExecutionError("recorded evidence does not match preparation")
 
     # Prepared new paths may now exist without being staged; retain their ownership.
     carried = _string_list(state["allowed_paths"], "prepared allowed paths")
@@ -910,11 +916,15 @@ def command_amend(request_path: pathlib.Path, state_path: pathlib.Path) -> None:
         "checks": amended_checks,
         "baseline_targets": amended_targets,
     }
+    generation = int(verification["generation"]) if verification else 0
+    if verification and verification["status"] == "passed":
+        generation += 1
+        evidence_sha256 = None
     amended_state["verification"] = {
         "status": "pending",
         "evidence_sha256": evidence_sha256,
         "input_sha256": _verification_surface_sha256(amended_state),
-        "generation": verification["generation"],
+        "generation": generation,
     }
     for artifact in owned_artifacts:
         if artifact["role"] == "request":
@@ -1060,7 +1070,6 @@ def command_verify(state_path: pathlib.Path, evidence_path: pathlib.Path) -> Non
     input_sha256 = _verification_surface_sha256(state)
     verification = state["verification"]
     generation = 0
-    terminal_error: str | None = None
     reusable: dict[int, dict[str, object]] = {}
     if verification is not None:
         assert isinstance(verification, Mapping)
@@ -1073,17 +1082,12 @@ def command_verify(state_path: pathlib.Path, evidence_path: pathlib.Path) -> Non
                 raise UpdateExecutionError(
                     "prepared scope has not changed since successful verification"
                 )
-            if generation == 1:
-                status = "invalidated"
-                terminal_error = "prepared scope changed after the correction generation"
-            else:
-                status = "pending"
-                generation = 1
+            generation += 1
             state["verification"] = {
-                "status": status,
+                "status": "pending",
                 "evidence_sha256": None,
                 "input_sha256": input_sha256,
-                "generation": 1,
+                "generation": generation,
             }
             state["cleanup"] = _cleanup_payload(cleanup)
             _write_json_atomic(_absolute(state_path), state, "state output")
@@ -1109,7 +1113,7 @@ def command_verify(state_path: pathlib.Path, evidence_path: pathlib.Path) -> Non
     changed: list[str] = []
     groups: list[dict[str, object]] = []
     results: list[dict[str, object]] = []
-    failures: list[str] = [terminal_error] if terminal_error else []
+    failures: list[str] = []
     if not failures:
         try:
             validated_input, changed, groups = _verification_input(state)
@@ -1242,7 +1246,7 @@ def command_supersede(state_path: pathlib.Path, request_path: pathlib.Path, new_
     # original baseline, not the earlier failure's source snapshot, owns scope.
     # Already-created maintenance files retain their validated original owner.
     carried = _string_list(old["allowed_paths"], "prepared allowed paths")
-    state, repo, root, new_evidence, disposable = _validated_request(
+    state, _repo, root, new_evidence, disposable = _validated_request(
         request_path, carried_paths=carried,
     )
     if (state["repo_root"] != old["repo_root"] or state["branch"] != old["branch"]
@@ -1343,6 +1347,12 @@ def command_finalize(state_path: pathlib.Path) -> None:
     verification = _validated_verification(raw["verification"])
     if verification is None or verification["status"] != "passed":
         raise UpdateExecutionError("refusing to finalize before successful verification")
+    if repo_root == lexical_repo:
+        # Keep deleted-worktree cleanup possible, but never discard a live
+        # update's record while its source has unverified later changes.
+        branch, _head = _verify_task_worktree(repo_root)
+        if branch != raw["branch"] or _verification_input(raw)[0] != verification["input_sha256"]:
+            raise UpdateExecutionError("prepared scope changed since successful verification")
     artifacts = cleanup["owned_artifacts"]
     assert isinstance(artifacts, list)
     artifacts = [*_inherited_artifacts(raw, cleanup), *artifacts]

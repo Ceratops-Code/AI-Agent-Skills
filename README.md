@@ -140,7 +140,7 @@ without repository deduplication.
 | `skills/ceratops-repo-lifecycle/references/templates/skill-sections.json.tmpl` | Repository-neutral template for creating a target repository's live `skills/skill-sections.json`; never a live manifest. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Classifies exact affected sets, owns direct-manifest inventory, and invokes one runtime transaction; emits commit-bound completion evidence and can finalize its saved promotion handoff without replaying deployment. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py` | Stages, activates, rolls back, recovers, and cleans one locked selected-skill runtime transaction. |
-| `skills/ceratops-skill-lifecycle/scripts/skill-update-workflow.py` | Prepares, monotonically amends, and verifies declared cohesive skill updates, derives shared-source ownership from section assignments and runtime payload mappings, checks ancillary ownership against the prepared commit so staged and committed deletions remain valid, preserves original baselines and unrelated dirty state, reuses only still-applicable deterministic search evidence, owns temporary check folders through collection and verification, records exact task-temp ownership plus an active-update retention marker, finalizes owned request, state, evidence, and marker files, and removes the verified task-temp root only when empty after completed caller use. |
+| `skills/ceratops-skill-lifecycle/scripts/skill-update-workflow.py` | Records explicit allowed files and non-test checks against the original worktree baseline. Supports approved monotonic amendments before or after verification and repeated corrections without closing the record; preserves unrelated changes and shared-source ownership. Reuses only applicable failed-run search evidence, never runs tests, and finalizes exact owned records after completed caller use. `supersede` remains the explicit failed-request replacement route with inherited cleanup ownership. |
 | `skills/ceratops-skill-lifecycle/scripts/skill_update_checks.py` | Runs declared checks without a shell, records deterministic search applicability for safe reuse, and carries failure evidence to the update workflow. Failed pytest checks print test identities and reported errors from the same run, preserve complete structured failure details before scratch cleanup, mark bounded output, and use the captured terminal diagnostic when the native report is unavailable. |
 | `skills/ceratops-skill-lifecycle/scripts/skill_update_scratch.py` | Supplies subprocess-only temporary-directory settings under the verified task-temp root and removes its unique check folder after success or failure; cleanup errors block verification while preserving check evidence, and recorded residue is retried before new checks. Explicit paths in check arguments remain caller-owned. |
 | `skills/ceratops-credit-savings-analysis/scripts/credit_analysis/session_evidence_collector.py` | Resolves current, named, indexed, and project-identified sessions and collects one complete prepared traversal per analysis, preserving formatted messages, canonical current-source references, bounded nested-command failure provenance, tool and process telemetry, fingerprints, usage, closure, and classification modes. |
@@ -168,7 +168,6 @@ without repository deduplication.
 | `skills/ceratops-repo-lifecycle/scripts/ship-repository.py` | Prevalidates one SDLC contract and ordered phase selections, runs declared CI test selection against freshly fetched base and exact staged head commits before push, and orchestrates guarded GitHub shipping, main synchronization, per-operation publication and deployment checkpoints, and resumable selected-source cleanup. |
 | `skills/ceratops-repo-lifecycle/scripts/rename-repository-path.py` | Plans or applies tracked file renames and exact filename references; accepts explicit or Git-detected rename pairs, updates relative Markdown links, blocks ambiguous references, preserves the index and text bytes outside replacements, and compensates caught file errors. |
 | `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Source, metadata, runtime-input, contract, and portability validator invoked by source-validate and explicit skill workflows. It accepts optional skill-local `README.md` design documentation and a matching relative README Skills-table link. Full validation and selected skill-lifecycle validation check the deterministic contract against its closed schema, supported command arguments, and existing helper paths. The schema identifies descriptive fields as annotations; validation never executes contract-supplied commands. |
-| `skills/ceratops-skill-lifecycle/scripts/skill-update-workflow.py` | Records allowed files, non-test checks and the original worktree baseline; prepares, verifies and finalizes updates without collecting or running tests. Rejects pytest checks and direct test-runner commands; test execution belongs to SDLC. Its `supersede` command starts a revised request after failure, preserves the original baseline and failed records, and transfers their exact cleanup ownership to the successor. |
 | `skills/ceratops-skill-lifecycle/scripts/skill_update_state.py` | Owns update state, filesystem boundaries and cleanup-record validation; successful successor finalization removes only unchanged inherited disposable records and preserves protected inputs. |
 | `skills/ceratops-skill-lifecycle/scripts/fast-change.py` | Classifies exact structured replacements, generates their diff, and owns the eligible direct-release change through declared Markdown lint, exact helper tests, targeted installation, commit, and failure compensation. |
 
@@ -269,6 +268,60 @@ Call `sdlc_results.py verify-release-unit-build` with `--receipt`,
 invalid input or a mismatch returns a nonzero exit code. The Python function
 `verify_release_unit_build` returns the checked receipt with its recorded
 build and test statuses unchanged. Neither interface writes bundle files.
+
+### Exact-artifact foundation and update methodology
+
+The implemented foundation has four separate responsibilities:
+
+- **1a — declarations:** SDLC v5 describes release-unit members and their
+  dependencies; loading it validates metadata without building anything.
+- **1b — verification:** the receipt verifier establishes which files and bytes
+  a record identifies. `RECEIPT_VERIFIED` does not convert failed or absent tests
+  into passed tests.
+- **1c — correction continuity:** the skill-update workflow keeps one active
+  record through approved scope extensions and repeated edit/check/fix cycles.
+  It does not derive ownership from Git or select tests; that generic redesign
+  belongs to the later refactor iteration.
+- **1d — completion and reuse:** the internal `build_bundle` function in
+  `skills/ceratops-repo-lifecycle/scripts/repository_operation.py` owns a
+  reserved build/test/store transaction. It creates a final receipt only after
+  every required artifact test passes, then publishes the complete directory.
+
+The later public Build operation will supply the resolved selection, locked
+inputs, adapters, and required artifact tests. This foundation does not yet
+build real packages, alter existing deployment, or connect Promote/Ship.
+There is no extra store module, schema, index, or artifact-search command.
+Dependency locking remains separate from first-party artifact identity.
+
+For skill maintenance, prepare one update record before edits. Keep its explicit
+allowed file list, amend it for approved scope extensions, and repeat corrections
+and checks in the same record. A passed verification becomes pending when scope
+or checked inputs change. Finalize only at the real end of the requested work;
+do not finalize/reopen between corrections. Existing repository test runners
+remain unchanged. General ownership derivation and test-cache/framework changes
+belong to the later refactor iteration, not this foundation.
+
+### Generated-output lifecycle
+
+Persistent means intentionally retained, not necessarily overwritten. The owner
+of each new output defines its lifetime; an ignored directory is not a cleanup
+policy. These are the runtime paths used by the foundation and update workflow:
+
+| Runtime path | Class and owner | Rewrite, retention, or cleanup trigger |
+| --- | --- | --- |
+| `<shared-git-directory>/ceratops/builds/<build-key>/`, including receipt, artifacts and supporting files | Persistent immutable output; `build_bundle` | Grouped by repository, release unit, channel and target. At transaction startup and after publication, keep the newest completed bundle plus two predecessors by completion time and key; remove older directories without modifying retained bundles. |
+| `builds/`, `.staging/`, `.locks/`, `.diagnostics/` and `.locks/store.lock` | Persistent bounded infrastructure; `build_bundle` and `filelock` | One repository lock serializes transaction and cleanup ownership. The file remains reusable; the OS releases the held lock on normal exit or process death. No per-build lock history accumulates. |
+| `.staging/<build-key>/work/` and `bundle/` | Temporary private work; `build_bundle` | Removed on success or failure. At every transaction startup, while holding the repository lock, remove every recognizable staging directory left by an earlier instance. Preserve unrecognized entries and report cleanup failure. |
+| `.diagnostics/<release-group-key>.json` and its `.tmp` write file | Persistent latest-failure report and temporary write; `build_bundle` | Atomically overwrite the group's report on failure and remove it after successful completion/reuse. At startup remove interrupted `.tmp` writes. Reports contain bounded excerpts and are never artifact-test evidence. |
+| Update request, state, evidence and active-update marker under the task temp root | Temporary resumable records; `skill-update-workflow.py` | Retained across corrections/interruption; state and evidence are rewritten by verification. Explicit successful `finalize` removes only recorded owned files and removes the task root only if empty. |
+| Update check scratch directories and cleanup records | Temporary check work; `skill_update_scratch.py` | Removed when each check scope exits; recorded unfinished cleanup is retried before another check. Explicit check-output paths remain caller-owned. |
+| Existing test-runner scratch and `.build/test-diagnostics/pytest-failure.json` | Temporary execution scratch and persistent latest-failure report; repository test runner | Scratch is removed when the subprocess exits; failure evidence is rewritten on failure and removed by a successful run at that selected path. The existing runner remains its owner. |
+| Configured `.venv`/dependency environments, `__pycache__`, `.pytest_cache`, `.mypy_cache` and `.ruff_cache` | Persistent reusable development data; uv/Python and the owning check tool | Environments are synchronized to their project lock; cache entries are refreshed or invalidated by their owning tool. They are not bundle inputs or proof of passing artifact tests, and this flow does not purge them. |
+
+No new rotated history is introduced. Test evidence and dependency locks inside
+a completed bundle have the bundle's persistent lifetime, not the scratch
+environment's lifetime. Transaction details and recovery limits are documented
+in [the existing design draft](docs/design-draft.md#exact-artifact-bundle-transaction).
 
 Tool deployment at `deliverables.tools.<name>.actions.install` routes to
 `ceratops-tool-lifecycle/install`. That skill's installed executable binding
