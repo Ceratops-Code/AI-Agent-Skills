@@ -1099,6 +1099,48 @@ def test_release_preparation_failure_restores_original_checkout_and_refs(
     assert run_git(repo, "status", "--porcelain").stdout == ""
 
 
+def test_validation_failure_restores_original_checkout_and_refs(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo, approved_head, _log, _environment = prepare_repository_lifecycle_repo(
+        tmp_path
+    )
+    original_main = run_git(repo, "rev-parse", "main").stdout.strip()
+    loaded = runpy.run_path(str(PROMOTE_REPOSITORY))
+    promote = loaded["promote"]
+    original_run_json = promote.__globals__["_run_json"]
+
+    def fail_validation(
+        command: list[str], cwd: pathlib.Path
+    ) -> tuple[int, dict[str, Any]]:
+        if pathlib.Path(command[1]) == MANAGE_PENDING_WORK:
+            return original_run_json(command, cwd)
+        return 1, {"status": "validation_failed", "message": "forced failure"}
+
+    promote.__globals__["_run_json"] = fail_validation
+    args = loaded["build_parser"]().parse_args(
+        [
+            "--repo-root",
+            str(repo),
+            "--source-branch",
+            "approved",
+            "--no-run-operation",
+        ]
+    )
+
+    with pytest.raises(loaded["PromotionError"], match="forced failure"):
+        promote(args)
+
+    assert run_git(repo, "branch", "--show-current").stdout.strip() == "approved"
+    assert run_git(repo, "rev-parse", "HEAD").stdout.strip() == approved_head
+    assert run_git(repo, "rev-parse", "main").stdout.strip() == original_main
+    assert (
+        run_git(repo, "show-ref", "--verify", "refs/heads/release/local").returncode
+        != 0
+    )
+    assert run_git(repo, "status", "--porcelain").stdout == ""
+
+
 def test_promote_repository_prepare_only_mode_remains_unchanged(
     tmp_path: pathlib.Path,
 ) -> None:

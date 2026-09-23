@@ -957,8 +957,11 @@ def _ship_after_promotion(
     raise PromotionError(f"Shipping returned unsupported exit code: {ship_code}")
 
 
-def promote(
-    args: argparse.Namespace, *, timings: dict[str, float] | None = None
+def _promote(
+    args: argparse.Namespace,
+    *,
+    timings: dict[str, float] | None = None,
+    rollback: dict[str, Any],
 ) -> dict[str, object]:
     """Prepare a release branch, record selected work, and optionally deploy."""
 
@@ -966,8 +969,7 @@ def promote(
         timings = {}
 
     requested_root = args.repo_root.expanduser().resolve(strict=True)
-    repo_root = _primary_checkout(requested_root)
-    if not repo_root.is_dir():
+    if not requested_root.is_dir():
         raise PromotionError("Repository root is not a directory.")
     if args.release_branch not in PROMOTION_BRANCHES:
         raise PromotionError(
@@ -999,15 +1001,6 @@ def promote(
             raise PromotionError(
                 "Prepare-only cannot select source branches or deployment."
             )
-        current_branch = require_output(
-            _git(repo_root, "branch", "--show-current"),
-            cwd=repo_root,
-        ).strip()
-        if current_branch != args.main_branch:
-            raise PromotionError(
-                f"Prepare-only requires branch {args.main_branch}, "
-                f"got {current_branch or 'detached HEAD'}."
-            )
     else:
         if not branches:
             raise PromotionError("Promotion requires at least one source branch.")
@@ -1036,6 +1029,17 @@ def promote(
     if args.parameter and args.run_operation is None:
         raise PromotionError("--parameter requires --run-operation.")
     parameters = parse_parameters(args.parameter or [])
+    repo_root = _primary_checkout(requested_root)
+    if args.prepare_release_only:
+        current_branch = require_output(
+            _git(repo_root, "branch", "--show-current"),
+            cwd=repo_root,
+        ).strip()
+        if current_branch != args.main_branch:
+            raise PromotionError(
+                f"Prepare-only requires branch {args.main_branch}, "
+                f"got {current_branch or 'detached HEAD'}."
+            )
     has_release_ref = _ref_exists(repo_root, "refs/heads/release")
     if args.release_branch == RELEASE_BRANCH and has_release_ref:
         raise PromotionError(
@@ -1077,9 +1081,16 @@ def promote(
         remote_main,
         checkout_state,
     )
+    rollback.update(
+        repo_root=repo_root,
+        main_branch=args.main_branch,
+        release_branch=args.release_branch,
+        state=checkout_state,
+    )
     release_start = _branch_head(repo_root, args.release_branch)
 
     if args.prepare_release_only:
+        rollback.clear()
         return {
             "status": "prepared",
             "release_branch": args.release_branch,
@@ -1227,6 +1238,9 @@ def promote(
     _clean(repo_root, "before reporting ready state")
     pending_work_scope = record["pending_work_scope"]
     if ship_after_promotion:
+        # Shipping owns its resumable retained state and may already have made
+        # remote changes, so the local promotion transaction ends at handoff.
+        rollback.clear()
         return _ship_after_promotion(
             args,
             repo_root,
@@ -1254,7 +1268,38 @@ def promote(
     ]
     if validation_handoffs:
         result["validation_handoffs"] = validation_handoffs
+    rollback.clear()
     return result
+
+
+def promote(
+    args: argparse.Namespace, *, timings: dict[str, float] | None = None
+) -> dict[str, object]:
+    """Run promotion and restore the primary checkout after local failure.
+
+    A linked task worktree is only the source-branch owner. The mutable release
+    transaction runs in the primary checkout and rolls that checkout and its
+    local main/release refs back if any pre-shipping step fails.
+    """
+
+    rollback: dict[str, Any] = {}
+    try:
+        return _promote(args, timings=timings, rollback=rollback)
+    except Exception as exc:
+        if rollback:
+            try:
+                _restore_release_checkout(
+                    rollback["repo_root"],
+                    rollback["main_branch"],
+                    rollback["release_branch"],
+                    rollback["state"],
+                )
+            except Exception as restore_exc:  # noqa: BLE001 - retain both failures
+                raise PromotionError(
+                    f"Promotion failed: {exc}; restoring the original checkout "
+                    f"also failed: {restore_exc}"
+                ) from exc
+        raise
 
 
 @contextmanager
