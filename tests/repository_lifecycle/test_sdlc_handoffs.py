@@ -8,14 +8,17 @@ import json
 import os
 import pathlib
 import shutil
+import stat
 import subprocess
 import sys
+import threading
+import tomllib
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
-import tomllib
 
 from tests.repository_lifecycle.support import (
     REPOSITORY_LIFECYCLE_SCRIPTS,
@@ -40,6 +43,274 @@ def _repository(repo: pathlib.Path) -> str:
     assert run_git(repo, "add", ".").returncode == 0
     assert run_git(repo, "commit", "-m", "fixture").returncode == 0
     return run_git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+def _bundle_transaction(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "source.txt").write_text("committed input\n", encoding="utf-8")
+    commit = _repository(repo)
+    calls = []
+
+    def build(bundle, work):
+        calls.append("build")
+        (work / "private-environment").mkdir()
+        (bundle / "artifacts").mkdir()
+        (bundle / "artifacts/example.whl").write_bytes(b"exact built artifact")
+        return runner.BuildProduct(artifacts=[{
+            "deliverable": "deliverables.packages.example",
+            "type": "wheel", "path": "artifacts/example.whl",
+        }])
+
+    def test(bundle, artifacts, work):
+        calls.append("test")
+        assert (work / "private-environment").is_dir()
+        evidence = bundle / "supporting-files" / "test.json"
+        evidence.parent.mkdir()
+        evidence.write_bytes(b'{"status":"passed"}\n')
+        return [{
+            "id": "installed-artifact", "status": "passed",
+            "artifacts": [{"path": item["path"], "sha256": item["sha256"]} for item in artifacts],
+            "evidence": {
+                "path": evidence.relative_to(bundle).as_posix(),
+                "sha256": hashlib.sha256(evidence.read_bytes()).hexdigest(),
+            },
+        }]
+
+    return repo, {
+        "selection": {
+            "repository": "https://example.invalid/owner/repo",
+            "sourceCommit": commit, "releaseUnit": "example", "channel": "alpha",
+            "version": "1.0+alpha", "target": "any",
+        },
+        "inputs": {"dependencySelections": [], "lock": "a" * 64, "adapter": "fixture-v1"},
+        "required_tests": ["installed-artifact"],
+        "build": build, "test": test,
+    }, calls
+
+
+def _bundle_diagnostic(repo: pathlib.Path, selection: dict[str, str]) -> pathlib.Path:
+    store = repo / ".git" / "ceratops" / "builds"
+    return runner._build_diagnostic_path(store / ".diagnostics", selection)
+
+
+def test_bundle_transaction_reuses_exact_success_and_preserves_inputs(tmp_path) -> None:
+    repo, kwargs, calls = _bundle_transaction(tmp_path)
+    receipt_path = runner.build_bundle(repo, **kwargs)
+    saved = {path.relative_to(receipt_path.parent): path.read_bytes()
+             for path in receipt_path.parent.rglob("*") if path.is_file()}
+    assert calls == ["build", "test"]
+    assert runner.build_bundle(repo, **kwargs) == receipt_path
+    assert calls == ["build", "test"]
+    assert {path.relative_to(receipt_path.parent): path.read_bytes()
+            for path in receipt_path.parent.rglob("*") if path.is_file()} == saved
+    store = receipt_path.parent.parent
+    diagnostic = _bundle_diagnostic(repo, kwargs["selection"])
+    assert not list((store / ".staging").iterdir())
+    assert [path.name for path in (store / ".locks").iterdir()] == ["store.lock"]
+    assert not diagnostic.exists()
+    assert not (receipt_path.parent / "work").exists()
+    assert run_git(repo, "status", "--porcelain").stdout == ""
+
+    conflicting = {**kwargs, "inputs": {**kwargs["inputs"], "lock": "b" * 64}}
+    with pytest.raises(runner.OperationError, match="different locked inputs"):
+        runner.build_bundle(repo, **conflicting)
+    assert calls == ["build", "test"] and diagnostic.is_file()
+    assert runner.build_bundle(repo, **kwargs) == receipt_path
+    assert not diagnostic.exists()
+
+
+@pytest.mark.parametrize("problem", ["failed", "blocked", "skipped", "missing", "evidence", "changed", "unlisted", "coverage"])
+def test_bundle_transaction_never_publishes_bad_or_untested_outputs(tmp_path, problem) -> None:
+    repo, kwargs, calls = _bundle_transaction(tmp_path)
+    good_test = kwargs["test"]
+
+    def bad_test(bundle, artifacts, work):
+        records = good_test(bundle, artifacts, work)
+        if problem in {"failed", "blocked", "skipped"}:
+            records[0]["status"] = problem
+        elif problem == "missing":
+            records = []
+        elif problem == "evidence":
+            (bundle / records[0]["evidence"]["path"]).unlink()
+        elif problem == "changed":
+            (bundle / artifacts[0]["path"]).write_bytes(b"changed after tests")
+        elif problem == "unlisted":
+            (bundle / "unexpected.txt").write_text("not an artifact", encoding="utf-8")
+        elif problem == "coverage":
+            records[0]["artifacts"] = []
+        return records
+
+    with pytest.raises((runner.OperationError, results.StepResultError, OSError)):
+        runner.build_bundle(repo, **{**kwargs, "test": bad_test})
+    store = repo / ".git" / "ceratops" / "builds"
+    assert not list(store.glob("*/receipt.json"))
+    assert not list((store / ".staging").iterdir())
+    diagnostic_path = _bundle_diagnostic(repo, kwargs["selection"])
+    assert diagnostic_path.is_file()
+    diagnostic = json.loads(diagnostic_path.read_text())
+    assert diagnostic["requiredTests"] == ["installed-artifact"]
+    if problem == "failed":
+        assert diagnostic["tests"][0]["id"] == "installed-artifact"
+        assert diagnostic["tests"][0]["status"] == "failed"
+        assert "evidence" in diagnostic["tests"][0]
+    assert runner.build_bundle(repo, **kwargs).is_file()
+    assert calls == ["build", "test", "build", "test"]
+    assert not diagnostic_path.exists()
+
+
+def test_bundle_transaction_corruption_does_not_trigger_rebuild(tmp_path) -> None:
+    repo, kwargs, calls = _bundle_transaction(tmp_path)
+    receipt = runner.build_bundle(repo, **kwargs)
+    artifact = receipt.parent / "artifacts/example.whl"
+    artifact.write_bytes(b"corrupt saved artifact")
+    with pytest.raises(results.StepResultError):
+        runner.build_bundle(repo, **kwargs)
+    assert calls == ["build", "test"]
+    assert artifact.read_bytes() == b"corrupt saved artifact"
+
+
+def test_bundle_transaction_requires_test_contract_before_build(tmp_path) -> None:
+    repo, kwargs, calls = _bundle_transaction(tmp_path)
+    with pytest.raises(runner.OperationError, match="required test IDs"):
+        runner.build_bundle(repo, **{**kwargs, "required_tests": []})
+    assert calls == []
+    assert not (repo / ".git" / "ceratops").exists()
+
+
+@pytest.mark.parametrize("problem", ["duplicate", "identity"])
+def test_bundle_transaction_preflights_boundaries_before_tests(tmp_path, problem) -> None:
+    repo, kwargs, calls = _bundle_transaction(tmp_path)
+    if problem == "identity":
+        kwargs["selection"] = {**kwargs["selection"], "sourceCommit": "../unsafe"}
+    else:
+        original = kwargs["build"]
+        def duplicate(bundle, work):
+            product = original(bundle, work)
+            return runner.BuildProduct(artifacts=[*product.artifacts, *product.artifacts])
+        kwargs["build"] = duplicate
+    with pytest.raises((runner.OperationError, results.StepResultError)):
+        runner.build_bundle(repo, **kwargs)
+    assert "test" not in calls
+    assert not list((repo / ".git").glob("ceratops/builds/*/receipt.json"))
+
+
+def test_bundle_transaction_cleans_readonly_scratch_and_interrupted_callbacks(tmp_path) -> None:
+    repo, kwargs, calls = _bundle_transaction(tmp_path)
+    original = kwargs["build"]
+    def interrupted(bundle, work):
+        readonly = work / "readonly.txt"
+        readonly.write_bytes(b"private scratch")
+        readonly.chmod(stat.S_IREAD)
+        raise KeyboardInterrupt("fixture interruption")
+    with pytest.raises(KeyboardInterrupt):
+        runner.build_bundle(repo, **{**kwargs, "build": interrupted})
+    assert not list((repo / ".git/ceratops/builds/.staging").iterdir())
+    diagnostic = _bundle_diagnostic(repo, kwargs["selection"])
+    assert "KeyboardInterrupt" in diagnostic.read_text()
+    assert runner.build_bundle(repo, **{**kwargs, "build": original}).is_file()
+    assert calls == ["build", "test"]
+    assert not diagnostic.exists()
+
+
+def test_bundle_transaction_serializes_concurrent_callers(tmp_path) -> None:
+    repo, kwargs, calls = _bundle_transaction(tmp_path)
+    entered, release = threading.Event(), threading.Event()
+    original = kwargs["build"]
+
+    def paused_build(bundle, work):
+        entered.set()
+        assert release.wait(10)
+        return original(bundle, work)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(runner.build_bundle, repo, **{**kwargs, "build": paused_build})
+        try:
+            assert entered.wait(10)
+            second = executor.submit(runner.build_bundle, repo, **kwargs)
+        finally:
+            release.set()
+        assert first.result(timeout=15) == second.result(timeout=15)
+    assert calls == ["build", "test"]
+
+
+def test_bundle_transaction_worktrees_share_the_same_store(tmp_path) -> None:
+    repo, kwargs, calls = _bundle_transaction(tmp_path)
+    receipt = runner.build_bundle(repo, **kwargs)
+    worktree = tmp_path / "other-worktree"
+    added = run_git(repo, "worktree", "add", "-b", "another-task", str(worktree))
+    assert added.returncode == 0, added.stderr
+    assert runner.build_bundle(worktree, **kwargs) == receipt
+    assert calls == ["build", "test"]
+
+
+def test_bundle_transaction_retains_current_and_two_predecessors_per_group(tmp_path) -> None:
+    repo, kwargs, calls = _bundle_transaction(tmp_path)
+    receipts = []
+    for generation in range(4):
+        selection = {
+            **kwargs["selection"],
+            "sourceCommit": f"{generation + 1:040x}",
+            "version": f"1.0+alpha.{generation + 1}",
+        }
+        receipt = runner.build_bundle(repo, **{**kwargs, "selection": selection})
+        receipts.append(receipt)
+        completed_ns = (generation + 1) * 1_000_000_000
+        os.utime(receipt.parent, ns=(completed_ns, completed_ns))
+
+    store = repo / ".git" / "ceratops" / "builds"
+    assert not receipts[0].exists()
+    assert all(path.is_file() for path in receipts[1:])
+    assert len(list(store.glob("*/receipt.json"))) == runner.BUILD_BUNDLE_RETENTION
+    assert calls == ["build", "test"] * 4
+
+
+def test_bundle_transaction_recovers_all_killed_owner_staging(tmp_path) -> None:
+    repo, kwargs, calls = _bundle_transaction(tmp_path)
+    serializable = {key: value for key, value in kwargs.items() if key not in {"build", "test"}}
+    program = (
+        "import os,pathlib,sys; import repository_operation as r\n"
+        "def build(bundle, work):\n"
+        "    (work / 'unfinished').write_bytes(b'owned scratch')\n"
+        "    os._exit(23)\n"
+        f"r.build_bundle(pathlib.Path({str(repo)!r}), **{serializable!r}, build=build, "
+        "test=lambda *args: [])\n"
+    )
+    child = subprocess.run([sys.executable, "-c", program], cwd=REPOSITORY_LIFECYCLE_SCRIPTS,
+                           capture_output=True, text=True, timeout=15, check=False)
+    assert child.returncode == 23, child.stderr
+    staging_root = repo / ".git/ceratops/builds/.staging"
+    orphan = next(staging_root.iterdir())
+    earlier = staging_root / ("f" * 64)
+    earlier.mkdir()
+    (earlier / "owned-scratch").write_bytes(b"remove")
+    unrelated = staging_root / "manual-note"
+    unrelated.mkdir()
+    sentinel = unrelated / "not-owned"
+    sentinel.write_bytes(b"retain")
+    assert runner.build_bundle(repo, **kwargs).is_file()
+    assert not orphan.exists() and not earlier.exists()
+    assert sentinel.read_bytes() == b"retain"
+    assert calls == ["build", "test"]
+
+
+def test_bundle_transaction_cleanup_failure_retains_diagnostic_and_recovers(tmp_path, monkeypatch) -> None:
+    repo, kwargs, calls = _bundle_transaction(tmp_path)
+    original = runner.shutil.rmtree
+
+    def fail_cleanup(path, *args, **kw):
+        raise PermissionError("fixture cleanup refusal")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(runner.shutil, "rmtree", fail_cleanup)
+        with pytest.raises(PermissionError, match="cleanup refusal"):
+            runner.build_bundle(repo, **kwargs)
+    diagnostic = _bundle_diagnostic(repo, kwargs["selection"])
+    assert "Staging cleanup failed" in diagnostic.read_text()
+    assert runner.shutil.rmtree is original
+    assert runner.build_bundle(repo, **kwargs).is_file()
+    assert calls == ["build", "test"]
+    assert not diagnostic.exists()
 
 
 def test_compatibility_preserves_custom_unittest_runner_without_pytest(
