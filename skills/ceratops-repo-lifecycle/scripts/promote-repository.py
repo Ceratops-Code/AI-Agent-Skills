@@ -147,8 +147,7 @@ def _preflight_release_checkout(
     ).resolve()
     if git_dir != common_dir:
         raise PromotionError(
-            "Promotion --repo-root must be the primary checkout, not a linked "
-            "worktree."
+            "Promotion --repo-root must be the primary checkout, not a linked worktree."
         )
 
     current_branch = require_output(
@@ -237,7 +236,10 @@ def _restore_release_checkout(
     if state.release_head is None:
         if release_exists:
             raise PromotionError("Could not remove the newly created release branch.")
-    elif not release_exists or _branch_head(repo_root, release_branch) != state.release_head:
+    elif (
+        not release_exists
+        or _branch_head(repo_root, release_branch) != state.release_head
+    ):
         raise PromotionError("Could not restore the original release commit.")
     _clean(repo_root, "after restoring failed release preparation")
 
@@ -285,7 +287,7 @@ def _prepare_release_checkout(
                 release_branch,
                 state,
             )
-        except Exception as restore_exc:
+        except Exception as restore_exc:  # noqa: BLE001 - preserve rollback evidence
             raise PromotionError(
                 f"Release checkout preparation failed: {exc}; restoring the "
                 f"original checkout also failed: {restore_exc}"

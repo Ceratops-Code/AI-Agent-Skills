@@ -1053,7 +1053,9 @@ def test_release_preparation_failure_restores_original_checkout_and_refs(
         check=False,
     )
     assert cloned.returncode == 0, cloned.stderr
-    assert run_git(writer, "config", "user.email", "tests@example.invalid").returncode == 0
+    assert (
+        run_git(writer, "config", "user.email", "tests@example.invalid").returncode == 0
+    )
     assert run_git(writer, "config", "user.name", "Tests").returncode == 0
     (writer / "remote.txt").write_text("remote advance\n", encoding="utf-8")
     assert run_git(writer, "add", "remote.txt").returncode == 0
