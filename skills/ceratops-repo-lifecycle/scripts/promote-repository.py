@@ -159,6 +159,33 @@ def _primary_checkout(repo_root: pathlib.Path) -> pathlib.Path:
     return primary_root
 
 
+def _remap_repo_owned_path(
+    path: pathlib.Path,
+    *,
+    requested_root: pathlib.Path,
+    effective_root: pathlib.Path,
+) -> pathlib.Path:
+    """Keep a repo-relative target valid after linked-worktree routing.
+
+    Callers may supply an absolute path inside the task worktree. Promotion
+    executes against the primary checkout, so the same repository-owned target
+    must be addressed at the corresponding relative path there. Paths outside
+    the requested checkout retain their original identity.
+    """
+
+    expanded = path.expanduser()
+    if not expanded.is_absolute():
+        return expanded
+    absolute = expanded.resolve()
+    if requested_root == effective_root:
+        return absolute
+    try:
+        relative = absolute.relative_to(requested_root)
+    except ValueError:
+        return absolute
+    return effective_root / relative
+
+
 def _preflight_release_checkout(
     repo_root: pathlib.Path,
     main_branch: str,
@@ -1030,6 +1057,11 @@ def _promote(
         raise PromotionError("--parameter requires --run-operation.")
     parameters = parse_parameters(args.parameter or [])
     repo_root = _primary_checkout(requested_root)
+    args.sdlc_contract = _remap_repo_owned_path(
+        args.sdlc_contract,
+        requested_root=requested_root,
+        effective_root=repo_root,
+    )
     if args.prepare_release_only:
         current_branch = require_output(
             _git(repo_root, "branch", "--show-current"),

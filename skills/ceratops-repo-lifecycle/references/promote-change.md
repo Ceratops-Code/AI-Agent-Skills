@@ -19,6 +19,8 @@ owns selected post-merge publication, deployment and cleanup.
   `<skill-root>/scripts/promote-repository.py` once before the first call.
   Invoke that exact path with the working directory equal to its `--repo-root`
   value; stop if it is absent and never resolve it relative to that repository.
+  A linked-worktree `--repo-root` is routed automatically to the primary
+  checkout, including an absolute repo-owned `--sdlc-contract` path.
 - (D) Promotion helper:
   `python
   "<skill-root>/scripts/promote-repository.py" --repo-root PATH

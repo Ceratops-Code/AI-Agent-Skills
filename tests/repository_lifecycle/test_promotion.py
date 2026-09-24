@@ -1018,6 +1018,8 @@ def test_promote_repository_routes_linked_repo_root_without_branch_drift(
             str(task_worktree),
             "--source-branch",
             "task-runner",
+            "--sdlc-contract",
+            str(task_worktree / "sdlc/sdlc.yml"),
             "--no-run-operation",
         ],
         capture_output=True,
