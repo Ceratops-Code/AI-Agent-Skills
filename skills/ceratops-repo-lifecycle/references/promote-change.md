@@ -110,10 +110,13 @@ owns selected post-merge publication, deployment and cleanup.
    advanced source `preserved` so stale cleanup cannot block the new promotion
    or delete evolved work. Treat the normalized version-2 scope as the only
    source scope later passed to ship. Persist each selected source's exact tip
-   and helper-owned state. Advance a reusable scope only when its recorded
-   target is an ancestor of the new target. Recover a missing source
-   automatically only when its `deleting` state and recorded commit ancestry
-   prove an interrupted helper deletion; a missing `retained` source blocks.
+   and helper-owned state. When a recorded target diverges from the new target,
+   preserve every prior unselected source without cleanup authority and begin
+   the new scope; a same-name source explicitly selected at the new target may
+   replace its old record after the normal containment checks. Recover a
+   missing source automatically only when its `deleting` state and recorded
+   commit ancestry prove an interrupted helper deletion; a missing `retained`
+   source blocks.
 7. On a shipping blocker, retain the scope, branches, worktrees, and checkpoints
    for resume. Terminal shipping owns finalization and selected-work cleanup;
    it leaves a worktree and branch untouched when the worktree's parent chain

@@ -1392,3 +1392,116 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
     ]
     assert removed_targets == [ownership_target]
     assert not ownership_target.exists()
+
+
+def test_record_can_preserve_prior_sources_when_target_history_diverged(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "Repository"
+    repo.mkdir()
+    assert run_git(repo, "init", "-b", "main").returncode == 0
+    assert run_git(repo, "config", "user.email", "test@example.invalid").returncode == 0
+    assert run_git(repo, "config", "user.name", "Test Agent").returncode == 0
+    (repo / "README.md").write_text("base\n", encoding="utf-8", newline="\n")
+    assert run_git(repo, "add", "README.md").returncode == 0
+    assert run_git(repo, "commit", "-m", "base").returncode == 0
+    base_commit = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    tree = run_git(repo, "rev-parse", "HEAD^{tree}").stdout.strip()
+
+    old_result = run_git(
+        repo,
+        "commit-tree",
+        tree,
+        "-p",
+        base_commit,
+        "-m",
+        "old selected target",
+    )
+    assert old_result.returncode == 0, old_result.stderr
+    old_target = old_result.stdout.strip()
+    assert run_git(repo, "branch", "old-source", old_target).returncode == 0
+    assert run_git(repo, "branch", "release/local", old_target).returncode == 0
+    recorded = run_pending_work(
+        repo,
+        "record",
+        "--target-branch",
+        "release/local",
+        "--target-commit",
+        old_target,
+        "--source-branch",
+        "old-source",
+    )
+    assert recorded.returncode == 0, recorded.stderr
+    scope_path = pathlib.Path(json.loads(recorded.stdout)["pending_work_scope"])
+
+    replacement_result = run_git(
+        repo,
+        "commit-tree",
+        tree,
+        "-p",
+        base_commit,
+        "-m",
+        "replacement target",
+    )
+    assert replacement_result.returncode == 0, replacement_result.stderr
+    replacement_target = replacement_result.stdout.strip()
+    assert run_git(
+        repo,
+        "update-ref",
+        "refs/heads/release/local",
+        replacement_target,
+        old_target,
+    ).returncode == 0
+    assert run_git(repo, "branch", "next-source", replacement_target).returncode == 0
+
+    advanced = run_pending_work(
+        repo,
+        "record",
+        "--target-branch",
+        "release/local",
+        "--target-commit",
+        replacement_target,
+        "--source-branch",
+        "next-source",
+        "--preserve-divergent-target",
+    )
+
+    assert advanced.returncode == 0, advanced.stderr
+    payload = json.loads(advanced.stdout)
+    assert payload["status"] == "ready"
+    assert payload["preserved_sources"] == [
+        {
+            "branch": "old-source",
+            "findings": [
+                {
+                    "kind": "target_history_diverged",
+                    "subject": "old-source",
+                    "detail": (
+                        "prior target for release/local is not an ancestor of the "
+                        "new target; source excluded from cleanup"
+                    ),
+                }
+            ],
+        }
+    ]
+    assert json.loads(scope_path.read_text(encoding="utf-8")) == {
+        "version": 2,
+        "target_branch": "release/local",
+        "target_commit": replacement_target,
+        "sources": [
+            {
+                "branch": "next-source",
+                "commit": replacement_target,
+                "state": "retained",
+            },
+            {
+                "branch": "old-source",
+                "commit": old_target,
+                "state": "preserved",
+            },
+        ],
+    }
+    assert (
+        run_git(repo, "show-ref", "--verify", "refs/heads/old-source").returncode
+        == 0
+    )

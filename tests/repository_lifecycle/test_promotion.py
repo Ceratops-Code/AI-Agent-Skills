@@ -778,6 +778,7 @@ def test_promote_repository_ship_after_promotion_composes_terminal_workflow(
             return original_run_json(command, cwd)
         commands.append(command)
         if pathlib.Path(command[1]) == MANAGE_PENDING_WORK:
+            assert "--preserve-divergent-target" in command
             code, result = original_run_json(command, cwd)
             recorded.update(result)
             return code, result

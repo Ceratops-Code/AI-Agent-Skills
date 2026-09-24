@@ -1160,6 +1160,7 @@ def _promote(
         args.release_branch,
         "--target-commit",
         target_commit,
+        "--preserve-divergent-target",
     ]
     for branch in merged:
         record_command.extend(("--source-branch", branch))
