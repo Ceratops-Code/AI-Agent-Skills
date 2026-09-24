@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import importlib.util
 import io
 import json
 import os
@@ -1874,3 +1875,91 @@ def test_unpublished_ci_action_blocks_compatibility_before_target_writes(
     assert result["phase"] == "compatibility_planning"
     assert result["rollback"] == "not_started"
     assert {path.name for path in tmp_path.iterdir()} == {".git"}
+
+
+def test_result_records_template_binds_source_artifact_and_bounds_evidence(
+    tmp_path: pathlib.Path,
+) -> None:
+    template = ROOT / "docs/result_records.py.tmpl"
+    helper = tmp_path / "scripts/result_records.py"
+    helper.parent.mkdir()
+    shutil.copy2(template, helper)
+    (tmp_path / ".gitignore").write_text("**/__pycache__/\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "config", "user.email", "tests@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "config", "user.name", "Ceratops Tests"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "add", ".gitignore", "scripts"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "commit", "-qm", "Add source"], check=True
+    )
+
+    module_name = f"_result_records_{tmp_path.name.replace('-', '_')}"
+    spec = importlib.util.spec_from_file_location(module_name, helper)
+    assert spec is not None and spec.loader is not None
+    records = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = records
+    try:
+        spec.loader.exec_module(records)
+    finally:
+        sys.modules.pop(module_name, None)
+
+    source = records.resolve_source_identity(tmp_path)
+    assert not source.dirty_paths
+    store = records.ResultStore(tmp_path, source, record=True)
+    store.write_validation(
+        {
+            "schema": records.VALIDATION_SCHEMA,
+            "status": "passed",
+            "source": source.portable(),
+        }
+    )
+    for index in range(4):
+        evidence = store.begin_evidence_run(f"run-{index}")
+        (evidence / "observation.txt").write_text(str(index), encoding="utf-8")
+    assert len(list(store.evidence_root.iterdir())) == 3
+
+    artifact = tmp_path / ".build/artifacts/app.zip"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"candidate-package")
+    subprocess.run(["git", "-C", str(tmp_path), "tag", "v1.2.3"], check=True)
+    source = records.resolve_source_identity(tmp_path)
+    identity = records.resolve_artifact_identity(
+        tmp_path, source, "v1.2.3", artifact
+    )
+    assert identity is not None
+    assert identity.version == "v1.2.3"
+    assert identity.source_commit == source.commit
+    assert identity.sha256 == hashlib.sha256(b"candidate-package").hexdigest()
+    store = records.ResultStore(tmp_path, source, record=True)
+    build_record = store.write_build(identity, source.digest)
+    assert json.loads(build_record.read_text(encoding="utf-8"))["version"] == "v1.2.3"
+    assert (
+        records.compact_failure("menu/title", "AstroTops", "PlaneTops")
+        == "menu/title expected=AstroTops actual=PlaneTops"
+    )
+
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "add",
+            ".build/builds",
+            ".test-results/validation.json",
+        ],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "commit", "-qm", "Record results"], check=True
+    )
+    refreshed = records.resolve_source_identity(tmp_path)
+    assert refreshed.commit == source.commit
+    assert refreshed.digest == source.digest

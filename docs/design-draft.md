@@ -141,6 +141,36 @@ on pushes, with impact selection from the exact pull-request base/head in CI.
 That impact-selection implementation is repository-specific, not a requirement
 imposed on every compatible repository.
 
+## Portable result records
+
+[`docs/result_records.py.tmpl`](result_records.py.tmpl) is the reference
+implementation for repository-owned validation, test, and build records. It is
+a documentation asset, not an installed runtime payload or an automatically
+copied compatibility file. A repository adopts it by copying and adapting it
+as `scripts/result_records.py` when that repository owns persistent result
+records.
+
+The template keeps current validation and test JSON under tracked
+`.test-results/`, raw screenshots and logs under ignored
+`.test-results/evidence/`, tracked build metadata and approvals under
+`.build/builds/`, and package bytes under ignored `.build/artifacts/`. Records
+bind to source bytes, the latest commit that changed non-result files, execution
+context, and exact artifact bytes. An immutable source tag is the build version;
+its resolved commit is traceability metadata. Evidence retention is bounded to
+the current run and at most two predecessors.
+
+Repository validators and test runners remain the behavior owners. Targeted
+reruns replace affected results, preserve only still-applicable passing results,
+and recalculate the aggregate outcome. Delivery verifies applicable validation
+and test outcomes plus exact artifact identity without rerunning tests. Existing
+repositories that contain `result_records.py` should be reviewed individually
+against this reference and migrated where behavior differs, while preserving
+repository-specific schemas, groups, environments, and behavior tests; the
+template must not be copied blindly over a working implementation.
+`tests/repository_lifecycle/test_compatibility.py` exercises the template's
+source and artifact binding, bounded evidence, compact failure output, and
+result-only commit stability.
+
 ## Exact-artifact bundle transaction
 
 Steps 1a and 1b provide metadata and verification; 1c makes skill-update
@@ -311,6 +341,7 @@ means the thread's decision is recorded, not that the whole system was audited.
     {"path": "skills/ceratops-repo-lifecycle/references/contracts/repository-validation-contract.json", "role": "Reusable validation behavior"},
     {"path": "skills/ceratops-repo-lifecycle/references/contracts/ceratops-compatibility-deterministic-contract.json", "role": "Mechanically checked compatibility requirements"},
     {"path": "skills/ceratops-repo-lifecycle/references/contracts/ceratops-compatibility-nondeterministic-contract.json", "role": "Internal compatibility review"},
+    {"path": "docs/result_records.py.tmpl", "role": "Reference implementation for portable validation, test, and build records"},
     {"path": "skills/skill-sections.json", "role": "Live shared section and payload assignments"},
     {"path": "skills/ceratops-repo-lifecycle/scripts/repository_operation.py", "role": "Operation execution and internal build transaction"},
     {"path": "skills/ceratops-repo-lifecycle/scripts/sdlc_results.py", "role": "Read-only build receipt verification"},
@@ -318,6 +349,7 @@ means the thread's decision is recorded, not that the whole system was audited.
   ],
   "update_triggers": [
     "A recorded ownership, contract, environment, routing, or cleanup decision changes",
+    "The portable result-record contract or reference implementation changes",
     "A full design is explicitly commissioned beyond the thread-only draft"
   ],
   "coverage": {
