@@ -5,6 +5,21 @@
  Install the selected repository's declared tool version after candidate
 validation.
 
+## Script Bundle
+
+- Bind `<skill-root>` to the directory containing this action's parent
+  `SKILL.md`; require `<skill-root>/scripts/install-tool.py` before invocation.
+- (D) Repository installation runs `python
+  <skill-root>/scripts/install-tool.py --repo-root <repo-root>
+  [--source <tool-source>] [--tool-name <name>]
+  [--package-wheel <wheel> --package-lock <lock>]`. For a saved promotion
+  handoff, also pass `--promotion-result <record> --operation <location>` and
+  optionally `--evidence-output <task-temp-file>`.
+- (D) A completed installation whose manager result was retained may replace
+  installation inputs with `--manager-result <file>` and the same promotion
+  arguments. The helper must match the active selection and immutable receipt
+  before emitting completion evidence; it never reinstalls for this recovery.
+
 ## SDLC execution
 
 `sdlc/sdlc.yml` routes tool installation to this action; the manager itself
@@ -21,19 +36,21 @@ tool source. A tool without a package prerequisite keeps the source-build path.
 
 1. For repository installation, use the selected checkout's `pyproject.toml`
    name and version. If it declares several tools, select by tool name.
-   Run the installed manager from that checkout, or supply `--source` with
-   its repository or tool directory. For a package-backed tool, supply its
-   already validated wheel and package lock as well:
+   Run the action helper from that checkout and supply `--source` with its
+   repository or tool directory. For a package-backed tool, supply its already
+   validated wheel and package lock as well:
 
    ```powershell
-   C:\AI-Agents-Tools\ceratops_tool_manager\bin\ceratops_tool_manager.cmd install --source <tool-directory> [--tool-name <name>] --package-wheel <package-wheel.whl> --package-lock <package-pylock.toml>
+   python <skill-root>/scripts/install-tool.py --repo-root <repo-root> --source <tool-directory> [--tool-name <name>] --package-wheel <package-wheel.whl> --package-lock <package-pylock.toml>
    ```
 
    Omit both package flags for a source-built tool without a package
    prerequisite. The manager builds only the selected tool source, registers
    the tool wheel with the supplied package wheel and locked third-party
-   wheels, then installs that exact set. It rejects ambiguous names before
-   building and accepts no version override, artifact URL, or output path.
+   wheels, then installs that exact set. The helper checks the selected runtime
+   metadata against the manager result and emits one
+   `ceratops-deployment-completion.v1` receipt. It rejects ambiguous names
+   before building and accepts no version override or artifact URL.
 2. In an active AI-Agent-Skills checkout, install its manager source with
    `uv run --locked scripts/deploy-tool-manager.py`; this supports both first
    installation and an existing manager. Other tools use the installed CLI.
@@ -46,7 +63,11 @@ tool source. A tool without a package prerequisite keeps the source-build path.
 3. Treat a failed candidate as an installation failure; report its error and
    preserve the active installation. Fix the owning source or release inputs
    before another attempt when the cause is deterministic.
-4. Inspect versions after success. For the manager itself, finish the current
+4. Inspect versions after success. For a saved promotion, retain the helper's
+   bound receipt and pass all completed handoff receipts together to the
+   repository promotion finalizer. The caller removes the optional evidence
+   output after finalization; the helper atomically keeps only that current
+   file and no predecessors. For the manager itself, finish the current
    request and reconnect to activate the selected version on the next launch.
 
 ## Completion Gate

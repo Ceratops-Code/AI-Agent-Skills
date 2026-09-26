@@ -7,6 +7,7 @@ import importlib
 import json
 import os
 import pathlib
+import runpy
 import shutil
 import stat
 import subprocess
@@ -1803,9 +1804,11 @@ def test_tool_install_binding_uses_checkout_metadata_and_propagates_failures(
         ROOT / "skills/ceratops-tool-lifecycle/references/action-executors.json",
         skill / "action-executors.json",
     )
+    source = tmp_path / "repo with spaces & punctuation/skills/ceratops-tool-lifecycle"
+    (source / "references").mkdir(parents=True)
+    shutil.copyfile(skill / "action-executors.json", source / "references/action-executors.json")
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     repo = tmp_path / "repo with spaces & punctuation"
-    repo.mkdir()
     calls = []
 
     def run(argv, **kwargs):
@@ -1820,16 +1823,167 @@ def test_tool_install_binding_uses_checkout_metadata_and_propagates_failures(
     result = handoffs.execute_handoff("ceratops-tool-lifecycle/install", repo)
     assert result["status"] == ("operation_failed" if failure else "completed")
     assert calls[0][0] == [
-        "python",
+        sys.executable,
         "-I",
         "-B",
-        "C:/AI-Agents-Tools/ceratops_tool_manager/bin/ceratops_tool_manager.py",
-        "install",
-        "--source",
+        str(source) + "/scripts/install-tool.py",
+        "--repo-root",
         str(repo),
     ]
     assert calls[0][1]["cwd"] == repo
     assert not calls[0][1].get("shell", False)
+
+
+def test_tool_install_helper_attests_existing_manager_result_without_reinstall(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    projects = tmp_path / "projects"
+    repo = projects / "claims"
+    repo.mkdir(parents=True)
+    (repo / "source.txt").write_text("source\n", encoding="utf-8")
+    commit = _repository(repo)
+    task = projects / "tmp/claims/task"
+    task.mkdir(parents=True)
+    operation = "deliverables.tools.insurance-claims-tool.actions.install"
+    promotion = {
+        "status": "ready",
+        "head": commit,
+        "operations": {
+            "status": "completed",
+            "pending_operations": [],
+            "completed_operations": [operation],
+            "results": [
+                {
+                    "operation": operation,
+                    "commit": commit,
+                    "status": "completed",
+                    "steps": [],
+                    "handoff": "ceratops-tool-lifecycle/install",
+                }
+            ],
+        },
+    }
+    promotion_path = task / "promotion.json"
+    promotion_path.write_text(json.dumps(promotion), encoding="utf-8")
+    manager_result = {
+        "installed_version": "1.2.3",
+        "manifest_sha256": "a" * 64,
+        "reconnection_required": False,
+        "running_version": None,
+        "tool_name": "insurance-claims-tool",
+    }
+    manager_path = task / "manager.json"
+    manager_path.write_text(json.dumps(manager_result), encoding="utf-8")
+    install_root = tmp_path / "installed"
+    instance = "b" * 32
+    selected = {
+        "schema": 1,
+        "tool_id": "insurance-claims-tool",
+        "version": "1.2.3",
+        "manifest_sha256": "a" * 64,
+        "instance": instance,
+        "module": "insurance_claims_tool",
+    }
+    tool_root = install_root / "insurance-claims-tool"
+    immutable = tool_root / "versions/1.2.3" / instance
+    immutable.mkdir(parents=True)
+    (tool_root / "current.json").write_text(json.dumps(selected), encoding="utf-8")
+    (immutable / "receipt.json").write_text(json.dumps(selected), encoding="utf-8")
+    helper = runpy.run_path(
+        str(ROOT / "skills/ceratops-tool-lifecycle/scripts/install-tool.py")
+    )
+    monkeypatch.setitem(helper["main"].__globals__, "INSTALL_ROOT", install_root)
+    output = task / "tool-completion.json"
+    code = helper["main"](
+        [
+            "--repo-root",
+            str(repo),
+            "--tool-name",
+            "insurance-claims-tool",
+            "--manager-result",
+            str(manager_path),
+            "--promotion-result",
+            str(promotion_path),
+            "--operation",
+            operation,
+            "--evidence-output",
+            str(output),
+        ]
+    )
+    assert code == 0
+    receipt = json.loads(capsys.readouterr().out)
+    assert json.loads(output.read_text(encoding="utf-8")) == receipt
+    assert receipt["producer"] == "ceratops-tool-lifecycle/install"
+    assert receipt["commit"] == commit
+    assert receipt["deployed"] == ["insurance-claims-tool"]
+    assert receipt["transaction_id"] == instance
+    assert receipt["promotion"]["operation"] == operation
+    promote = runpy.run_path(
+        str(ROOT / "skills/ceratops-repo-lifecycle/scripts/promote-repository.py")
+    )
+    binding = dict(receipt["promotion"])
+    binding.pop("operation")
+    promote["_completed_deployment"](
+        promotion,
+        commit,
+        repo_root=repo,
+        external={operation: receipt},
+        record_binding=binding,
+    )
+
+
+def test_tool_install_helper_runs_manager_once_and_attests_selection(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "source.txt").write_text("source\n", encoding="utf-8")
+    commit = _repository(repo)
+    payload = {
+        "installed_version": "2.0.0",
+        "manifest_sha256": "c" * 64,
+        "reconnection_required": False,
+        "running_version": None,
+        "tool_name": "sample-tool",
+    }
+    install_root = tmp_path / "installed"
+    instance = "d" * 32
+    selected = {
+        "schema": 1,
+        "tool_id": "sample-tool",
+        "version": "2.0.0",
+        "manifest_sha256": "c" * 64,
+        "instance": instance,
+        "module": "sample_tool",
+    }
+    tool_root = install_root / "sample-tool"
+    immutable = tool_root / "versions/2.0.0" / instance
+    immutable.mkdir(parents=True)
+    (tool_root / "current.json").write_text(json.dumps(selected), encoding="utf-8")
+    (immutable / "receipt.json").write_text(json.dumps(selected), encoding="utf-8")
+    helper = runpy.run_path(
+        str(ROOT / "skills/ceratops-tool-lifecycle/scripts/install-tool.py")
+    )
+    calls = []
+
+    def install(args, source_root):
+        calls.append((args.tool_name, source_root))
+        return payload
+
+    monkeypatch.setitem(helper["main"].__globals__, "INSTALL_ROOT", install_root)
+    monkeypatch.setitem(helper["main"].__globals__, "_install", install)
+    assert helper["main"](
+        ["--repo-root", str(repo), "--tool-name", "sample-tool"]
+    ) == 0
+    receipt = json.loads(capsys.readouterr().out)
+    assert calls == [("sample-tool", repo)]
+    assert receipt["commit"] == commit
+    assert receipt["promotion"] is None
+    assert receipt["transaction_id"] == instance
 
 
 def _registered_skill_fixture(

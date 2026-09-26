@@ -3,12 +3,11 @@
   "actions": {
     "install": {
       "run": [
-        "python",
+        "{python}",
         "-I",
         "-B",
-        "C:/AI-Agents-Tools/ceratops_tool_manager/bin/ceratops_tool_manager.py",
-        "install",
-        "--source",
+        "{skill_root}/scripts/install-tool.py",
+        "--repo-root",
         "{repo_root}"
       ]
     }
