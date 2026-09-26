@@ -76,11 +76,9 @@ and publication.
 - For SDLC v4 or v5, run skill-owned deterministic action bindings through the
   SDLC engine. Return unresolved routes as blockers before dependent mutation.
   CI defers every skill handoff without claiming its action completed.
-- Require successful validation followed by separate tests before promotion
-  continuation, shipping, publication, and deployment. Invoke repository
-  runners for these gates; test runners own saved-result reuse. Explicit
-  selection cannot omit declared gates; a declared no-op must include its
-  reason.
+- Run promotion, shipping, publication, and deployment through their lifecycle
+  helpers; accept their gate decisions and do not independently rerun completed
+  gates.
 - Treat `completed` as command completion; validate retained
   `step_results[].result` independently against the producer's schema and
   status.

@@ -1490,9 +1490,12 @@ def test_repository_ship_checks_declared_test_selection_before_remote_work(
             assert failure.value.payload["head"] == head
 
 
-def _saved_stage_fixture(root: pathlib.Path) -> tuple[pathlib.Path, str]:
+def _saved_stage_fixture(
+    root: pathlib.Path,
+    repository_name: str = "stage repository",
+) -> tuple[pathlib.Path, str]:
     """Use real subprocesses and Git identities without any remote or app effects."""
-    repo = root / "stage repository"
+    repo = root / repository_name
     (repo / "sdlc").mkdir(parents=True)
     (repo / ".gitignore").write_text(".build/\n", encoding="utf-8")
     (repo / "probe.py").write_text(
@@ -1564,6 +1567,43 @@ def _saved_stage_fixture(root: pathlib.Path) -> tuple[pathlib.Path, str]:
         == 0
     )
     return repo, "deliverables.apps.fixture.actions.install"
+
+
+@pytest.mark.parametrize(
+    "repository_name",
+    ["Codex-Desktop-App-Code", "Codex-Desktop-App-Patcher"],
+)
+def test_promotion_skips_rechecks_only_for_codex_desktop_repositories(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    repository_name: str,
+) -> None:
+    import importlib
+
+    runner = importlib.import_module("repository_operation")
+    repo, _deploy = _saved_stage_fixture(tmp_path, repository_name)
+    head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    base = ["--repo-root", str(repo)]
+
+    assert runner.main(
+        [
+            *base,
+            "--validate",
+            "--tests",
+            "--commit",
+            head,
+            "--test-trigger",
+            "promotion",
+        ]
+    ) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "completed"
+    assert result["results"] == []
+    assert not (repo / ".build/events").exists()
+
+    assert runner.main([*base, "--validate"]) == 0
+    capsys.readouterr()
+    assert (repo / ".build/events").read_text().splitlines() == ["validation"]
 
 
 @pytest.mark.parametrize("repository_ignores_build", [False, True])

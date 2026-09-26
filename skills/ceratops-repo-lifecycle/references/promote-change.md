@@ -3,7 +3,8 @@
 ## Goal
 
 Fast-forward selected committed task branches into a local promotion branch and
-validate the assembled commit. Use `release/local` by default. When the
+apply the lifecycle helper's promotion gate to the assembled commit. Use
+`release/local` by default. When the
 repository already has an authoritative `release` branch, use `promote/local`
 because Git cannot store both `release` and `release/local`. For
 `promote-and-deploy`, run selected `deploy-local`
@@ -91,15 +92,15 @@ owns selected post-merge publication, deployment and cleanup.
    Repeat `--parameter name=value` for required operation inputs; it is invalid
    without `--run-operation`.
    The helper accepts only `deliverables.<kind>.<name>.actions.install`,
-   prepares the entire selection before commands, runs applicable validation
-   and tests once, and executes the prepared operations only while the checked
+   prepares the entire selection before commands, applies its promotion gate,
+   and executes the prepared operations only while the checked
    commit stays clean and unchanged. Explicit missing locations are errors;
    v4/v5 tests require declared commands, handoffs, or reasoned no-ops.
 4. For composed shipping, use `--ship-after-promotion`, one optional
    `--sdlc-contract PATH`, and repeated `--publish-operation LOCATION` or
    `--deploy-operation LOCATION` for requested post-merge work. Omitted mutation
-   selections do nothing. The helper records the exact head and scope, runs
-   promotion validation and tests, then invokes shipping with the same inputs.
+   selections do nothing. The helper records the exact head and scope, applies
+   its promotion gate, then invokes shipping with the same inputs.
 5. Let the SDLC engine execute registered deterministic skill actions for
    v4/v5 structured handoffs. Resolve any returned judgment-required route
    within the selected skill action; dependent mutation remains blocked. SDLC
@@ -132,7 +133,7 @@ ancestry, task merge commits, conflicts, and failed Git queries
 block. A failed attempt must restore the original branch head and
 clean worktree before it reports the failure and conflicting paths. The helper
 then runs `git diff --check`, fast-forwards each selected branch, records the
-scope and validates the final commit. A failed check returns its YAML location,
+scope, and applies its promotion gate. A failed check returns its YAML location,
 checked commit and bounded diagnostics while preserving the scope for repair.
 In composed mode, shipping repeats validation before remote mutation; successful
 promotion checks never suppress that boundary. Check results cannot authorize a

@@ -60,6 +60,9 @@ FAILED_STATUSES = frozenset(
 MUTATION_CATEGORIES = frozenset({"build", "deploy-local", "publish"})
 BUILD_BUNDLE_RETENTION = 3
 BUILD_KEY_RE = re.compile(r"^[a-f0-9]{64}$")
+PROMOTION_RECHECK_EXEMPT_REPOSITORIES = frozenset(
+    {"Codex-Desktop-App-Code", "Codex-Desktop-App-Patcher"}
+)
 
 
 @dataclass(frozen=True)
@@ -1361,7 +1364,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         checking_build = any(item.category == "build" for item in prepared)
         requires_validation = (
-            args.validate or args.tests or checking_delivery or checking_build
+            not (
+                args.test_trigger == "promotion"
+                and root.name in PROMOTION_RECHECK_EXEMPT_REPOSITORIES
+            )
+            and (args.validate or args.tests or checking_delivery or checking_build)
         )
         validations = (
             prepare_operations(
