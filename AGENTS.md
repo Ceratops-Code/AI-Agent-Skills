@@ -54,6 +54,27 @@ Project-specific rules for this skills repository.
   `skills/ceratops-repo-lifecycle/references/templates/`; never use the
   template as a live manifest.
 
+## Design
+
+- [SKILLS-DESIGN-01] Before implementing or changing a process, identify its
+  predictable invalid states and make the narrowest controllable producer
+  prevent them by construction; use detection or rejection as the primary
+  control only when prevention is impossible and it does not revalidate
+  unchanged accepted work; never treat earlier failure as prevention.
+- [SKILLS-DESIGN-02] For processes you design or implement, not the model's own
+  reasoning or context checks, preserve accepted work and its test/validation
+  results under stable, non-reused identities bound to exact work and check
+  versions. Later stages consume acceptance without repeating validation;
+  allow only hash or equivalent integrity checks against malicious tampering.
+- [SKILLS-DESIGN-03] In produced processes, updating tests or validators alone
+  must not change an unchanged artifact's accepted status or schedule it for
+  testing again; that acceptance remains tied to the check versions it passed.
+- [SKILLS-DESIGN-04] When a process you design or implement appears to need
+  revalidation of unchanged accepted work during normal operation, explain
+  the cause and propose prevention to the user; obtain confirmation before
+  implementing or running that additional validation.
+  - self: gate
+
 ## Instruction and skill maintenance
 
 - [SKILLS-GOV-01] Before proposing or editing a repository control surface,
