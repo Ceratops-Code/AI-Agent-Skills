@@ -57,6 +57,7 @@
     "ceratops-repo-lifecycle",
     "ceratops-skill-lifecycle",
     "ceratops-task-lifecycle",
+    "ceratops-tool-lifecycle",
     "ceratops-design-document-lifecycle",
     "ceratops-openai-docs-managed"
   ],
