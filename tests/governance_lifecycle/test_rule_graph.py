@@ -129,7 +129,14 @@ class RuleGraphTests(unittest.TestCase):
             mismatches = snapshot["automation_reasoning_effort"]["mismatches"]
             self.assertEqual(
                 {(item["scope"], item["id"]) for item in mismatches},
-                {("source", "diskfinventorycheck"), ("runtime", "routine-audit")},
+                {
+                    ("runtime", "diskfinventorycheck"),
+                    ("runtime", "routine-audit"),
+                },
+            )
+            self.assertEqual(
+                snapshot["automation_reasoning_effort"]["policy"],
+                {"medium_ids": [], "default": "max"},
             )
             self.assertEqual(
                 snapshot["d_rule_brevity"]["sources_checked"],
