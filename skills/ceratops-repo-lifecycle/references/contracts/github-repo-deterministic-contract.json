@@ -903,7 +903,7 @@
       "id": "content.community_profile_public",
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/community/profile",
-      "applies_when": "repo.archived == false",
+      "applies_when": "repo.archived == false && repo.fork == false",
       "assertions": [
         {
           "path": "/repository/content/community_profile_available",
