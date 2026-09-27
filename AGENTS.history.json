@@ -350,6 +350,14 @@
       "decision": "Add SKILLS-STORAGE-01 to apply the global bounded-retention rules to every repository-owned generated-output producer through its producing helper and behavior tests, and prohibit delegating that retention to generic cleanup automation.",
       "reason": "The Ceratops repository owns tool, runtime, and deployment producers whose semantic record and version retention can be decided safely only at the producer boundary.",
       "regression": "Preserve SKILLS-HELP-01 and global retention limits; do not duplicate global policy text, move producer retention into a PC-cleanup automation, or weaken live and unrelated-file protection."
+    },
+    {
+      "rules": [
+        "SKILLS-RUNTIME-01"
+      ],
+      "decision": "Replace the blanket path prohibition from the earlier 'Replace helper-location mechanics with repository ownership of alignment between the skill-runtime execution contract, its producers and consumers, and its behavioral tests' decision with deterministic helper invocation requirements: helper-using skill and action instructions must name the exact helper command, every required argument, and each runtime value's source.",
+      "reason": "Installed skill workflows need a complete portable invocation contract; forbidding path construction makes executable instructions incomplete even when runtime paths are resolved portably.",
+      "regression": "Preserve producer-consumer-test alignment, portable runtime resolution, repository-owned helper behavior, and the ban on user-local absolute paths; do not permit vague, partial, or divergent helper invocations."
     }
   ]
 }

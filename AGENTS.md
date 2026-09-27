@@ -93,8 +93,8 @@ Project-specific rules for this skills repository.
   - self: list-heavy
 - [SKILLS-RUNTIME-01] Keep every producer and consumer of the repository's
   skill-runtime execution contract aligned with its behavioral tests; skill and
-  action instructions may declare logical operations and arguments but must not
-  construct interpreter or helper paths.
+  action instructions that invoke a deterministic helper must specify the exact
+  helper command, every required argument, and the source of each runtime value.
 - [SKILLS-MAINT-01] Run repository-maintenance executables only from
   `scripts/` in the active source checkout; installed skill folders are not
   maintenance fallbacks.
