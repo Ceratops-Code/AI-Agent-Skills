@@ -6,6 +6,8 @@ selected receipt, and holds an instance lease until the child exits so producer
 retention never removes files used by a running process.
 """
 
+import contextlib
+import ctypes
 import json
 import os
 import re
@@ -13,6 +15,61 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+
+
+@contextlib.contextmanager
+def shared_usage_lease(stream):
+    """Hold a shared kernel lease while one selected tool process is alive."""
+    if sys.platform == "win32":
+        import msvcrt
+        from ctypes import wintypes
+
+        class Overlapped(ctypes.Structure):
+            _fields_ = [
+                ("Internal", ctypes.c_size_t),
+                ("InternalHigh", ctypes.c_size_t),
+                ("Offset", wintypes.DWORD),
+                ("OffsetHigh", wintypes.DWORD),
+                ("hEvent", wintypes.HANDLE),
+            ]
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.LockFileEx.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.POINTER(Overlapped),
+        ]
+        kernel.LockFileEx.restype = wintypes.BOOL
+        kernel.UnlockFileEx.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.POINTER(Overlapped),
+        ]
+        kernel.UnlockFileEx.restype = wintypes.BOOL
+        handle = msvcrt.get_osfhandle(stream.fileno())
+        overlap = Overlapped()
+        if not kernel.LockFileEx(handle, 0, 0, 1, 0, ctypes.byref(overlap)):
+            error = ctypes.get_last_error()
+            raise OSError(error, ctypes.FormatError(error))
+        try:
+            yield
+        finally:
+            if not kernel.UnlockFileEx(handle, 0, 1, 0, ctypes.byref(overlap)):
+                error = ctypes.get_last_error()
+                raise OSError(error, ctypes.FormatError(error))
+    else:
+        import fcntl
+
+        fcntl.flock(stream.fileno(), fcntl.LOCK_SH)
+        try:
+            yield
+        finally:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
 def main() -> int:
@@ -41,27 +98,19 @@ def main() -> int:
     locks = root / "locks"
     locks.mkdir(exist_ok=True)
     checked(locks)
-    lease = locks / f"{selected['instance']}.lease.lock"
+    lease = locks / f"{selected['instance']}.usage.lock"
     with lease.open("a+b") as stream:
         stream.seek(0, os.SEEK_END)
         if stream.tell() == 0:
             stream.write(b"\0")
             stream.flush()
         stream.seek(0)
-        if sys.platform == "win32":
-            import msvcrt
-
-            msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
-        try:
+        with shared_usage_lease(stream):
             if json.loads(checked(directory / "receipt.json").read_text()) != selected:
                 raise ValueError("tool receipt mismatch")
             python = checked(directory / "environment" / "Scripts" / "python.exe")
             env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("PYTHON", "PIP_", "UV_"))}
             return subprocess.call([str(python), "-I", "-B", "-m", selected["module"], *sys.argv[1:]], env=env)
-        finally:
-            if sys.platform == "win32":
-                stream.seek(0)
-                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 if __name__ == "__main__":

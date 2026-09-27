@@ -145,6 +145,28 @@ def test_deployment_expires_abandoned_candidates_but_defers_running_predecessor(
     assert not orphan.exists()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows kernel lease behavior")
+def test_usage_leases_are_shared_and_block_retirement(tmp_path, monkeypatch):
+    monkeypatch.setattr(storage, "INSTALL_ROOT", tmp_path)
+    layout = storage.Layout("fixture")
+    installation = layout.directory("versions", "1.0.0", "0123456789abcdef0123456789abcdef")
+    layout.directory("locks")
+    launcher = importlib.import_module("ceratops_tool_manager.launcher")
+    lease = layout.path("locks", installation.name + ".usage.lock")
+    with lease.open("a+b") as first, lease.open("a+b") as second:
+        for stream in (first, second):
+            stream.write(b"\0")
+            stream.seek(0)
+        with (
+            launcher.shared_usage_lease(first),
+            launcher.shared_usage_lease(second),
+            layout._retirement_lease(installation) as removable,
+        ):
+            assert removable is False
+    with layout._retirement_lease(installation) as removable:
+        assert removable is True
+
+
 @pytest.mark.parametrize("metadata_name", ["example_tool", "Example-Tool", "example.tool", "example__tool"])
 @pytest.mark.parametrize("tool", ["example_tool", "example-tool"])
 def test_underscore_identity_installs_with_normalized_wheel_metadata(deployment, tmp_path, metadata_name, tool):
@@ -291,9 +313,11 @@ def test_atomic_activation_failure_preserves_previous(deployment, tmp_path, monk
 def test_lock_prevents_concurrent_deployment_and_releases(deployment, tmp_path):
     engine, _, _ = deployment
     make_release(tmp_path, "1.0.0")
-    with storage.Layout("fixture").lock("deployment"):
-        with pytest.raises(contracts.DeploymentError, match="lock"):
-            engine.install("fixture", "1.0.0")
+    with (
+        storage.Layout("fixture").lock("deployment"),
+        pytest.raises(contracts.DeploymentError, match="lock"),
+    ):
+        engine.install("fixture", "1.0.0")
     assert engine.install("fixture", "1.0.0")["installed_version"] == "1.0.0"
 
 

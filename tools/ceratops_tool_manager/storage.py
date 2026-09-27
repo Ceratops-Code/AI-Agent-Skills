@@ -202,32 +202,52 @@ class Layout:
     @contextlib.contextmanager
     def _retirement_lease(self, installation: Path):
         """Exclude launchers while an inactive installation is being removed."""
+        acquired: list[tuple[Path, Any]] = []
         stream = None
         try:
-            lease = self.path("locks", f"{installation.name}.lease.lock")
-            stream = lease.open("a+b")
-            stream.seek(0, os.SEEK_END)
-            if stream.tell() == 0:
-                stream.write(b"\0")
-                stream.flush()
-            stream.seek(0)
-            if sys.platform == "win32":
-                import msvcrt
+            # The legacy exclusive lease remains checked during migration. New
+            # launchers share usage.lock, while retirement takes it exclusively.
+            for suffix in ("lease.lock", "usage.lock"):
+                lease = self.path("locks", f"{installation.name}.{suffix}")
+                stream = lease.open("a+b")
+                stream.seek(0, os.SEEK_END)
+                if stream.tell() == 0:
+                    stream.write(b"\0")
+                    stream.flush()
+                stream.seek(0)
+                if sys.platform == "win32":
+                    import msvcrt
 
-                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired.append((lease, stream))
+                stream = None
         except (DeploymentError, OSError):
             if stream is not None:
+                stream.close()
+            for _lease, stream in reversed(acquired):
+                stream.seek(0)
+                if sys.platform == "win32":
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
                 stream.close()
             yield False
             return
         try:
             yield True
         finally:
-            if sys.platform == "win32":
+            for lease, stream in reversed(acquired):
                 stream.seek(0)
-                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
-            stream.close()
-            lease.unlink(missing_ok=True)
+                if sys.platform == "win32":
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+                stream.close()
+                lease.unlink(missing_ok=True)
 
     def _installations(self) -> tuple[list[Installation], list[Path]]:
         complete: list[Installation] = []
