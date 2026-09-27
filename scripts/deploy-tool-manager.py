@@ -10,7 +10,6 @@ never installs global prerequisites, edits Codex settings, or restarts apps.
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -35,13 +34,7 @@ from ceratops_tool_manager.storage import Layout  # noqa: E402
 def ensure_launchers(layout: Layout) -> None:
     """Provision the stable launcher after validating global prerequisites."""
     global_runtime()
-    layout.directory("bin")
-    launcher = layout.path("bin", "ceratops_tool_manager.py")
-    if not launcher.exists():
-        shutil.copyfile(SOURCE / "launcher.py", launcher)
-    command = layout.path("bin", "ceratops_tool_manager.cmd")
-    if not command.exists():
-        command.write_text('@echo off\r\npython -I -B "%~dp0ceratops_tool_manager.py" %*\r\n', encoding="utf-8", newline="")
+    layout.install_launcher(SOURCE / "launcher.py")
 
 
 def package_manager(engine: Engine, runtime: Runtime) -> dict:

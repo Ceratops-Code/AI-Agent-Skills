@@ -21,7 +21,7 @@ configuration stay in `.codex`; the skill installer owns skill deployment.
 
 ```text
 C:\AI-Agents-Tools\<tool-name>\
-  bin\                              stable launchers (manager)
+  bin\                              stable launcher for this tool
   artifacts\<version>\<manifest-sha256>\
   versions\<version>\<instance>\environment\
   current.json                      selected complete installation
@@ -192,10 +192,15 @@ from its existing directory; its files are never overwritten. The stable
 launcher reads its own `current.json` at the next launch, so a new CLI
 process or
 MCP reconnection uses the selected version. Already running versions continue
-to work. Completed inactive environments are intentionally retained for those
-processes; no automated deletion or process-supervision subsystem is included.
-Abrupt process termination can leave an unselected candidate for explicit
-maintenance; it cannot activate an incomplete candidate.
+to work because their leased environments are retained.
+Every successful activation installs or refreshes that tool's stable launcher.
+The launcher selects `current.json` and holds an instance lease for the child
+process lifetime. At deployment startup and after a completed package or
+activation, the manager retains the selected environment and two newest
+complete predecessors. Older live environments are deferred. Incomplete
+environments and unselected or orphaned packages receive a 24-hour recovery
+window; after that they and any registry entries are removed. Reparse points and
+unclassified paths are never cleanup targets.
 
 ## Codex registration and Forms boundary
 

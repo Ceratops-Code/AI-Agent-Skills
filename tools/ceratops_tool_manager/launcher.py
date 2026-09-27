@@ -1,9 +1,9 @@
-"""Stable bootstrap ABI: select a complete manager environment on each launch.
+"""Stable bootstrap ABI: select a complete tool environment on each launch.
 
-The launcher uses global Python to select the manager's own environment. Tool
-updates only replace current.json, leaving running processes' files alone.
-This launcher is installed once, and validates the selected receipt before
-passing through the original CLI/transport arguments.
+The same standalone file is installed below every tool's ``bin`` directory.
+It derives that tool's identity from the parent directory, validates the
+selected receipt, and holds an instance lease until the child exits so producer
+retention never removes files used by a running process.
 """
 
 import json
@@ -16,7 +16,10 @@ from pathlib import Path
 
 
 def main() -> int:
-    root = Path("C:/AI-Agents-Tools/ceratops_tool_manager")
+    root = Path(__file__).resolve().parent.parent
+    identity = root.name
+    if not re.fullmatch(r"[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*", identity):
+        raise ValueError("invalid tool identity")
 
     def checked(path: Path) -> Path:
         if not path.is_relative_to(root):
@@ -28,18 +31,37 @@ def main() -> int:
         return path
 
     selected = json.loads(checked(root / "current.json").read_text())
-    if set(selected) != {"schema", "tool_id", "version", "manifest_sha256", "instance", "module"} or selected["schema"] != 1 or selected["tool_id"] != "ceratops_tool_manager" or selected["module"] != "ceratops_tool_manager":
-        raise ValueError("invalid manager selection")
+    if set(selected) != {"schema", "tool_id", "version", "manifest_sha256", "instance", "module"} or selected["schema"] != 1 or selected["tool_id"] != identity:
+        raise ValueError("invalid tool selection")
     if not isinstance(selected["instance"], str) or not re.fullmatch("[0-9a-f]{32}", selected["instance"]):
         raise ValueError("invalid installation identity")
     if not isinstance(selected["version"], str) or not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", selected["version"]):
         raise ValueError("invalid selected version")
     directory = root / "versions" / selected["version"] / selected["instance"]
-    if json.loads(checked(directory / "receipt.json").read_text()) != selected:
-        raise ValueError("manager receipt mismatch")
-    python = checked(directory / "environment" / "Scripts" / "python.exe")
-    env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("PYTHON", "PIP_", "UV_"))}
-    return subprocess.call([str(python), "-I", "-B", "-m", "ceratops_tool_manager", *sys.argv[1:]], env=env)
+    locks = root / "locks"
+    locks.mkdir(exist_ok=True)
+    checked(locks)
+    lease = locks / f"{selected['instance']}.lease.lock"
+    with lease.open("a+b") as stream:
+        stream.seek(0, os.SEEK_END)
+        if stream.tell() == 0:
+            stream.write(b"\0")
+            stream.flush()
+        stream.seek(0)
+        if sys.platform == "win32":
+            import msvcrt
+
+            msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+        try:
+            if json.loads(checked(directory / "receipt.json").read_text()) != selected:
+                raise ValueError("tool receipt mismatch")
+            python = checked(directory / "environment" / "Scripts" / "python.exe")
+            env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("PYTHON", "PIP_", "UV_"))}
+            return subprocess.call([str(python), "-I", "-B", "-m", selected["module"], *sys.argv[1:]], env=env)
+        finally:
+            if sys.platform == "win32":
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 if __name__ == "__main__":

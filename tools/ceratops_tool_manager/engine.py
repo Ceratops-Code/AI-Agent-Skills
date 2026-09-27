@@ -189,6 +189,7 @@ class Engine:
             sha256 = catalog["versions"].get(version)
             if sha256 is None:
                 raise DeploymentError("exact tool version is not registered")
+            layout.maintain(protected_artifacts={(version, sha256)})
             manifest_path = layout.path("artifacts", version, sha256, "manifest.json")
             if digest(manifest_path) != sha256:
                 raise DeploymentError("manifest digest mismatch")
@@ -238,6 +239,8 @@ class Engine:
                 selection = {"schema": 1, "tool_id": tool_name, "version": version, "manifest_sha256": sha256,
                              "instance": instance, "module": release["module"]}
                 layout.atomic_json(candidate / "receipt.json", selection)
+                layout.install_launcher()
+                layout.maintain(selected=selection)
                 layout.atomic_json(layout.path("current.json"), selection)
                 committed = True
             finally:

@@ -70,9 +70,9 @@ def test_deploy_completes_launchers_after_runtime_record(tmp_path, monkeypatch, 
     module.ensure_launchers(layout)
     assert layout.path("bin", "ceratops_tool_manager.py").is_file()
     assert layout.path("bin", "ceratops_tool_manager.cmd").is_file()
-    layout.path("bin", "ceratops_tool_manager.py").write_text("retained launcher")
+    layout.path("bin", "ceratops_tool_manager.py").write_text("stale launcher")
     module.ensure_launchers(layout)
-    assert layout.path("bin", "ceratops_tool_manager.py").read_text() == "retained launcher"
+    assert layout.path("bin", "ceratops_tool_manager.py").read_bytes() == (module.SOURCE / "launcher.py").read_bytes()
 
 
 @pytest.fixture

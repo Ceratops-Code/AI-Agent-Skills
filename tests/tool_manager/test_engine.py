@@ -49,6 +49,7 @@ def make_release(root, version, *, tool="fixture", dependency=False, metadata_na
 @pytest.fixture
 def deployment(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "INSTALL_ROOT", tmp_path)
+    monkeypatch.setattr(storage, "running_python_paths", lambda: (set(), False))
     engine = engine_module.Engine()
     engine.running_version = "0.1.0"
     runtime = engine_module.Runtime(tmp_path.parent / "python.exe", tmp_path.parent / "uv.exe", "3.14.7", "0.12.10")
@@ -97,6 +98,51 @@ def test_install_update_previous_and_versions(deployment, tmp_path):
     assert (tmp_path / "fixture/registry.json").read_bytes() == own_registry
     assert engine.versions("independent")["available_versions"] == ["1.0.0"]
     assert not (tmp_path / "registry.json").exists()
+
+
+def test_deployment_retains_current_two_predecessors_and_prunes_release_bytes(deployment, tmp_path):
+    engine, _, _ = deployment
+    selections = []
+    for version in ("1.0.0", "2.0.0", "3.0.0", "4.0.0"):
+        make_release(tmp_path, version)
+        engine.install("fixture", version)
+        selections.append(engine.selected("fixture"))
+
+    assert not (tmp_path / "fixture/versions/1.0.0" / selections[0]["instance"]).exists()
+    for selection in selections[1:]:
+        assert (tmp_path / "fixture/versions" / selection["version"] / selection["instance"]).is_dir()
+    catalog = json.loads((tmp_path / "fixture/registry.json").read_text())
+    assert sorted(catalog["versions"]) == ["2.0.0", "3.0.0", "4.0.0"]
+    assert not (tmp_path / "fixture/artifacts/1.0.0").exists()
+    launcher = tmp_path / "fixture/bin/fixture.py"
+    assert launcher.read_bytes() == (REPOSITORY / "tools/ceratops_tool_manager/launcher.py").read_bytes()
+
+
+def test_deployment_expires_abandoned_candidates_but_defers_running_predecessor(deployment, tmp_path, monkeypatch):
+    engine, _, _ = deployment
+    for version in ("1.0.0", "2.0.0", "3.0.0"):
+        make_release(tmp_path, version)
+        engine.install("fixture", version)
+    first = next((tmp_path / "fixture/versions/1.0.0").iterdir())
+    abandoned = tmp_path / "fixture/versions/9.9.9/0123456789abcdef0123456789abcdef"
+    abandoned.mkdir(parents=True)
+    orphan = tmp_path / "fixture/artifacts/9.9.9" / ("f" * 64)
+    orphan.mkdir(parents=True)
+    old = storage.time.time() - storage.ABANDONED_SECONDS - 1
+    os.utime(abandoned, (old, old))
+    os.utime(orphan, (old, old))
+    monkeypatch.setattr(
+        storage,
+        "running_python_paths",
+        lambda: ({os.path.normcase(os.path.abspath(first / "environment/Scripts/python.exe"))}, False),
+    )
+
+    make_release(tmp_path, "4.0.0")
+    engine.install("fixture", "4.0.0")
+
+    assert first.is_dir()
+    assert not abandoned.exists()
+    assert not orphan.exists()
 
 
 @pytest.mark.parametrize("metadata_name", ["example_tool", "Example-Tool", "example.tool", "example__tool"])

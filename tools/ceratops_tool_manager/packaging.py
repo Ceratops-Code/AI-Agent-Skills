@@ -257,4 +257,6 @@ def package(source: Path, *, lock_only: bool = False,
                     raise DeploymentError("existing immutable artifact is incomplete or changed")
             versions[version] = release_hash
             layout.atomic_json(catalog_path, registry(catalog, identity))
+        with layout.lock("deployment"):
+            layout.maintain(protected_artifacts={(version, release_hash)})
         return {"tool_name": identity, "version": version, "manifest_sha256": release_hash}
