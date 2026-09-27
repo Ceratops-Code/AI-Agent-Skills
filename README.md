@@ -764,7 +764,11 @@ changing the repository and does not copy Ceratops dependencies. Deployment
 uses uv to prepare an environment under `$CODEX_HOME/runtimes/ceratops/versions/`.
 `python_runtime_skills` in the section manifest selects its users. Only their
 installed `.runtime-manifest.json` files record the exact interpreter path.
-No launcher or per-skill environment is installed.
+After successful manifest activation, deployment retains the selected runtime
+and two predecessors. It also preserves any version still referenced by an
+installed manifest or running interpreter; a later successful deployment
+retries deferred cleanup. Failed or damaged version directories do not consume
+predecessor slots. No launcher or per-skill environment is installed.
 
 Run an installed Python helper with that interpreter, preserving its arguments:
 

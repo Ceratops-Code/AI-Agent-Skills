@@ -63,6 +63,8 @@ REMNANT_RE = re.compile(
 )
 TRANSIENT_WINDOWS_ERRORS = {32, 33}
 RENAME_ATTEMPTS = 4
+RUNTIME_VERSION_RE = re.compile(r"^[0-9a-f]{24}(?:-[0-9a-f]{8})?$")
+RUNTIME_PREDECESSOR_LIMIT = 2
 
 
 class TransactionError(RuntimeError):
@@ -508,6 +510,244 @@ def _materialize_python_interpreters(interpreter: pathlib.Path) -> None:
                 scratch.unlink(missing_ok=True)
 
 
+def _running_process_paths() -> str | None:
+    """Return normalized executable paths, or None when they cannot be read.
+
+    Retention is conservative: an unavailable process inventory prevents old
+    runtime deletion. The probe reads executable paths only and never changes a
+    process or requires elevated access.
+    """
+
+    if os.name == "nt":
+        powershell = shutil.which("powershell") or shutil.which("powershell.exe")
+        if powershell is None:
+            return None
+        try:
+            result = subprocess.run(
+                [
+                    powershell,
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "$ErrorActionPreference='Stop'; Get-Process | ForEach-Object { try { $_.Path } catch {} }",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if result.returncode:
+            return None
+        return result.stdout.casefold() if result.stdout.strip() else None
+
+    proc = pathlib.Path("/proc")
+    if proc.is_dir():
+        paths: list[str] = []
+        try:
+            processes = list(proc.iterdir())
+        except OSError:
+            return None
+        for process in processes:
+            if not process.name.isdigit():
+                continue
+            try:
+                paths.append(os.readlink(process / "exe"))
+            except OSError:
+                continue
+        return "\n".join(paths) if paths else None
+
+    ps = shutil.which("ps")
+    if ps is None:
+        return None
+    try:
+        result = subprocess.run(
+            [ps, "-axo", "comm="], capture_output=True, text=True, check=False,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout if result.returncode == 0 and result.stdout.strip() else None
+
+
+def _referenced_runtime_versions(
+    install_root: pathlib.Path, versions: pathlib.Path,
+) -> set[str] | None:
+    """Collect runtime versions pinned by installed skill manifests.
+
+    A malformed installed manifest makes pruning unsafe because it may be the
+    only remaining pointer to an older interpreter.
+    """
+
+    referenced: set[str] = set()
+    try:
+        skills = list(install_root.iterdir())
+        versions_root = versions.resolve()
+    except (OSError, RuntimeError):
+        return None
+    for skill in skills:
+        if not skill.is_dir() or _unsafe_link(skill):
+            continue
+        manifest = skill / MANIFEST_NAME
+        if not manifest.exists():
+            continue
+        if not manifest.is_file() or _unsafe_link(manifest):
+            return None
+        try:
+            value = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return None
+        runtime = value.get("python_runtime") if isinstance(value, dict) else None
+        if not isinstance(runtime, str):
+            continue
+        try:
+            path = pathlib.Path(runtime).resolve(strict=False)
+        except (OSError, RuntimeError):
+            return None
+        try:
+            relative = path.relative_to(versions_root)
+        except ValueError:
+            continue
+        if relative.parts and RUNTIME_VERSION_RE.fullmatch(relative.parts[0]):
+            referenced.add(relative.parts[0])
+    return referenced
+
+
+def _runtime_interpreter_path(version: pathlib.Path) -> pathlib.Path:
+    """Return the expected interpreter beneath one runtime version."""
+
+    scripts = "Scripts" if os.name == "nt" else "bin"
+    executable = "python.exe" if os.name == "nt" else "python"
+    return version / ".venv" / scripts / executable
+
+
+def _valid_runtime_version(version: pathlib.Path) -> bool:
+    """Return whether a runtime directory is complete and safe to retain."""
+
+    try:
+        interpreter = _runtime_interpreter_path(version)
+        return (
+            version.is_dir()
+            and not _unsafe_link(version)
+            and interpreter.is_file()
+            and not _unsafe_link(interpreter)
+        )
+    except OSError:
+        return False
+
+
+def _runtime_predecessors(
+    current: Mapping[str, object], versions: pathlib.Path, selected: str,
+) -> list[str]:
+    """Build the finite predecessor list, seeding legacy indexes by recency."""
+
+    result: list[str] = []
+
+    def add(value: object) -> None:
+        if not isinstance(value, str):
+            return
+        if (
+            value != selected
+            and value not in result
+            and RUNTIME_VERSION_RE.fullmatch(value)
+            and _valid_runtime_version(versions / value)
+        ):
+            result.append(value)
+
+    add(current.get("version"))
+    recorded = current.get("predecessors", [])
+    if isinstance(recorded, list):
+        for value in recorded:
+            add(value)
+    legacy: list[tuple[int, str]] = []
+    for path in versions.iterdir():
+        if (
+            path.name == selected
+            or not RUNTIME_VERSION_RE.fullmatch(path.name)
+            or not _valid_runtime_version(path)
+        ):
+            continue
+        try:
+            legacy.append((path.stat().st_mtime_ns, path.name))
+        except OSError:
+            continue
+    for _, name in sorted(legacy, reverse=True):
+        add(name)
+    return result[:RUNTIME_PREDECESSOR_LIMIT]
+
+
+def prune_python_runtime_versions(
+    install_root: pathlib.Path, selected_interpreter: pathlib.Path,
+) -> None:
+    """Retain the selected runtime and two predecessors after activation.
+
+    Installed-manifest references and running interpreters remain protected.
+    Failed or damaged version directories do not consume predecessor slots.
+    Any uncertain process or manifest state keeps the candidate for a later
+    successful deployment instead of risking a live helper.
+    """
+
+    version = selected_interpreter.parents[2]
+    versions = version.parent
+    if (
+        versions.name != "versions"
+        or not RUNTIME_VERSION_RE.fullmatch(version.name)
+        or any(_unsafe_link(path) for path in (versions, version))
+    ):
+        return
+    referenced = _referenced_runtime_versions(install_root, versions)
+    process_paths = _running_process_paths()
+    if referenced is None or process_paths is None:
+        return
+    index = versions.parent / "current.json"
+    try:
+        current = json.loads(index.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return
+    if not isinstance(current, dict) or current.get("version") != version.name:
+        return
+    predecessors = current.get("predecessors", [])
+    if not isinstance(predecessors, list) or any(
+        not isinstance(name, str) or not RUNTIME_VERSION_RE.fullmatch(name)
+        for name in predecessors
+    ):
+        return
+
+    candidates: list[tuple[str, pathlib.Path]] = []
+    for path in versions.iterdir():
+        if (
+            not RUNTIME_VERSION_RE.fullmatch(path.name)
+            or not path.is_dir()
+            or _unsafe_link(path)
+        ):
+            continue
+        runtime_python = _runtime_interpreter_path(path)
+        if runtime_python.exists() and _unsafe_link(runtime_python):
+            continue
+        candidates.append((path.name, path))
+
+    protected = {version.name, *referenced, *predecessors}
+    normalized_processes = process_paths.casefold() if os.name == "nt" else process_paths
+    for name, path in candidates:
+        if name in protected:
+            continue
+        needle = str(path.resolve(strict=False))
+        if os.name == "nt":
+            needle = needle.casefold()
+        if needle in normalized_processes:
+            continue
+        try:
+            shutil.rmtree(path)
+        except OSError:
+            continue
+
+    root = versions.parent
+    for scratch in root.glob(".current-*.tmp"):
+        if scratch.is_file() and not _unsafe_link(scratch):
+            scratch.unlink(missing_ok=True)
+
+
 def prepare_python_runtime(install_root: pathlib.Path) -> pathlib.Path | None:
     """Prepare one immutable dependency version from source-only declarations.
 
@@ -545,7 +785,7 @@ def prepare_python_runtime(install_root: pathlib.Path) -> pathlib.Path | None:
     version = digest[:24]
     if current.get("digest") == digest:
         recorded = current.get("version")
-        if isinstance(recorded, str) and re.fullmatch(r"[0-9a-f]{24}(?:-[0-9a-f]{8})?", recorded):
+        if isinstance(recorded, str) and RUNTIME_VERSION_RE.fullmatch(recorded):
             version = recorded
     environment = os.environ.copy()
     for key in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "UV_PROJECT", "UV_PROJECT_ENVIRONMENT", "UV_WORKING_DIRECTORY", "UV_NO_SYNC", "UV_FROZEN", "UV_PYTHON"):
@@ -598,7 +838,11 @@ def prepare_python_runtime(install_root: pathlib.Path) -> pathlib.Path | None:
     try:
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=root, prefix=".current-", suffix=".tmp", delete=False) as handle:
             temporary = pathlib.Path(handle.name)
-            json.dump({"digest": digest, "version": version}, handle, sort_keys=True)
+            json.dump({
+                "digest": digest,
+                "predecessors": _runtime_predecessors(current, versions, version),
+                "version": version,
+            }, handle, sort_keys=True)
         os.replace(temporary, index)
     finally:
         if temporary is not None:
@@ -1245,6 +1489,11 @@ def install_transaction(
                     _remove_tree(retired, install_root)
                 except (OSError, RuntimeError):
                     retained.append(retired.name)
+            if python_runtime is not None:
+                try:
+                    prune_python_runtime_versions(install_root, python_runtime)
+                except (OSError, RuntimeError, subprocess.SubprocessError):
+                    pass
             status = "cleanup_blocked" if retained else "ok"
             return TransactionResult(
                 status=status,

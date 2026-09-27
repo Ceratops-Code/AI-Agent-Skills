@@ -1282,7 +1282,7 @@ def test_shared_skill_python_environment_reuses_lock_and_repairs_missing_package
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required for the deployed runtime integration")
 def test_runtime_update_preserves_an_active_helper_environment(tmp_path: pathlib.Path) -> None:
-    """A lock change creates a new venv while an old helper still imports."""
+    """Retention bounds completed versions without deleting a live helper."""
 
     repo = tmp_path / "source"
     create_compatible_repo(repo, "example/versioned-runtime", ["alpha-tool"])
@@ -1309,6 +1309,9 @@ def test_runtime_update_preserves_an_active_helper_environment(tmp_path: pathlib
     assert first.returncode == 0, first.stderr
     manifest = installed / "alpha-tool/.runtime-manifest.json"
     old_python = pathlib.Path(json.loads(manifest.read_text())["python_runtime"])
+    versions = old_python.parents[3]
+    damaged = versions / ("f" * 24)
+    (damaged / ".venv").mkdir(parents=True)
     ready, release = tmp_path / "ready", tmp_path / "release"
     uv = shutil.which("uv")
     assert uv is not None
@@ -1322,20 +1325,39 @@ def test_runtime_update_preserves_an_active_helper_environment(tmp_path: pathlib
             time.sleep(0.05)
         assert ready.exists()
         pyproject = project / "pyproject.toml"
-        pyproject.write_text(pyproject.read_text().replace(
-            'dependencies = ["jsonschema", "markdown-it-py", "PyYAML", "tzdata"]',
-            "dependencies = []",
-        ))
-        locked = subprocess.run([uv, "lock", "--project", str(project)], capture_output=True, text=True, check=False)
-        assert locked.returncode == 0, locked.stderr
-        second = subprocess.run(command, capture_output=True, text=True, check=False)
-        assert second.returncode == 0, second.stderr
-        new_python = pathlib.Path(json.loads(manifest.read_text())["python_runtime"])
-        assert new_python != old_python and new_python.is_file() and old_python.is_file()
+        selected = [old_python]
+        for revision in range(1, 5):
+            pyproject.write_text(re.sub(
+                r'version = "0\.0\.\d+"',
+                f'version = "0.0.{revision}"',
+                pyproject.read_text(encoding="utf-8"),
+            ), encoding="utf-8", newline="\n")
+            locked = subprocess.run(
+                [uv, "lock", "--project", str(project)],
+                capture_output=True, text=True, check=False,
+            )
+            assert locked.returncode == 0, locked.stderr
+            updated = subprocess.run(command, capture_output=True, text=True, check=False)
+            assert updated.returncode == 0, updated.stderr
+            selected.append(pathlib.Path(json.loads(manifest.read_text())["python_runtime"]))
+            assert selected[-1] != selected[-2] and selected[-1].is_file()
+            assert old_python.is_file()
+            assert not damaged.exists()
+
+        retained_while_active = {path.name for path in versions.iterdir() if path.is_dir()}
+        assert retained_while_active == {
+            old_python.parents[2].name,
+            *(path.parents[2].name for path in selected[-3:]),
+        }
         release.write_text("go")
         stdout, stderr = helper.communicate(timeout=10)
         assert helper.returncode == 0, stderr
         assert stdout.strip() == "old runtime survived"
+        pruned = subprocess.run(command, capture_output=True, text=True, check=False)
+        assert pruned.returncode == 0, pruned.stderr
+        assert {path.name for path in versions.iterdir() if path.is_dir()} == {
+            path.parents[2].name for path in selected[-3:]
+        }
     finally:
         release.write_text("go")
         if helper.poll() is None:
