@@ -115,6 +115,9 @@ Project-specific rules for this skills repository.
   - self: list-heavy
 - [SKILLS-HELP-01] Put deterministic, testable, or procedural automation
   behavior in scripts or helpers rather than prompt text when helpers exist.
+- [SKILLS-STORAGE-01] Apply global bounded-retention requirements to every
+  repository-owned producer of generated outputs in its producing helper and
+  behavior tests; do not delegate that retention to generic cleanup automation.
 - [SKILLS-CONTRACT-01] Require every executable deterministic-contract field to
   have an exact runtime or validator consumer; identify non-executable fields as
   annotation-only and validate their structure.

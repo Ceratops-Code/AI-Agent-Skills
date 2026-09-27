@@ -342,6 +342,14 @@
       "decision": "Require a user decision before implementing or running extra validation of unchanged accepted work that appears necessary during normal process operation.",
       "reason": "An apparent need for revalidation should trigger a producer/handoff design explanation and prevention proposal instead of silently adding another validation stage. The user explicitly requested matching portable project rules as well as global rules.",
       "regression": "Keep the consultation gate scoped to produced processes; preserve original acceptance, useful improvement iterations for changed candidates, and independent model context handling."
+    },
+    {
+      "rules": [
+        "SKILLS-STORAGE-01"
+      ],
+      "decision": "Add SKILLS-STORAGE-01 to apply the global bounded-retention rules to every repository-owned generated-output producer through its producing helper and behavior tests, and prohibit delegating that retention to generic cleanup automation.",
+      "reason": "The Ceratops repository owns tool, runtime, and deployment producers whose semantic record and version retention can be decided safely only at the producer boundary.",
+      "regression": "Preserve SKILLS-HELP-01 and global retention limits; do not duplicate global policy text, move producer retention into a PC-cleanup automation, or weaken live and unrelated-file protection."
     }
   ]
 }
