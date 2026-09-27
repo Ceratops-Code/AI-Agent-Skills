@@ -152,11 +152,11 @@ without repository deduplication.
 | `skills/ceratops-credit-savings-analysis/scripts/credit_analysis/report_rendering.py` | Renders full-analysis reports as runs tables with UTC start times, combined avoidable counts, separate unassessed counts, exact omission labels, and token percentages. Direct-result delivery uses retained per-call evidence for the same table. Chat guidance comes from the parent skill Output Contract; the caller selects useful findings across the requested audit while complete findings, risks, accounting, and reviewer records stay in machine evidence. |
 | `skills/ceratops-credit-savings-analysis/scripts/credit_analysis/report_bookkeeping.py` | Owns result-shape validation, surface ordering, temporary-control links, category consolidation, and reviewer-record preservation. Final results retain complete original confirmed findings, risks, control reviews, and category assessments in controller-generated `source_findings`, `source_risks`, and `source_reviews`, checked against accepted reviewer records. Candidate links identify each finding's destination, which must cover its original calls and evidence; retained source findings do not add to savings or finding totals. The controller assembles category summaries from exact accepted checklists, including when resuming a retained older response, and aggregates applicability across reviewed portions without discarding differing assessments. Every distinct risk uncertainty remains in machine evidence. The controller revalidates saved final output before enforcing limits on new attempts and selects the highest-priority complete audit window that fits the reserved review slot. |
 | `skills/ceratops-task-lifecycle/scripts/closure_snapshot.py` | Emits one compact snapshot for explicitly named closure targets, inspects temp-root metadata without traversal unless `--count-temp-files` is requested, and optionally removes exact task-created files validated inside the task temp root. |
-| `skills/ceratops-governance-lifecycle/scripts/apply_rules_update.py` | Applies approved rule and TOML text with required rule-history appends or exact ID migrations, supports validated history-only identity repairs, rolls back mixed writes, and cleans only explicitly disposable artifacts after success. |
-| `skills/ceratops-governance-lifecycle/scripts/validate_rule_candidate.py` | Preflights untouched Markdown before proposal preparation, safely repairs candidate-only whitespace, parses complete TOML targets without reflow, preserves shared rule/history checks, proves idempotence, and writes caller-selected evidence. |
+| `skills/ceratops-governance-lifecycle/scripts/apply_rules_update.py` | Owns producer-side preparation of complete rule, history and TOML outputs; applies accepted bytes using identity comparisons and rollback, without rerunning content checks; cleans exact disposable inputs after success. |
+| `skills/ceratops-governance-lifecycle/scripts/validate_rule_candidate.py` | Checks new candidate text and formatter idempotence; `--accept` also freezes complete output and original check results for application, including history-only repairs. |
 | `skills/ceratops-governance-lifecycle/scripts/rule_candidate_source.py` | Owns exact UTF-8 source loading, encoding and line-ending preservation, shared candidate data, and input-integrity checks used by governance validation and application. |
 | `skills/ceratops-governance-lifecycle/scripts/proposal-workflow.py` | Constructs requests and seeds the first candidate from exact replacements, or prepares a supplied complete request; validates inputs, histories, target policies, and hashes; rejects untouched formatting errors before opening artifacts; records task-temp ownership; delegates validated controller transitions; and preserves any accepted champion while finalizing owned artifacts, including completed all-rejected runs. |
-| `skills/ceratops-governance-lifecycle/scripts/iteration_controller.py` | Opens structured candidates, invokes mechanical validation before recording, retains the exact validated champion, enforces stopping, and safely finalizes owned artifacts. |
+| `skills/ceratops-governance-lifecycle/scripts/iteration_controller.py` | Accepts changed candidates once, carries original results for identical candidates, preserves improvement iterations until three consecutive non-improvements, and distinguishes an iteration cap from convergence. |
 | `skills/ceratops-governance-lifecycle/scripts/rule_graph.py` | Parses canonical AGENTS rules and rejects structural syntax or rule-local explicit-user override escape clauses. |
 | `skills/ceratops-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for compact local audit snapshots, contract evaluation, shared GitHub API access, sanitized evidence, and evidence-gated CodeQL disposition. |
 | `skills/ceratops-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for individual PR operations, opt-in scoped branch/stage/commit preparation and checked draft or fork PR publication in `ensure_pr.py`, bounded standalone review and CI inspectors with caller-owned evidence files, shared readiness-owned CI diagnostics, one-call retry-safe review replies and resolutions, decision-complete gate blockers, single-snapshot terminal Actions outage detection, exact-commit checkpointed shipping, four-proof obsolete-prepared-checkpoint cleanup before automatic resume, scoped pending-work checks, concurrent gates, integrated admin merge, reusable-branch restoration, and terminal cleanup. |
@@ -372,7 +372,7 @@ JSON spec, whose complete shape is:
   ],
   "failure": "<observed failure and relevant evidence>",
   "regressions": "<behavior and scope to preserve>",
-  "max_iterations": 1,
+  "max_iterations": 200,
   "mutation_authorized": false,
   "expected_side_effects": ["write proposal artifacts in task-temp"]
 }
@@ -397,6 +397,50 @@ removes generated inputs and controller artifacts while retaining
 removes only unchanged generated inputs; a later failure reports the preserved
 state path for recovery. Callers needing explicit output paths or ownership can
 continue using `prepare --request REQUEST` with the complete request format.
+
+Pending candidates use `ceratops-rule-candidate.v2`: `schema`, `rule_stack`,
+`targets`, `history_operations`, and `acceptance`. Initially `acceptance` is
+null and history operations are empty. Supply proposed history appends or exact
+ID migrations alongside the replacement text, before advancing. Non-rule
+Markdown and TOML edits do not need a companion history. Each accepted candidate
+contains the complete prepared output, destination base hashes, original check
+results and check-version identities. The controller adds the semantic assessment
+and regression result; the finalizer exports these bytes unchanged.
+
+Passing checks does not end optimization. Each accepted improvement resets the
+consecutive-no-improvement count; three completed non-improving reviews converge.
+An iteration cap reports `interrupted: true`, never successful completion.
+Mechanical errors retain the pending iteration. An identical accepted candidate
+retains its original acceptance even if a validator or policy later changes.
+
+Application uses `python scripts/apply_rules_update.py --request REQUEST` with:
+
+```json
+{
+  "version": 5,
+  "task_temp_root": "<absolute existing task-temp directory>",
+  "request_disposable": true,
+  "validated_candidate": "<exact finalized champion path>",
+  "validated_candidate_sha256": "<champion SHA-256>",
+  "candidate_disposable": true
+}
+```
+
+Application consumes the frozen output; it does not format, reconstruct history,
+or rerun Markdown, TOML, graph or candidate validation. It compares the supplied
+artifact identity and destination base identities, writes with rollback, and
+checks only write integrity. A destination edit requires a new proposal, not
+revalidation of the unchanged winner. The original tests remain part of its
+acceptance regardless of later checker versions.
+
+For an approved history-only repair, a candidate has no targets and contains the
+exact history operations. Produce its accepted output with
+`python scripts/validate_rule_candidate.py --candidate CANDIDATE
+--evidence EVIDENCE --accept`, then use the same application request.
+The evidence path is caller-owned. The proposal workflow instead owns its
+iteration evidence and deletes it at finalization after retaining the original
+results inside the champion. No additional receipt or application-time log is
+created.
 
 ## Contracts
 
