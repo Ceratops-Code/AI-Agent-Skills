@@ -18,7 +18,8 @@ Source files are never patched, staged, committed, installed, promoted, or
 rolled back. Prepare records exact cleanup ownership and an active-update
 retention marker beneath the verified task temp root, verify retains detailed
 evidence, and finalize is the caller's explicit signal that successful
-verification and requested deployment/use are complete. Finalize removes only
+verification and requested deployment/use are complete. Finalize consumes the
+recorded result without rechecking the live checkout, and removes only
 recorded workflow-owned request, state, evidence, and retention-marker files,
 then removes the verified task-temp root only when empty.
 Supersede validates a revised request after failure, preserves the original
@@ -1314,7 +1315,12 @@ def command_supersede(state_path: pathlib.Path, request_path: pathlib.Path, new_
 
 
 def command_finalize(state_path: pathlib.Path) -> None:
-    """Remove exact owned artifacts after the caller signals completed use."""
+    """Consume recorded success and clean owned files, not the live checkout.
+
+    Committing or staging accepted work is normal caller use, not a reason to
+    replay verification. Pending/failed records and cleanup ownership still
+    gate deletion; later source changes belong to their own verification run.
+    """
 
     resolved_state = _absolute(state_path)
     _reject_link_chain(resolved_state, "state")
@@ -1347,12 +1353,6 @@ def command_finalize(state_path: pathlib.Path) -> None:
     verification = _validated_verification(raw["verification"])
     if verification is None or verification["status"] != "passed":
         raise UpdateExecutionError("refusing to finalize before successful verification")
-    if repo_root == lexical_repo:
-        # Keep deleted-worktree cleanup possible, but never discard a live
-        # update's record while its source has unverified later changes.
-        branch, _head = _verify_task_worktree(repo_root)
-        if branch != raw["branch"] or _verification_input(raw)[0] != verification["input_sha256"]:
-            raise UpdateExecutionError("prepared scope changed since successful verification")
     artifacts = cleanup["owned_artifacts"]
     assert isinstance(artifacts, list)
     artifacts = [*_inherited_artifacts(raw, cleanup), *artifacts]

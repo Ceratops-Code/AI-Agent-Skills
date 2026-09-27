@@ -1226,13 +1226,17 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
     assert repeated_state["verification"]["status"] == "passed"
     assert repeated_state["verification"]["generation"] == 2
     helper.write_text("VALUE = 3\n", encoding="utf-8", newline="\n")
+    intact_evidence = evidence_path.read_bytes()
+    evidence_path.write_bytes(intact_evidence + b"\n")
     blocked_finalize = run_skill_update_workflow(
         "finalize",
         "--state",
         str(state_path),
     )
     assert blocked_finalize.returncode == 2
-    assert "changed" in blocked_finalize.stderr
+    assert "owned evidence changed after recording" in blocked_finalize.stderr
+    assert request_path.is_file() and state_path.is_file() and evidence_path.is_file()
+    evidence_path.write_bytes(intact_evidence)
     repeated = run_skill_update_workflow(
         "verify", "--state", str(state_path), "--evidence-output", str(evidence_path),
     )
@@ -1414,10 +1418,47 @@ def test_skill_update_workflow_preserves_declared_ancillary_changes(
     assert json.loads(evidence_path.read_text())["changed_paths"] == [ancillary.name]
     if placement == "committed-deletion":
         assert run_git(worktree, "commit", "-m", "remove ancillary helper").returncode == 0
-        committed = run_skill_update_workflow("verify", "--state", str(state_path), "--evidence-output", str(evidence_path))
-        assert committed.returncode == 0, committed.stderr
-        assert json.loads(evidence_path.read_text())["generation"] == 1
     finalized = run_skill_update_workflow("finalize", "--state", str(state_path))
     assert finalized.returncode == 0, finalized.stderr
     assert not task_temp_root.exists()
     assert ancillary.exists() == (placement == "staged-addition")
+
+
+@pytest.mark.parametrize("after_verification", ["staged", "committed", "later-work"])
+def test_finalize_consumes_recorded_success_after_caller_use(tmp_path, after_verification) -> None:
+    worktree, scope, temp = prepare_skill_update_workflow_worktree(tmp_path)
+    source = "skills/alpha-tool/scripts/tool.py"
+    request, state, evidence = [temp / name for name in ("request.json", "state.json", "evidence.json")]
+    check_log = scope / "check-runs.txt"
+    retained = temp / "unowned.txt"
+    retained.write_text("keep", encoding="utf-8")
+    request.write_text(json.dumps({
+        "schema": "ceratops-skill-update-request.v2", "repo_root": str(worktree),
+        "task_temp_root": str(temp), "evidence_output": str(evidence),
+        "disposable_artifacts": ["request", "state", "evidence"],
+        "selected_skills": ["alpha-tool"], "allowed_paths": [source],
+        "change_groups": [{"name": "helper", "paths": [source]}],
+        "checks": [{"kind": "command", "argv": [sys.executable, "-c",
+            "import pathlib,sys; p=pathlib.Path(sys.argv[1]); p.write_text(p.read_text()+'run\\n' if p.exists() else 'run\\n')",
+            str(check_log)]}],
+    }), encoding="utf-8")
+    prepared = run_skill_update_workflow("prepare", "--request", str(request), "--state", str(state))
+    assert prepared.returncode == 0, prepared.stderr
+    helper = worktree / source
+    helper.write_text("VALUE = 2\n", encoding="utf-8")
+    verified = run_skill_update_workflow("verify", "--state", str(state), "--evidence-output", str(evidence))
+    assert verified.returncode == 0, verified.stderr
+    assert run_git(worktree, "add", source).returncode == 0
+    if after_verification != "staged":
+        assert run_git(worktree, "commit", "-m", "accepted helper change").returncode == 0
+    if after_verification == "later-work":
+        helper.write_text("VALUE = 3\n", encoding="utf-8")
+    before_cleanup = helper.read_bytes()
+    git_before = run_git(worktree, "status", "--porcelain").stdout
+    finalized = run_skill_update_workflow("finalize", "--state", str(state))
+    assert finalized.returncode == 0, finalized.stderr
+    assert check_log.read_text().splitlines() == ["run"]
+    assert helper.read_bytes() == before_cleanup
+    assert run_git(worktree, "status", "--porcelain").stdout == git_before
+    assert list(temp.iterdir()) == [retained]
+    assert retained.read_text() == "keep"
