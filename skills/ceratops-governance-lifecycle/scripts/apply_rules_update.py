@@ -98,7 +98,7 @@ class PreparedUpdate:
     """Prepared bytes and immutable input identities for one write transaction."""
 
     stack_paths: list[Path]
-    originals: dict[Path, TextSource]
+    originals: dict[Path, bytes]
     candidates: dict[Path, bytes]
     toml_paths: set[Path]
     baseline_reviews: set[str]
@@ -869,7 +869,7 @@ def prepare(
 
     return PreparedUpdate(
         stack_paths=stack_paths,
-        originals=originals,
+        originals={path: source.raw for path, source in originals.items()},
         candidates=candidates,
         toml_paths=set(toml_sources),
         baseline_reviews=baseline_reviews,
@@ -938,8 +938,8 @@ def accept_candidate(
     update = prepare(request, validation=validation)
     # Bind every output (including history) to the exact source snapshot used
     # by the producer. An intervening edit is different work, not a new check.
-    for path, source in update.originals.items():
-        if bases[str(path)] != hashlib.sha256(source.raw).hexdigest():
+    for path, raw in update.originals.items():
+        if bases[str(path)] != hashlib.sha256(raw).hexdigest():
             raise ApplicationError(f"source changed during candidate production: {path}")
     for source_name, digest in bases.items():
         if file_hash(Path(source_name)) != digest:
@@ -997,11 +997,11 @@ def load_accepted_update(request: dict[str, Any]) -> PreparedUpdate:
         reject_link_chain(destination, "destination")
         if destination == root or root in destination.parents:
             raise ApplicationError("task_temp_root must not contain a governed target")
-        source = read_source(destination, "destination")
-        if hashlib.sha256(source.raw).hexdigest() != expected:
+        raw = destination.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != expected:
             raise ApplicationError(f"source changed since acceptance: {destination}")
         if destination in outputs:
-            originals[destination] = source
+            originals[destination] = raw
     if request["candidate_disposable"]:
         workflow_artifact(path, root, "candidate")
     return PreparedUpdate(
@@ -1034,7 +1034,7 @@ def staged_copy(path: Path, payload: bytes, suffix: str) -> Path:
 def rollback(
     applied: list[Path],
     backups: dict[Path, Path],
-    originals: dict[Path, TextSource],
+    originals: dict[Path, bytes],
 ) -> list[str]:
     """Restore every replaced target and verify its exact original bytes."""
     failures: list[str] = []
@@ -1047,7 +1047,7 @@ def rollback(
     # rollback owns only writes attempted by this transaction.
     for path in applied:
         try:
-            if path.read_bytes() != originals[path].raw and str(path) not in failures:
+            if path.read_bytes() != originals[path] and str(path) not in failures:
                 failures.append(str(path))
         except OSError:
             if str(path) not in failures:
@@ -1086,15 +1086,15 @@ def commit(update: PreparedUpdate) -> None:
         verify_application_inputs(update)
         verify_rule_stack_inputs(update)
         for path in targets:
-            backups[path] = staged_copy(path, update.originals[path].raw, ".bak")
+            backups[path] = staged_copy(path, update.originals[path], ".bak")
             staged[path] = staged_copy(path, update.candidates[path], ".new")
         for path in targets:
             verify_application_inputs(update)
-            if path.read_bytes() != update.originals[path].raw:
+            if path.read_bytes() != update.originals[path]:
                 raise ApplicationError(f"source changed before commit: {path}")
         for path in targets:
             verify_application_inputs(update)
-            if path.read_bytes() != update.originals[path].raw:
+            if path.read_bytes() != update.originals[path]:
                 raise ApplicationError(f"source changed during commit: {path}")
             applied.append(path)
             os.replace(staged[path], path)

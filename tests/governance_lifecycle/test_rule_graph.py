@@ -1216,6 +1216,8 @@ class RuleGraphTests(unittest.TestCase):
                                   side_effect=AssertionError("revalidated graph")),
                 mock.patch.object(application, "load_history_source",
                                   side_effect=AssertionError("revalidated history")),
+                mock.patch.object(application, "read_source",
+                                  side_effect=AssertionError("reparsed source formatting")),
                 mock.patch.object(rule_candidate, "resolve_markdown_policy",
                                   side_effect=AssertionError("consulted new policy")),
                 mock.patch.object(rule_candidate.tomllib, "loads",
