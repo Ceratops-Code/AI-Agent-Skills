@@ -4,6 +4,7 @@ import copy
 import pathlib
 import sys
 import unittest
+from typing import Any, ClassVar
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts"
@@ -16,8 +17,10 @@ from github_contract_engine.github_api import load_json  # noqa: E402
 
 
 class CommunityProfileTests(unittest.TestCase):
+    contracts: ClassVar[dict[str, Any]]
+
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         cls.contracts = {
             "repo": load_json(REFERENCES / "github-repo-deterministic-contract.json")
         }
@@ -82,10 +85,10 @@ class CommunityProfileTests(unittest.TestCase):
         ]
         for name, fork, archived, visibility, available, score, owner_type, reports, expected in cases:
             with self.subTest(name=name):
-                profile = {"content_reports_enabled": reports}
+                profile: dict[str, Any] = {"content_reports_enabled": reports}
                 if score is not None:
                     profile["health_percentage"] = score
-                observed = {
+                observed: dict[str, Any] = {
                     "repo": {
                         "fork": fork, "archived": archived,
                         "visibility": visibility, "owner": {"type": owner_type},
@@ -105,13 +108,17 @@ class CommunityProfileTests(unittest.TestCase):
 
 
 class OrganizationSecurityDefaultsTests(unittest.TestCase):
+    contract: ClassVar[dict[str, Any]]
+
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         cls.contract = load_json(
             REFERENCES / "github-org-deterministic-contract.json"
         )
 
-    def _levels(self, rule, observed):
+    def _levels(
+        self, rule: dict[str, Any], observed: dict[str, Any]
+    ) -> list[str]:
         result = compare_states(
             observed,
             {"rules": [rule], "contracts": [self.contract], "parameters": {}},
