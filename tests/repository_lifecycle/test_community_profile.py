@@ -1,5 +1,6 @@
-"""Behavior coverage for the community-profile contract and report summary."""
+"""Behavior coverage for repository and organization contract policies."""
 
+import copy
 import pathlib
 import sys
 import unittest
@@ -101,3 +102,86 @@ class CommunityProfileTests(unittest.TestCase):
                     }
                 result = compare_states(observed, desired)
                 self.assertEqual([item["level"] for item in result["findings"]], expected)
+
+
+class OrganizationSecurityDefaultsTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.contract = load_json(
+            REFERENCES / "github-org-deterministic-contract.json"
+        )
+
+    def _levels(self, rule, observed):
+        result = compare_states(
+            observed,
+            {"rules": [rule], "contracts": [self.contract], "parameters": {}},
+        )
+        return [item["level"] for item in result["findings"]]
+
+    def test_org_settings_use_granular_repository_creation_permissions(self):
+        rule = next(
+            item for item in self.contract["checks"] if item["id"] == "org.settings"
+        )
+        deprecated = {
+            "members_allowed_repository_creation_type",
+            "advanced_security_enabled_for_new_repositories",
+            "dependabot_alerts_enabled_for_new_repositories",
+            "dependabot_security_updates_enabled_for_new_repositories",
+            "dependency_graph_enabled_for_new_repositories",
+            "secret_scanning_enabled_for_new_repositories",
+            "secret_scanning_push_protection_enabled_for_new_repositories",
+        }
+        self.assertTrue(deprecated.isdisjoint(rule["desired"]))
+        expected_permissions = {
+            "members_can_create_public_repositories": True,
+            "members_can_create_private_repositories": True,
+            "members_can_create_internal_repositories": False,
+        }
+        self.assertEqual(
+            {name: rule["desired"][name] for name in expected_permissions},
+            expected_permissions,
+        )
+        observed = {"api": {rule["id"]: {"ok": True, "data": rule["desired"]}}}
+        self.assertEqual(self._levels(rule, observed), ["PASS"])
+        for name, expected in expected_permissions.items():
+            with self.subTest(permission=name):
+                mismatched = copy.deepcopy(observed)
+                mismatched["api"][rule["id"]]["data"][name] = not expected
+                self.assertEqual(self._levels(rule, mismatched), ["ERROR"])
+
+    def test_security_defaults_follow_visibility_without_private_paid_features(self):
+        rule = next(
+            item for item in self.contract["checks"]
+            if item["id"] == "code_security.configuration_defaults"
+        )
+        profiles = copy.deepcopy(rule["desired"])
+        for index, item in enumerate(profiles):
+            item["configuration"].update(
+                {"id": 100 + index, "name": "Generated server metadata"}
+            )
+        cases = {
+            "correct": (profiles, ["PASS"]),
+            "reordered": (list(reversed(profiles)), ["PASS"]),
+            "missing": ([], ["ERROR"]),
+            "additional-default": (
+                profiles + [{"default_for_new_repos": "all", "configuration": {}}],
+                ["ERROR"],
+            ),
+        }
+        for name, index, field, value in [
+            ("paid-private-features", 1, "advanced_security", "enabled"),
+            ("missing-public-scanning", 0, "secret_scanning", "disabled"),
+            (
+                "missing-private-updates",
+                1,
+                "dependabot_security_updates",
+                "disabled",
+            ),
+        ]:
+            payload = copy.deepcopy(profiles)
+            payload[index]["configuration"][field] = value
+            cases[name] = (payload, ["ERROR"])
+        for name, (payload, expected) in cases.items():
+            with self.subTest(profile=name):
+                observed = {"api": {rule["id"]: {"ok": True, "data": payload}}}
+                self.assertEqual(self._levels(rule, observed), expected)
