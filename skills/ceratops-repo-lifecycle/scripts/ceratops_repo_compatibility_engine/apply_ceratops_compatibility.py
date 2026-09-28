@@ -19,10 +19,10 @@ import pprint
 import re
 import shutil
 import subprocess
+import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-import tomllib
 import yaml
 
 from .ci_workflow import pinned_action, resolve_action, workflow_errors
@@ -786,12 +786,13 @@ def build_sdlc_contract_candidate(
     skill_names: list[str],
     apply_contract: bool,
 ) -> dict[str, object]:
-    """Preserve target capabilities and apply the typed v4 lifecycle.
+    """Preserve target capabilities and apply the supported typed lifecycle.
 
-    The template owns repository validation; the compatibility contract owns
-    named skill action routing. Existing actions retain their definitions.
-    Removed skills lose only exact producer-owned entries. Deployment is never
-    implicit.
+    The v4 template owns new contracts and repository validation; the target's
+    supported version owns existing version-specific data. The compatibility
+    contract owns named skill action routing. Existing actions retain their
+    definitions. Removed skills lose only exact producer-owned entries.
+    Deployment is never implicit.
     """
 
     if not apply_contract:
@@ -799,11 +800,8 @@ def build_sdlc_contract_candidate(
     reusable = load_contract(template_path("sdlc"))
     target = repo_root / surface_path("sdlc")
     contract = load_contract(target) if target.is_file() else dict(reusable)
-    if contract["version"] != reusable["version"]:
-        raise RuntimeError(
-            f"SDLC version {contract['version']} action ownership must be mapped "
-            "to typed v4 deliverables before applying current compatibility"
-        )
+    # The versioned loader is the supported-format authority. Preserve its
+    # accepted version so compatibility application cannot downgrade v5 data.
     candidate = dict(contract)
     repository = dict(candidate.get("repository", {}))
     capabilities = dict(repository.get("capabilities", {}))
@@ -815,7 +813,8 @@ def build_sdlc_contract_candidate(
         actions["validate"] = owned_validation
     elif isinstance(existing_validation, dict) and "no-op" in existing_validation:
         # A no-op carries no repository behavior to preserve. Replacing it is
-        # the safe v4 adoption path for a repository that lacks validation.
+        # the safe compatibility adoption path for a repository that lacks
+        # validation.
         actions["validate"] = owned_validation
     elif existing_validation != owned_validation:
         # A custom wrapper can carry arguments or setup that cannot safely be
@@ -1211,12 +1210,15 @@ def plan_ceratops_compatibility(
     python_tests = discover_python_tests(
         repo_root, compatibility_contract["python_test_detection"]
     )
+    sdlc_version = sdlc_contract["version"]
+    if not isinstance(sdlc_version, int):
+        raise RuntimeError("validated SDLC version must be an integer")
     test_runner = repo_root / surface_path("python_test_runner")
     test_runner_relative = surface_path("python_test_runner").as_posix()
     test_runner_selected = any(
         test_runner_relative in step.get("run", [])
         for name, operation in operation_entries(sdlc_contract).items()
-        if operation_category(name) == "tests"
+        if operation_category(name, version=sdlc_version) == "tests"
         for step in operation.get("steps", [])
     )
     generate_python_test_runner = (

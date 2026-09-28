@@ -74,6 +74,7 @@ def _validation_coverage_errors(
     """Require detected repository types to have one declared non-test validator."""
 
     entries = operation_entries(sdlc)
+    version = int(sdlc["version"])
     errors: list[str] = []
     for requirement in validation_contract["coverage_requirements"]:
         active = any(
@@ -87,7 +88,8 @@ def _validation_coverage_errors(
         required_capabilities = set(requirement["required_capabilities"])
         required_prerequisites = set(requirement["required_prerequisites"])
         matched = any(
-            operation_category(location) == requirement["operation_category"]
+            operation_category(location, version=version)
+            == requirement["operation_category"]
             and required_capabilities.issubset(
                 operation.get("validation-capabilities", [])
             )
@@ -397,11 +399,12 @@ def validate_ceratops_compatibility(repo_root: pathlib.Path) -> CompatibilityRes
         sdlc, sdlc_errors = read_contract(root / paths["sdlc"])
         if sdlc:
             entries = operation_entries(sdlc)
+    sdlc_version = int(sdlc["version"]) if sdlc else int(contract["sdlc_version"])
     test_runner_relative = surfaces["python_test_runner"]["path"]
     test_runner_selected = any(
         test_runner_relative in step.get("run", [])
         for name, operation in entries.items()
-        if operation_category(name) == "tests"
+        if operation_category(name, version=sdlc_version) == "tests"
         for step in operation.get("steps", [])
     )
     for name, surface in surfaces.items():
@@ -424,9 +427,9 @@ def validate_ceratops_compatibility(repo_root: pathlib.Path) -> CompatibilityRes
         errors.extend(manifest_errors)
     if "sdlc" in present and not _regular_file_error(root, paths["sdlc"]):
         errors.extend(sdlc_errors)
-        if sdlc and sdlc["version"] != contract["sdlc_version"]:
-            errors.append("current Ceratops compatibility requires SDLC version " + str(contract["sdlc_version"]))
-        elif sdlc:
+        if sdlc:
+            # The shared loader has already accepted a schema-valid supported
+            # v4 or v5 contract; compatibility requirements are version-neutral.
             errors.extend(_validation_coverage_errors(root, sdlc, validation_contract))
             expected = load_compatibility_contract()["runtime"]["project"]
             # uv supports project discovery from the script path and explicit
@@ -438,7 +441,7 @@ def validate_ceratops_compatibility(repo_root: pathlib.Path) -> CompatibilityRes
             commands = [
                 step["run"]
                 for name, entry in entries.items()
-                if operation_category(name) == "validate"
+                if operation_category(name, version=sdlc_version) == "validate"
                 for step in entry.get("steps", [])
                 if "run" in step
             ]
@@ -447,7 +450,7 @@ def validate_ceratops_compatibility(repo_root: pathlib.Path) -> CompatibilityRes
             tests = [
                 entry
                 for name, entry in entries.items()
-                if operation_category(name) == "tests"
+                if operation_category(name, version=sdlc_version) == "tests"
             ]
             if not tests:
                 errors.append("SDLC must declare repository tests or an explicit no-op")

@@ -11,10 +11,10 @@ import runpy
 import shutil
 import subprocess
 import sys
+import tomllib
 import zipfile
 
 import pytest
-import tomllib
 import yaml
 
 from tests.repository_lifecycle.support import (
@@ -245,6 +245,7 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     contract = yaml.safe_load(
         (repo / "sdlc" / "sdlc.yml").read_text(encoding="utf-8")
     )
+    assert contract["version"] == 4
     assert contract["kind"] == "ceratops-sdlc"
     alpha_actions = contract["deliverables"]["skills"]["alpha-tool"]["actions"]
     assert alpha_actions["validate"]["steps"][0]["handoff"] == {
@@ -500,6 +501,66 @@ def test_android_coverage_requires_declared_non_test_gradle_validation(
     lint_missing = compatibility.validate_ceratops_compatibility(repo)
     assert lint_missing["valid"] is False
     assert any("android-lint" in error for error in lint_missing["errors"])
+
+
+def test_compatibility_materializer_preserves_existing_v5_contract(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "compatible-v5"
+    create_compatible_repo(repo, "v5/source", ["alpha-tool"])
+    _write_current_sdlc(repo)
+    (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
+    prepared = run_compatibility_engine(
+        REPOSITORY_LIFECYCLE_SCRIPTS,
+        "apply",
+        "--target-repo-root",
+        str(repo),
+        "--runtime-source-id",
+        "v5/source",
+    )
+    assert prepared.returncode == 0, prepared.stdout + prepared.stderr
+    sdlc_path = repo / "sdlc" / "sdlc.yml"
+    contract = yaml.safe_load(sdlc_path.read_text(encoding="utf-8"))
+    contract["version"] = 5
+    alpha = contract["deliverables"]["skills"]["alpha-tool"]
+    alpha["artifact"] = {
+        "type": "skill-bundle",
+        "output-directory": "dist/skills",
+        "filename-pattern": "alpha-tool-*.zip",
+    }
+    alpha["actions"]["build"] = {
+        "requires": {"capabilities": []},
+        "steps": [{"run": ["python", "-V"]}],
+    }
+    contract["repository"]["release-units"] = {
+        "skills": {"members": ["deliverables.skills.alpha-tool"]}
+    }
+    sdlc_path.write_text(
+        yaml.safe_dump(contract, sort_keys=False), encoding="utf-8", newline="\n"
+    )
+
+    result = run_compatibility_engine(
+        REPOSITORY_LIFECYCLE_SCRIPTS,
+        "apply",
+        "--target-repo-root",
+        str(repo),
+        "--runtime-source-id",
+        "v5/source",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    updated = yaml.safe_load(sdlc_path.read_text(encoding="utf-8"))
+    assert updated["version"] == 5
+    assert updated["repository"]["release-units"] == contract["repository"][
+        "release-units"
+    ]
+    updated_alpha = updated["deliverables"]["skills"]["alpha-tool"]
+    assert updated_alpha["artifact"] == alpha["artifact"]
+    assert updated_alpha["actions"]["build"] == alpha["actions"]["build"]
+    compatibility = importlib.import_module(
+        "ceratops_repo_compatibility_engine.validate_ceratops_compatibility"
+    )
+    assert compatibility.validate_ceratops_compatibility(repo)["valid"] is True
 
 
 def test_non_python_skill_needs_no_shared_skill_runtime(
