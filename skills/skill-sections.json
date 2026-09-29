@@ -63,7 +63,8 @@
   ],
   "skills": {
     "codex-desktop-upgrade": [
-      "core"
+      "core",
+      "multi-action-skill"
     ],
     "ceratops-design-document-lifecycle": [
       "core",

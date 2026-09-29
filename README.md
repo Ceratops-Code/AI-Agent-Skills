@@ -10,7 +10,7 @@ or another governing contract.
 
 | Skill | Purpose |
 | --- | --- |
-| `codex-desktop-upgrade` | Assess official Codex desktop updates, reconcile patches and route requested qualification through the patcher helpers. |
+| `codex-desktop-upgrade` | Check official Codex desktop releases and release notes, recommend patch-retirement candidates, or assess and reconcile a selected upgrade through the patcher helpers. |
 | `ceratops-design-document-lifecycle` | Create or review an authoritative software design document using a tailored arc42 contract, C4 views, scoped implementation evidence, and mechanical validation. |
 | `ceratops-repo-lifecycle` | Route repository lifecycle work across compatibility, local promotion, structured deployment, guarded shipping, GitHub creation and inspection, PR publication, review follow-up, CI repair, contracts, health, dependencies, and PR merge actions. |
 | `ceratops-governance-lifecycle` | Route prompt optimization, advisory skill optimization, regression-safe instruction updates, and cross-scope governance consistency audits across action references. |
