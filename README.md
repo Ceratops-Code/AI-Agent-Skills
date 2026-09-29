@@ -298,8 +298,35 @@ allowed file list, amend it for approved scope extensions, and repeat correction
 and checks in the same record. A passed verification becomes pending when scope
 or checked inputs change. Finalize only at the real end of the requested work;
 do not finalize/reopen between corrections. Existing repository test runners
-remain unchanged. General ownership derivation and test-cache/framework changes
-belong to the later refactor iteration, not this foundation.
+remain unchanged today. Basic affected-check reuse is planned in 2A; general
+ownership derivation and an optional Nx trial remain later work.
+
+### Working-folder lifecycle refactor status
+
+The agreed target methodology is documented in
+[Working-folder acceptance methodology](docs/design-draft.md#working-folder-acceptance-methodology-planned).
+It uses the existing worktree, pre-test and final receipt commits, a shared
+worktree lease with unfinished-attempt admission, separate committed build and
+stored artifact receipts, and merge-back. Standalone Build produces alpha
+versions; Promote builds and qualifies beta versions through the same operation.
+Later delivery consumes the selected version's recorded acceptance and bytes.
+
+| Area | Current status | Next boundary |
+| --- | --- | --- |
+| 1a release declarations | Implemented | Keep current v4/v5 readers; connect exact-output producers later |
+| 1b receipt verification | Implemented v2 | Planned separate committed build receipt and artifact receipt |
+| 1c correction continuity | Implemented; finalization consumes recorded success without rechecking the checkout | Connect the new acceptance records later |
+| 1d build/test/store | Implemented internal v2 transaction | Planned store extraction and recoverable final-commit binding |
+| Completed-build consumption | Current reuse still uses the caller's required-test selection | Separate production from reading completed receipts without current build/test inputs |
+| Worktree leases and working-folder attempts | Planned | Add native locks, durable unfinished-attempt admission and platform-specific child ownership, then affected-check reuse |
+| Merge-back and beta qualification | Planned | Activate promotion through the shared Build operation with actual beta versions |
+| Public Build, receipt Deploy and GitHub release integration | Planned | Connect producers/consumers before repository adoption |
+
+This documentation update implements none of those planned runtime changes.
+Each subsequent implementation step must update this table, actual command
+guidance and affected output-lifecycle rows in the same working revision.
+Unused internal additions stay labeled internal/planned until their consumers
+are connected. Existing supported commands remain usable at every step.
 
 ### Generated-output lifecycle
 

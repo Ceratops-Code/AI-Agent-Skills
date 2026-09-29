@@ -6,8 +6,10 @@ This unfinished draft records repository validation, Python environments,
 SDLC, and deployment decisions. The release-unit, receipt, bundle-transaction,
 and update-correction sections additionally describe their scoped implementation
 and behavior tests. Other sections remain discussion-derived, not a complete
-implementation audit or a new governing contract. The README owns general
-methodology and output-lifetime policy; this draft records implementation detail.
+implementation audit or a new governing contract. This draft owns the lifecycle
+methodology and design detail. README records implemented capabilities and current
+output lifetimes; the refactor plan records delivery order. The planned working-folder
+methodology below is explicitly separate from currently implemented behavior.
 
 The intended users are agents and CI working on Ceratops-compatible
 repositories, including repositories other than AI-Agent-Skills and
@@ -173,6 +175,9 @@ result-only commit stability.
 
 ## Exact-artifact bundle transaction
 
+This is the implemented v2 baseline. The planned replacement and the isolated
+reuse correction are described in the working-folder methodology below.
+
 Steps 1a and 1b provide metadata and verification; 1c makes skill-update
 corrections resumable; 1d supplies internal artifact storage.
 `repository_operation.build_bundle` coordinates adapters, tests and publication.
@@ -200,7 +205,9 @@ The transaction uses the following sequence:
 3. Otherwise create `.staging/<key>/bundle` and a separate `work` directory.
    The build adapter gets both locations and returns explicit output descriptors,
    not supplied hashes. The transaction measures artifacts and dependency files
-   before testing. Scratch source copies and environments belong only in `work`.
+   before testing. The current callback interface provides `work` for temporary
+   build/test outputs.
+   The planned working-folder route does not create a source copy there.
 4. Give the test adapter the measured artifact inventory and require every
    declared test result to pass, provide evidence and identify its tested hashes.
    Every built artifact must be referenced. Measure supporting evidence, add
@@ -240,7 +247,318 @@ failure. The store keeps one reusable lock, at most three completed bundles per
 release group and one current diagnostic per group. No public Build command is
 introduced.
 
+## Working-folder acceptance methodology (planned)
+
+This section owns the agreed target methodology as of 2026-09-29. It is not a
+claim that the new execution path is implemented. The implemented v2 transaction
+above remains usable while the following pieces are added and connected.
+README records implementation status and actual runtime paths after each step;
+the refactor plan owns delivery order. No additional methodology document is
+needed, and the portable result-record template remains an existing reference
+asset rather than a second release-acceptance authority.
+
+### One existing worktree, two commit boundaries
+
+Run source, validators and tests from the selected existing worktree. Do not
+make a clone, detached checkout, source-copy tree or source snapshot directory
+for this workflow. Artifact output directories, generated portable packages and
+temporary installation environments are outputs, not alternate source checkouts.
+
+1. Acquire the worktree lease and pass unfinished-attempt admission. Reserve the
+   selected unit/version and required targets. Complete intended version/lock preparation,
+   formatting and tracked source generation. Include all intended new source and
+   test files when creating the pre-test commit B; preserve unrelated user work.
+   B is a checkpoint, not a claim that checks passed.
+2. Run the required build-independent checks against that worktree. Build needed
+   artifacts from the same folder and test the exact produced bytes. A failed
+   attempt has no accepted artifact receipt or version tag. Release the lease
+   after child commands finish so corrections can be made.
+3. After a correction, start another attempt with a new pre-test checkpoint.
+   Use repository-owned dependency information to run affected checks and retain
+   applicable results. Do not discard an earlier artifact's acceptance or rerun
+   its tests merely because a check definition or commit identifier changed.
+4. After every required target succeeds, serialize each build receipt once,
+   calculate its SHA-256 and persist its exact bytes and expected hash in the
+   pending transaction. Write those bytes with the owned evidence and create C.
+   Targets share prepared source checkpoint B and final receipt commit C, with
+   separate artifact inventories, toolchain identities and test outcomes.
+5. Compare B and C. Only exact producer-owned receipt/evidence paths may differ;
+   test code, validator code, source, build configuration and locks are inputs.
+   Account for changed inputs in the index and working folder, including new
+   input files, so unstaged edits cannot escape closure. Read each receipt from C
+   and compare its bytes with the retained expected hash. These are integrity
+   checks, not another test run.
+6. Unexpected input changes leave the attempt incomplete. Record the changed
+   inputs, select affected checks and continue the correction cycle. An unrelated
+   branch update or user edit is preserved, not reset or silently absorbed.
+7. Bind all required targets' artifacts to C through their artifact receipts,
+   complete the recoverable store transaction, then create one immutable
+   unit/version tag.
+   A successful retry resumes an unfinished recording/tagging step; it does not
+   rebuild or rerun passed checks.
+
+All dependencies, parameters, tool/runtime identities and test implementations
+used by a check are recorded with its result. A Git diff alone does not cover
+external runtimes or mutable services. Use pinned inputs; checks with unresolved
+external inputs cannot receive inferred reuse. Hashes identify inputs and
+integrity; passing outcomes come from the actual check execution.
+
+### Worktree leases and subprocess ownership
+
+Use the already pinned `filelock` dependency in hard OS-lock mode, with the
+existing no-soft-fallback and preserve-lock-file settings. Introduce one shared
+implementation at `skills/sections/scripts/operation_locks.py`, mapped to its
+repository- and skill-lifecycle consumers through `skills/skill-sections.json`.
+Do not copy locking code into each helper.
+
+Resolve the canonical Git common directory and this worktree's registered Git
+directory. Derive a stable worktree ID from that registration, normalizing path
+aliases and Windows case. The lock is
+`<git-common-dir>/ceratops/locks/worktrees/<worktree-id>.lock`.
+All cooperating mutators of that worktree use the same lock: preparation,
+test/build execution, source-changing update operations, receipt commits,
+merge-back and destructive cleanup. Separate worktrees use separate locks.
+
+The shared lock helper also owns one durable admission record at
+`<git-common-dir>/ceratops/operations/worktrees/<worktree-id>.json`. It records
+the current attempt, owner context, running/closed state and managed children.
+After acquiring the OS lock, reject an unfinished or unreadable record with
+`recovery_required` before mutation or command launch. Persist the new running
+record before the first mutation. This record governs admission, not acceptance.
+
+The top-level operation holds one lease through its current deterministic
+attempt. In-process nested calls reuse the actual lease object. Cross-process
+handoffs are registered children of that owner and use a private authenticated
+parent/child context; an environment flag or caller-supplied operation ID alone
+must not bypass acquisition. Standalone invocations acquire their own lease.
+The shared helper returns busy/owner information after a bounded wait; it never
+deletes a live lock because its timestamp looks old.
+
+Normal completion, including a handled check failure, closes the admission
+record only after managed commands and remaining mutations finish. Cancellation
+stops and joins managed commands before closing. An abnormal exit leaves the
+record unfinished; a free OS lock, missing PID or elapsed timeout never clears it.
+Explicit recovery must establish that previous writers stopped before admitting
+another operation. Uncertain ownership stays blocked.
+
+On Windows, use a kill-on-close Job Object for managed commands, establish
+containment before execution and disallow breakaway. Native cleanup alone does
+not close an interrupted admission record. Linux initially supports foreground
+commands that finish their writes and child work before returning; detached
+writers are unsupported. No Linux service, daemon or background supervisor is
+introduced, and automatic recovery after owner death is deferred. Exercise normal
+failure, cancellation and killed-owner/surviving-child cases on both platforms.
+
+The source lease is not held while waiting for remote CI or a human correction.
+Do not hold the release-worktree lease through another worktree's expensive
+tests. Release promotion takes its own short lease after candidate acceptance;
+if merge-back is needed, release that lease before reacquiring the source lease.
+Never acquire a worktree lease while holding the store lock. When multiple
+worktree leases are unavoidable, acquire them in canonical ID order. Deployment
+activation additionally serializes the named destination so an older operation
+cannot install over a newer activation.
+
+These locks prevent cooperating processes from colliding. They do not prevent
+manual/editor writes or provide a security boundary against a hostile process.
+Endpoint comparisons cannot detect a temporary modification restored during a
+run. Retain that limit rather than claiming hash comparisons prove continuous
+non-tampering.
+
+### Build receipt, artifact receipt and version
+
+| Record | Authoritative content | Storage and creation |
+| --- | --- | --- |
+| Build receipt | Attempt ID, pre-test B, unit/version/target and required targets, declared build inputs, artifacts and dependencies by digest, original required checks and completed outcomes, and evidence digests | Written after checks and committed at `.build/<unit>/<version>/receipt.json`; add `<target>` below the version for separately qualified targets; it contains neither its own hash nor C |
+| Artifact receipt | Final C, repository-relative build-receipt path, hash of its exact committed bytes, store-relative artifact locations and completed acceptance reference | Stored alongside immutable artifacts in the Git common directory after closure passes |
+| Promotion/deployment record | Selected artifact receipts, integrated release commit, version/target, expected old and resulting refs, completed effects | Existing owning lifecycle checkpoint/result; it does not duplicate test acceptance |
+
+The final schema names/versions must be explicit new record definitions in the
+existing operation-result schema; never reinterpret saved v2 bytes. Proposed
+names are `ceratops-build-result.v3` and `ceratops-artifact-receipt.v1`.
+The artifact receipt links the authoritative build receipt; it does not copy
+its inventory and test results into a second editable authority.
+
+Each artifact-test result identifies the exact artifact paths/hashes it tested;
+source-check results identify their applicable inputs and check versions.
+Retained evidence, dependency locks and supporting files declare safe relative
+paths, byte sizes, hashes and a `git` or `store` root. Git references are read
+from C; store references are read within the selected version/target directory.
+Retain required dependency artifacts in that stored output set rather than
+depending on the producing worktree or temporary environments remaining present.
+
+Select the full version before B, independently of the not-yet-created C.
+Standalone Build produces alpha versions such as `1.2.3a1`; Promote invokes the
+same Build operation for beta versions such as `1.2.3b1`. Filenames, embedded
+metadata and receipts use the selected full version. Alpha and beta are separate
+built versions, with no relabeling or channel-alias records. Delivery retries
+consume the already accepted version's stored bytes.
+
+Targets of a unit/version share one required-target set, B and C. Bind all target
+artifact receipts before tagging C with that unit/version; never move the tag.
+Failed attempts have unique attempt IDs but no accepted tag. Corrections that
+produce a new build receive a new version. Unchanged units retain their original
+receipts and version tags.
+
+Changing an embedded version to a final X.Y.Z changes build inputs and normally
+requires a new artifact and its tests. That happens during release preparation,
+not by patching an accepted alpha payload during publication.
+
+### Acceptance, reuse and affected checks
+
+Acceptance records are durable outputs, distinct from disposable test caches.
+For a selected accepted artifact, later stages consume its original passed
+results and check versions. They may compare identity and integrity hashes;
+they do not recompute current test coverage or impose today's check catalog.
+
+For new or corrected product inputs, repository-owned selection maps changed
+inputs to affected check groups, including dependencies, shared configuration,
+locks and environment requirements. The shared operation runner coordinates
+selection and records results; it does not maintain a second repository-specific
+dependency graph. AI-Agent-Skills starts from `tests/test-impact.json` and
+`scripts/testing/run-tests.py`. The portable result-record template informs
+record shape; do not turn it into an installed runtime by copying it implicitly.
+A changed file with no sound mapping requires an explicit broader group, not
+assumed zero impact. Unchanged accepted units are not swept into that rerun.
+
+Separate artifact-producing inputs from check-only inputs in new records.
+Editing a test or validator alone cannot revoke acceptance of unchanged bytes.
+Failed/missing required checks still prevent first acceptance of a new candidate.
+An explicit request for additional checks is a distinct operation, not a
+retroactive rewrite of the earlier receipt.
+
+The current v2 store's reuse path incorrectly feeds today's required-test IDs
+and serialized inputs into completed-build consumption. Correct it independently
+through separate internal production and reading helpers. Production accepts
+source/dependency/build inputs and required tests, publishes successful records
+only after qualification, and never overwrites a completed build identity.
+
+The completed-build reader accepts an explicit receipt or selected completed
+identity, with no new build inputs or current test list. It reads recorded
+successful completion without reconstructing acceptance by comparing test lists.
+Perform safe parsing, identity matching and recorded-file integrity comparisons
+once at the consumption boundary, then pass the result through nested helpers.
+Return its exact artifact/dependency/supporting paths without building, testing,
+rewriting the receipt or substituting current-worktree files. The original
+build-inputs record is retained and hash-checked, not compared with new inputs.
+Changed source or locks belong to a new build; they do not revoke an earlier
+artifact's acceptance. Missing, failed, unfinished, malformed, wrong-identity or
+corrupt records/files still block consumption.
+
+### Merge-back, promotion and Ship
+
+Promotion keeps the source branch history. No automatic rebase is part of the
+target flow. After candidate completion, compare its ancestry with the current
+`release/local` tip under the release lease. If the candidate contains that tip,
+fast-forward to the exact accepted commit with an expected-old guard and keep
+the owning release checkout/index consistent. Updating a checked-out ref alone
+is insufficient.
+
+If release changes are missing, release the destination lease and merge that
+recorded release tip into the existing task worktree without an automatic merge
+commit. Resolve conflicts, prepare source inputs, make the next checkpoint and
+run affected checks/builds; the evidence-bearing completion commit follows.
+There may be an intermediate pre-test merge checkpoint: the user now explicitly
+requires a commit before testing, so that checkpoint is not labeled accepted.
+A later release advance repeats integration, never rebases or discards newer work.
+
+Promotion qualifies actual beta artifacts through the shared Build operation.
+After merge-back, run affected qualification and assign a subsequent beta version
+when a changed build is needed. An accepted beta's delivery retry consumes its
+saved receipt and bytes. Only `promote-and-deploy` activates a deployment; plain
+Promote stops at release staging. Resume incomplete effects using their recorded
+receipts. Keep destination activation ordered and protect artifacts needed by
+active operations/rollback.
+
+Ship captures the synchronized remote target tip before publication/deployment
+selection. If it includes newer product fixes, automatically select the new
+candidate. Reuse its existing accepted artifacts or qualify that new candidate
+through the normal source/PR/CI flow; never silently fall back to an older
+candidate. A merge commit with unchanged relevant inputs can retain acceptance.
+Do not rebuild merely for a new SHA. Once a candidate is selected, publication
+consumes its saved artifacts. Later remote movement belongs to a successor
+selection, not an endless moving target or an in-place mutation of a release.
+
+### Integrity-only consumption and recovery
+
+Accept either an explicitly selected artifact receipt or a version/tag/completed
+operation selection. For the latter, resolve the expected identity independently
+and require the artifact receipt to match it. An explicit receipt selection does
+not require an additional tag lookup. Read the build receipt from C, compare its
+hash, and compare recorded artifact/dependency/evidence sizes and hashes using
+their declared Git/store roots. Do not read replacements from the current
+worktree. Perform integrity comparisons once at the consumption boundary and
+pass the selected record through nested helpers. Structural/path safety checks
+remain ordinary parsing and safe file access; no source validator, test run or
+new acceptance decision occurs during consumption.
+
+Installation unpacks/installs the selected bytes. Artifact behavior qualification
+occurs during production. Any necessary activation health check must have an
+explicit, separate target-specific purpose; it must not repeat the artifact's
+acceptance tests under another name.
+
+The operation runner owns qualification and finalization; the planned
+`store_artifacts.py` owns reservations, persistence, publication and retention.
+Extract storage without changing the current v2 transaction lock, then introduce
+short store-lock sections only with durable, owner-aware version reservations.
+One attempt owns a unit/version and its required targets. Preserve active or
+unresolved staging; never use the old delete-all-staging recovery on that route.
+An available lock or missing PID does not authorize taking over a reservation.
+
+Commit creation, artifact-receipt storage, tagging, ref movement and deployment
+are separate recoverable effects. Before creating C, persist prepared receipt
+bytes/hashes, B, branch, target set, owned result paths, pending artifact identity
+and the intended commit tree. Use a `Ceratops-Attempt` commit trailer. After an
+interruption, identify an already-created C by its recorded parent/tree, attempt
+and receipt hashes; never substitute ambient HEAD. Ambiguous recovery blocks.
+
+Publish the version directory only after all required target artifact receipts
+are written. Then create the immutable unit/version tag and remove successful
+recovery state. Existing matching receipts/publication/tag complete their phases;
+conflicting identities must not be overwritten. Completion-only retries use the
+prepared bytes and saved outcomes without duplicate commits, builds or tests.
+The working-folder caller delegates this sequence to the shared finalizer.
+
+### Proposed output ownership and lifetime
+
+Current implemented paths remain in README's output table until the replacement
+is activated. The target owners document these groups before implementation:
+
+| Path/group | Owner and lifetime |
+| --- | --- |
+| `ceratops/locks/worktrees/<worktree-id>.lock` | Shared lease helper; one reusable lock per registered worktree, never removed while held; prune only removed-worktree entries under registry serialization |
+| `ceratops/operations/worktrees/<worktree-id>.json` | Shared lock helper; one current admission record per registered worktree; unfinished/unreadable records block admission until explicit recovery; never clear by age alone |
+| Committed build receipt/evidence | Producer; current record plus at most two predecessors per unit/check group in the checkout; Git commit history supplies historical retrieval without an extra record database |
+| `ceratops/artifacts/<unit>/<version>/` with optional target subdirectory | Artifact store; immutable artifacts, supporting files and artifact receipt; current plus two predecessors per repository/unit/target and alpha/beta/stable retention group; later consumers supply explicitly bounded active/current/rollback protection |
+| Pending reservation/finalization journal and prepared receipts | Artifact store and operation runner; one unfinished attempt per owning worktree/unit with its required targets; preserve unresolved owners, remove successful recovery state after binding and tagging; exact staging paths are documented when implemented |
+| Build output staging, diagnostics and temporary test environments | Existing build/test owners; clean owned inactive output on success/handled failure, preserve active/unresolved transactions at startup, and retain one bounded failure diagnostic per group |
+
+Retention runs at producer startup and after completion. Protected active
+transactions cannot be pruned; abandoned ownership must be recovered or reported.
+Deleting an unreferenced local copy changes availability, not the historical
+acceptance of its bytes. Reservation checks include immutable version tags, so
+pruning a directory never makes a completed version reusable. Pruning tracked
+receipt/evidence copies belongs to preparation before B; Git at C retains their
+historical contents. No new generic cleanup daemon, source-copy owner or unbounded
+operational history is introduced.
+
+### Delivery and documentation checkpoints
+
+Each implementation step changes its complete producer/consumer boundary in one
+working revision. Internal helpers may remain unused until their later caller
+is ready. Preserve existing supported commands and native receipt readers during
+that interval; do not create compatibility aliases or silently route a legacy
+action through an unfinished path. Activate only complete opt-in paths.
+
+Every implementation step updates README with implemented behavior, commands,
+record/storage ownership and remaining integrations, and updates this section's
+status where the behavior lands. Adjust existing behavior suites for the changed
+boundary and preservation cases; docs-only revisions use focused readback/diff
+checks. Fix or revert an incomplete code step before moving to the next one.
+
 ## Promotion, installation, and update recovery
+
+This section describes current implementation. The planned method above replaces
+automatic rebase when the complete new promotion route is activated.
 
 Promotion takes task work into the local release batch. Its deployment steps
 come from the selected repository's YAML; the promotion helper must not
@@ -315,10 +633,11 @@ also be checked so fixes are available to other repositories. Routine
 deterministic phases should finish in helpers with progress reporting, leaving
 model intervention for decisions and skill work that actually require it.
 
-The thread does not settle a complete architecture, security model, concurrency
-design, performance targets, every public interface, or all persistent record
-schemas. The bundle section supplies scoped concurrency and recovery details,
-not a system-wide audit. The proposed health-audit rename remains unresolved.
+The document does not settle a complete architecture, security model, performance
+targets or every public interface. The planned methodology supplies worktree-lease,
+receipt-binding and recovery boundaries that still need implementation and behavior
+tests. It is not a system-wide audit. The proposed health-audit rename remains
+unresolved.
 
 This draft has no individually assigned design owner. A later full design
 would need an owner and implementation review. Changes to the recorded contract
@@ -350,6 +669,7 @@ means the thread's decision is recorded, not that the whole system was audited.
   "update_triggers": [
     "A recorded ownership, contract, environment, routing, or cleanup decision changes",
     "The portable result-record contract or reference implementation changes",
+    "Each implemented refactor step changes methodology status or output ownership",
     "A full design is explicitly commissioned beyond the thread-only draft"
   ],
   "coverage": {
