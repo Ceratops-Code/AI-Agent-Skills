@@ -374,7 +374,7 @@
           "%SystemRoot%",
           "$CODEX_HOME",
           "C:\\CodexProjects",
-          "C:\\AI-Agents-Tools"
+          "C:\\AI-Agents-MCP-Servers"
         ],
         "ignore_paths": [
           "exports/**",

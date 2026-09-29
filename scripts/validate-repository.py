@@ -127,7 +127,7 @@ def build_checks(
                 "--config",
                 "scripts/pyproject.toml",
                 "scripts",
-                "tools",
+                "mcp-servers",
                 "skills/ceratops-repo-lifecycle/references/templates/"
                 "deploy-skills.py.tmpl",
             ),

@@ -76,7 +76,7 @@ def test_build_checks_owns_order_both_platforms_and_space_safe_paths(
         "--config",
         "scripts/pyproject.toml",
         "scripts",
-        "tools",
+        "mcp-servers",
         "skills/ceratops-repo-lifecycle/references/templates/"
         "deploy-skills.py.tmpl",
     )
@@ -370,10 +370,13 @@ def test_repository_entrypoints_run_through_uv(
     assert metadata["tool"]["uv"]["package"] is False
     assert "python_version" not in tool_settings["tool"]["mypy"]
     assert tool_settings["tool"]["ruff"]["target-version"] == f"py{sys.version_info.major}{sys.version_info.minor}"
-    tool_metadata = tomllib.loads(
-        (ROOT / "tools" / "ceratops_tool_manager" / "pyproject.toml").read_text(encoding="utf-8")
+    mcp_server_metadata = tomllib.loads(
+        (ROOT / "mcp-servers" / "ceratops_mcp_server_manager" / "pyproject.toml").read_text(encoding="utf-8")
     )
-    assert metadata["project"]["requires-python"] == tool_metadata["project"]["requires-python"]
+    assert (
+        metadata["project"]["requires-python"]
+        == mcp_server_metadata["project"]["requires-python"]
+    )
     monkeypatch.delenv("UV_PROJECT_ENVIRONMENT", raising=False)
     script = ROOT / entrypoint
     if script.suffix == ".tmpl":

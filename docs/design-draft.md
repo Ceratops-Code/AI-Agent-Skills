@@ -67,7 +67,7 @@ test bodies and their implementation remain repository-specific.
 | --- | --- | --- |
 | Repository Python scripts and tests | `scripts/pyproject.toml` and `scripts/uv.lock` | uv selects the required Python and prepares ignored `scripts/.venv`; repository entrypoints use this project. |
 | Installed Ceratops skill helpers | Source-only declarations under `skills/sections/python` | Deployment prepares a versioned venv under `$CODEX_HOME/runtimes/ceratops/versions/`; each installed skill manifest pins its interpreter. After manifest activation, the owner retains the selected version plus two predecessors, deferring cleanup for manifest-pinned or running interpreters. Direct uv commands run helpers. |
-| Installed external tools | The selected tool's declarations and installer | The tool manager owns the installed tool environment, separately from the shared skill environment. |
+| Installed external MCP servers | The selected server's declarations and installer | The MCP server manager owns the installed server environment, separately from the shared skill environment. |
 
 One environment does not need both requirements files and a pyproject dependency
 list. The thread selected pyproject plus its lockfile and removal of the root
@@ -580,9 +580,10 @@ preserves failed, incomplete, mismatched, or changed records. Cleanup must
 never rerun deployment. A bare `OK` detached from the recorded operation does
 not prove that an arbitrary saved record is eligible for removal.
 
-Tool deployment can route to `ceratops-tool-lifecycle/install`. Its installed
-binding invokes the installed manager with `--source` set to the selected
-repository. That checkout supplies the tool name and version. "SDLC install"
+MCP server deployment can route to
+`ceratops-mcp-server-lifecycle/install`. Its installed binding invokes the
+installed manager with `--source` set to the selected repository. That
+checkout supplies the MCP server name and version. "SDLC install"
 was shorthand in an earlier answer, not a separate command.
 
 `skill-update-workflow.py` retains its original Git baseline and explicit

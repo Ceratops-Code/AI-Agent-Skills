@@ -59,7 +59,7 @@
   command uses `uv run --no-project --python <python_runtime> python
   <skill-root>/<helper> ...` with the original arguments. Stop if the
   command cannot be verified. Deployment pins that path to one version of
-  the shared skill environment. External tools retain their installer-owned
+  the shared skill environment. External MCP servers retain their installer-owned
   runtimes.
 - Run repository-maintenance executables only from `scripts/` in an active
   source checkout. Run skill deliverable helpers from the installed skill

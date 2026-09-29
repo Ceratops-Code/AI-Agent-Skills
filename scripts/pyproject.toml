@@ -33,7 +33,7 @@ ignore = ["E501"]
 files = [
   "skills",
   "tests",
-  "tools",
+  "mcp-servers",
   "skills/ceratops-repo-lifecycle/references/templates/deploy-skills.py.tmpl",
 ]
 ignore_missing_imports = true

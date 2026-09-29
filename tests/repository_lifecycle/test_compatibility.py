@@ -165,9 +165,9 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     create_compatible_repo(repo, "stale/source", ["alpha-tool", "beta-tool"], skill_runtime=True)
     _write_current_sdlc(
         repo,
-        deliverables={"tools": {"custom-tool": {
-            "source": "tools/custom-tool",
-            "manifest": "tools/custom-tool/tool.json",
+        deliverables={"mcp-servers": {"custom-mcp-server": {
+            "source": "mcp-servers/custom-mcp-server",
+            "manifest": "mcp-servers/custom-mcp-server/mcp-server.json",
             "prerequisites": [],
             "actions": {
                 "validate": {"requires": {"capabilities": []}, "no-op": "Covered by repository validation."},
@@ -258,7 +258,7 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         "action": "deploy",
         "inputs": {"skill": "alpha-tool"},
     }
-    assert contract["deliverables"]["tools"]["custom-tool"]["actions"]["publish"] == {
+    assert contract["deliverables"]["mcp-servers"]["custom-mcp-server"]["actions"]["publish"] == {
         "requires": {"capabilities": []},
         "steps": [{"run": [sys.executable, "-V"]}],
     }
@@ -280,7 +280,7 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     skillless = materializer.build_sdlc_contract_candidate(
         repo, skill_names=[], apply_contract=True,
     )
-    assert skillless["deliverables"] == {"tools": contract["deliverables"]["tools"]}
+    assert skillless["deliverables"] == {"mcp-servers": contract["deliverables"]["mcp-servers"]}
 
     # A target's custom definitions survive even under a producer-owned name.
     contract["deliverables"]["skills"]["alpha-tool"]["actions"]["test"] = {

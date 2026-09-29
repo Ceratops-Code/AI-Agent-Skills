@@ -459,7 +459,7 @@
         "$ref": "#/$defs/identifier"
       }
     },
-    "tool": {
+    "mcpServer": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -559,14 +559,14 @@
         "$ref": "#/$defs/package"
       }
     },
-    "namedTools": {
+    "namedMcpServers": {
       "type": "object",
       "minProperties": 1,
       "propertyNames": {
         "$ref": "#/$defs/identifier"
       },
       "additionalProperties": {
-        "$ref": "#/$defs/tool"
+        "$ref": "#/$defs/mcpServer"
       }
     },
     "namedApps": {
@@ -629,8 +629,8 @@
         "packages": {
           "$ref": "#/$defs/namedPackages"
         },
-        "tools": {
-          "$ref": "#/$defs/namedTools"
+        "mcp-servers": {
+          "$ref": "#/$defs/namedMcpServers"
         },
         "apps": {
           "$ref": "#/$defs/namedApps"

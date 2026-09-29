@@ -57,7 +57,7 @@
     "ceratops-repo-lifecycle",
     "ceratops-skill-lifecycle",
     "ceratops-task-lifecycle",
-    "ceratops-tool-lifecycle",
+    "ceratops-mcp-server-lifecycle",
     "ceratops-design-document-lifecycle",
     "ceratops-openai-docs-managed"
   ],
@@ -106,7 +106,7 @@
       "core",
       "multi-action-skill"
     ],
-    "ceratops-tool-lifecycle": [
+    "ceratops-mcp-server-lifecycle": [
       "core",
       "multi-action-skill"
     ]

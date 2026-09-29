@@ -17,7 +17,7 @@ or another governing contract.
 | [`ceratops-credit-savings-analysis`](skills/ceratops-credit-savings-analysis/README.md) | Analyze one credit-waste surface or run fixed per-thread analyses for the current, named, or recent project-filtered threads while preserving every confirmed finding. |
 | `ceratops-misunderstanding-audit` | Audit N days of misunderstandings or one exchange, preserve exact evidence and repeated clarifications, and propose targeted communication or workflow repairs without applying them. |
 | `ceratops-skill-lifecycle` | Route skill-domain work across create, source-validate, deploy, preferred eligible fast-change, update, skills-contract-review, and skills-consistency-review actions. |
-| `ceratops-tool-lifecycle` | Create and package local Python tools, bootstrap the deployment manager, install exact releases, update tools, and inspect versions. |
+| `ceratops-mcp-server-lifecycle` | Create and package local Python MCP servers, bootstrap the deployment manager, install exact releases, update servers, and inspect versions. |
 | `ceratops-automation-run` | Run recurring automations with shared Ceratops alert, memory, and completion policy. |
 | `ceratops-task-lifecycle` | Route failed-fix-loop breaks, same-thread task resume, whole-task handoff, repository status tables, and closure checks across action references. |
 | `ceratops-code-consistency-audit` | Audit merged refactors for contradictions, docs drift, comment sufficiency, stale follow-through, and merged-only edge cases. |
@@ -25,12 +25,12 @@ or another governing contract.
 
 ## Layout
 
-The independent [tool deployment manager](tools/ceratops_tool_manager/README.md)
-keeps its editable source under `tools/`. Every deployed tool owns
-`C:\AI-Agents-Tools\<tool-name>` with its packages, environments, and state;
-Python and uv are validated global
-prerequisites. Its CLI and local MCP adapters share
-one engine. The tool lifecycle skill contains instructions only; the existing
+The independent [MCP server deployment manager](mcp-servers/ceratops_mcp_server_manager/README.md)
+keeps its editable source under `mcp-servers/`. Every deployed MCP server owns
+`C:\AI-Agents-MCP-Servers\<mcp-server-name>` with its packages, environments,
+and state; Python and uv are validated global prerequisites. Its CLI and local
+MCP adapters share
+one engine. The MCP server lifecycle skill contains instructions only; the existing
 skill installer continues to own `.codex` skill deployment.
 
 ```text
@@ -57,6 +57,10 @@ skills/ceratops-repo-lifecycle/references/templates/
   skill-sections.json.tmpl
 skills/ceratops-skill-lifecycle/references/templates/
   ceratops-logo-500.png
+mcp-servers/
+  ceratops_mcp_server_manager/
+    mcp-server.json
+    pyproject.toml
 hooks/
   bounded-source-search.py
   command-probe.py
@@ -127,7 +131,7 @@ without repository deduplication.
 | `hooks/windows-shell-sanity.py` | Repository-owned source for the user-global Windows PowerShell preflight; rewrites exact command defects, annotates ordinary failures, and blocks unreliable or policy-prohibited forms. |
 | `scripts/deploy-skills.py` | Independent installation and updates; renders selected skills and overlays their files without validation, retirement, or lifecycle runtime calls. |
 | `scripts/deploy-hooks.py` | Independent hook installation and updates; copies the repository hook payloads and merges their registrations while preserving unrelated files and configuration. Does not grant trust or restart Codex. |
-| `scripts/deploy-tool-manager.py` | Install the checkout's declared tool-manager version, including over an existing installation, from the scripts environment; uses the manager's global Python and uv prerequisites, temporary locked libraries, and packaging and deployment code. Never changes Codex settings. |
+| `scripts/deploy-mcp-server-manager.py` | Install the checkout's declared MCP server manager version, including over an existing installation, from the scripts environment; uses the manager's global Python and uv prerequisites, temporary locked libraries, and packaging and deployment code. Never changes Codex settings. |
 | `scripts/testing/run-tests.py` | Sole test-selection, collection-reconciliation, and pytest-execution owner; validates `tests/test-impact.json`, explains deterministic Git-diff selection, rejects mapping gaps before pytest collection or execution, supports explicit committed-diff, worktree, collection, and `--all` modes, adds `--select-only` to check diff/worktree mapping without pytest, and saves failed-pytest streams and structured pre-test failures with captured command output through `--diagnostic-output`; pytest output remains bounded in the console. |
 | `scripts/testing/pytest-diagnostics.py` | Extracts bounded failure summaries using exact pytest identities and source-file evidence; prioritizes reported exceptions and assertion differences over source context. Ambiguous or missing tracebacks use only that test's summary reason. Full diagnostic files remain owned by the runner. |
 | `scripts/run-actionlint.py` | Provisions the pinned, checksum-verified actionlint release inside the scripts environment and validates every GitHub Actions workflow. |
@@ -223,7 +227,7 @@ validator. The corresponding `actions.install` handoff runs the transactional
 installer. The compatible-repository producer adds these actions only for
 source skills in v4 contracts;
 the generic template declares repository validation and an explicit test no-op.
-SDLC v4 also supports separate packages, apps, tools, skills, and hooks.
+SDLC v4 also supports separate packages, apps, MCP servers, skills, and hooks.
 Its schema lives at
 `skills/ceratops-repo-lifecycle/references/schemas/sdlc.v4.schema.json`;
 `scripts/repository_operation.py` resolves action locations and returns package
@@ -231,7 +235,7 @@ prerequisites through `--prepare-only`. Registered v4 skill validation and
 deployment handoffs pass the exact selected skill to the lifecycle CLI, retain
 completion receipts, and stop on source changes or unsupported inputs. CI still
 defers every handoff; package prerequisites never imply an automatic build.
-Tools built directly from source may declare no package prerequisite.
+MCP servers built directly from source may declare no package prerequisite.
 The compatibility producer and this repository's live declaration use v4.
 Existing v1-v3 repositories are not automatically migrated.
 
@@ -350,10 +354,12 @@ a completed bundle have the bundle's persistent lifetime, not the scratch
 environment's lifetime. Transaction details and recovery limits are documented
 in [the existing design draft](docs/design-draft.md#exact-artifact-bundle-transaction).
 
-Tool deployment at `deliverables.tools.<name>.actions.install` routes to
-`ceratops-tool-lifecycle/install`. That skill's installed executable binding
-calls the installed tool manager with `--source` set to the selected repository.
-The manager reads the tool name and version from that checkout's `pyproject.toml`.
+MCP server deployment at
+`deliverables.mcp-servers.<name>.actions.install` routes to
+`ceratops-mcp-server-lifecycle/install`. That skill's installed executable
+binding calls the installed MCP server manager with `--source` set to the
+selected repository.
+The manager reads the MCP server name and version from that checkout's `pyproject.toml`.
 There is no separate command named "SDLC install."
 
 `ship` derives its optional pending-work scope from the staged branch. When
@@ -476,10 +482,10 @@ Each repository owns one lifecycle contract:
 - Applying current compatibility creates `sdlc/sdlc.yml` version 4 from the
   repository-neutral schema and template under
   `skills/ceratops-repo-lifecycle/references/`. It separates package build
-  outputs from tools and skills, places structured lifecycle handoffs in
+  outputs from MCP servers and skills, places structured lifecycle handoffs in
   ordered steps, and exposes declared package prerequisites without executing
-  their build or installation actions. Tool installation can also run a
-  repository-owned script directly. A tool may declare one package prerequisite
+  their build or installation actions. MCP server installation can also run a
+  repository-owned script directly. An MCP server may declare one package prerequisite
   or none. Version 5 adds release-unit declarations. The shared loader supports
   only v4 and v5; v1 through v3 require an explicit repository-owned upgrade.
 - Operation `status: completed` records command completion. A successful step
@@ -809,7 +815,7 @@ deployment-only `UV_PROJECT_ENVIRONMENT` override is not forwarded.
 Deployment checks an existing version without modifying it; if it is damaged
 or the source lock changes, deployment builds a new version and pins newly
 installed skills to it. Running helpers retain their original environment.
-Old versions remain until an idle cleanup. External tools retain their own
+Old versions remain until an idle cleanup. External MCP servers retain their own
 installer-managed environments.
 
 ## Install For Codex

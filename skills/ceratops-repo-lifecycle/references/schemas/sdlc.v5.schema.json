@@ -473,7 +473,7 @@
         "$ref": "#/$defs/identifier"
       }
     },
-    "tool": {
+    "mcpServer": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -700,14 +700,14 @@
         "$ref": "#/$defs/package"
       }
     },
-    "namedTools": {
+    "namedMcpServers": {
       "type": "object",
       "minProperties": 1,
       "propertyNames": {
         "$ref": "#/$defs/identifier"
       },
       "additionalProperties": {
-        "$ref": "#/$defs/tool"
+        "$ref": "#/$defs/mcpServer"
       }
     },
     "namedApps": {
@@ -773,8 +773,8 @@
         "packages": {
           "$ref": "#/$defs/namedPackages"
         },
-        "tools": {
-          "$ref": "#/$defs/namedTools"
+        "mcp-servers": {
+          "$ref": "#/$defs/namedMcpServers"
         },
         "apps": {
           "$ref": "#/$defs/namedApps"
@@ -807,7 +807,7 @@
     },
     "deliverableReference": {
       "type": "string",
-      "pattern": "^deliverables\\.(packages|apps|tools|skills|hooks)\\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+      "pattern": "^deliverables\\.(packages|apps|mcp-servers|skills|hooks)\\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
     },
     "releaseUnits": {
       "type": "object",
