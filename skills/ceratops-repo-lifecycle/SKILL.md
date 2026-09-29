@@ -68,8 +68,8 @@ and publication.
   upgrade its contract before any operation executes. Installer release-number
   differences alone do not establish incompatibility.
 - Apply new compatibility declarations as SDLC v4 with separate validation and
-  tests. Read existing v5 declarations without migration and never rewrite them
-  to v4.
+  tests. Compatibility checks and application must accept existing v5
+  declarations, preserve their v5-only data, and never rewrite them to v4.
 - Read declared prerequisite metadata before setup; run only explicitly chosen
   bootstrap operations. Prerequisites and artifact identity are annotations,
   not inferred check or installation commands.
