@@ -1,4 +1,4 @@
-# Ceratops Codex Skills
+# Ceratops-AI-Agents-Kit
 
 Reusable Ceratops skills for Codex and other agents compatible with `SKILL.md`.
 
@@ -718,7 +718,7 @@ while stale locks fail instead of changing dependency decisions during checks.
 
 SDLC execution and schemas stay in the repository-lifecycle skill. Target
 repositories receive no engine copy or SDLC launcher. CI sets up uv and calls
-`Ceratops-Code/AI-Agent-Skills/skills/ceratops-repo-lifecycle/scripts@<commit>`
+`Ceratops-Code/Ceratops-AI-Agents-Kit/skills/ceratops-repo-lifecycle/scripts@<commit>`
 with `repo-root` and `evidence-file` inputs. GitHub obtains the action; no Codex
 skills installation is needed on the runner. The action uses its own locked Python
 project, while target scripts use their repository's project.
@@ -1035,7 +1035,7 @@ The map format is:
 
 ```json
 {
-  "schema": "ai-agent-skills-pytest-node-map.v1",
+  "schema": "ceratops-ai-agents-kit-pytest-node-map.v1",
   "mappings": {
     "tests/old/test_flow.py::test_case[id]": "tests/new/test_flow.py::test_case[id]"
   }

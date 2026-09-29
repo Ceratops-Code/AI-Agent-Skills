@@ -196,7 +196,7 @@ def test_bootstrap_never_calls_installed_lifecycle(
     assert not marker.exists()
     assert runtime_owner(
         install_root, "ceratops-skill-lifecycle"
-    ) == "Ceratops-Code/AI-Agent-Skills"
+    ) == "Ceratops-Code/Ceratops-AI-Agents-Kit"
 
 
 def test_bootstrap_updates_existing_installations_and_cleans_owned_state(
@@ -234,7 +234,7 @@ def test_bootstrap_updates_existing_installations_and_cleans_owned_state(
 
     assert result.returncode == 0, result.stderr
     assert runtime_owner(install_root, "ceratops-skill-lifecycle") == (
-        "Ceratops-Code/AI-Agent-Skills"
+        "Ceratops-Code/Ceratops-AI-Agents-Kit"
     )
     installed_skill = install_root / "ceratops-skill-lifecycle"
     skill_text = (installed_skill / "SKILL.md").read_text(encoding="utf-8")
@@ -430,7 +430,7 @@ def test_bootstrap_full_install_materializes_lifecycle_bundle_with_source_runtim
     )
 
     assert result.returncode == 0, result.stderr
-    assert runtime_owner(install_root, "ceratops-repo-lifecycle") == "Ceratops-Code/AI-Agent-Skills"
+    assert runtime_owner(install_root, "ceratops-repo-lifecycle") == "Ceratops-Code/Ceratops-AI-Agents-Kit"
     installed_lifecycle = install_root / "ceratops-repo-lifecycle"
     assert (
         installed_lifecycle

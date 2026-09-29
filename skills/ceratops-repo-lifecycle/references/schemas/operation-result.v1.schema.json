@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Ceratops-Code/AI-Agent-Skills/schemas/operation-result.v1.schema.json",
+  "$id": "https://github.com/Ceratops-Code/Ceratops-AI-Agents-Kit/schemas/operation-result.v1.schema.json",
   "title": "Ceratops operation result v1",
   "description": "Canonical validation, test, build, and deployment result records emitted by repository SDLC operations.",
   "oneOf": [

@@ -12,7 +12,7 @@ output lifetimes; the refactor plan records delivery order. The planned working-
 methodology below is explicitly separate from currently implemented behavior.
 
 The intended users are agents and CI working on Ceratops-compatible
-repositories, including repositories other than AI-Agent-Skills and
+repositories, including repositories other than Ceratops-AI-Agents-Kit and
 repositories containing languages other than Python. Repository configuration
 declares what to check, test, and deploy; installed skills own shared lifecycle
 procedures. Repository-specific tests and dependencies remain with the repo.
@@ -71,7 +71,7 @@ test bodies and their implementation remain repository-specific.
 
 One environment does not need both requirements files and a pyproject dependency
 list. The thread selected pyproject plus its lockfile and removal of the root
-requirements files. In AI-Agent-Skills, `scripts/pyproject.toml` owns both
+requirements files. In Ceratops-AI-Agents-Kit, `scripts/pyproject.toml` owns both
 Python tooling dependencies and Ruff and mypy settings. Node tooling manifests
 and Markdown/YAML lint settings also live under `scripts`; generated diagnostic
 files live under the ignored `.build` directory.
@@ -133,7 +133,7 @@ receive configuration and their own entrypoints.
 
 CI runs declared executable checks and tests and reports skill handoffs as
 deferred. It does not dispatch skills. A skill-driven workflow can execute
-those handoffs. AI-Agent-Skills uses its local composite action; other
+those handoffs. Ceratops-AI-Agents-Kit uses its local composite action; other
 repositories can use a pinned published action.
 
 This repository currently declares SDLC v4 and a repository-wide test action;
@@ -414,7 +414,7 @@ For new or corrected product inputs, repository-owned selection maps changed
 inputs to affected check groups, including dependencies, shared configuration,
 locks and environment requirements. The shared operation runner coordinates
 selection and records results; it does not maintain a second repository-specific
-dependency graph. AI-Agent-Skills starts from `tests/test-impact.json` and
+dependency graph. Ceratops-AI-Agents-Kit starts from `tests/test-impact.json` and
 `scripts/testing/run-tests.py`. The portable result-record template informs
 record shape; do not turn it into an installed runtime by copying it implicitly.
 A changed file with no sound mapping requires an explicit broader group, not

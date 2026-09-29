@@ -1,5 +1,5 @@
 {
-  "runtime_source_id": "Ceratops-Code/AI-Agent-Skills",
+  "runtime_source_id": "Ceratops-Code/Ceratops-AI-Agents-Kit",
   "validation_profile": "ceratops",
   "sections": {
     "core": "skills/sections/core.md",

@@ -464,7 +464,7 @@ def assert_pretest_diagnostic(
     """Check the persisted failure and the exact evidence reference returned."""
     content = path.read_bytes()
     complete = json.loads(content)
-    assert complete["schema"] == "ai-agent-skills-test-runner-diagnostic.v1"
+    assert complete["schema"] == "ceratops-ai-agents-kit-test-runner-diagnostic.v1"
     assert complete["exit_code"] == exit_code
     assert complete["result"] == {
         key: value for key, value in result.items() if key != "diagnostic"

@@ -36,11 +36,11 @@ from runner_requests import TEST_CONTEXT_ENV, parse_request, validate_execution_
 pytest_diagnostics = importlib.import_module("pytest-diagnostics")
 pytest_environment = importlib.import_module("pytest-environment")
 
-SCHEMA = "ai-agent-skills-test-impact-result.v1"
-COLLECTION_SCHEMA = "ai-agent-skills-pytest-collection.v1"
-NODE_MAP_SCHEMA = "ai-agent-skills-pytest-node-map.v1"
-PYTEST_DIAGNOSTIC_SCHEMA = "ai-agent-skills-pytest-diagnostic.v1"
-RUNNER_DIAGNOSTIC_SCHEMA = "ai-agent-skills-test-runner-diagnostic.v1"
+SCHEMA = "ceratops-ai-agents-kit-test-impact-result.v1"
+COLLECTION_SCHEMA = "ceratops-ai-agents-kit-pytest-collection.v1"
+NODE_MAP_SCHEMA = "ceratops-ai-agents-kit-pytest-node-map.v1"
+PYTEST_DIAGNOSTIC_SCHEMA = "ceratops-ai-agents-kit-pytest-diagnostic.v1"
+RUNNER_DIAGNOSTIC_SCHEMA = "ceratops-ai-agents-kit-test-runner-diagnostic.v1"
 DEFAULT_DIAGNOSTIC_PATH = pathlib.Path(
     ".build", "test-diagnostics", "pytest-failure.json"
 )

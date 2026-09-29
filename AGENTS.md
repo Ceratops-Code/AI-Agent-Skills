@@ -1,4 +1,4 @@
-# AI Agent Skills
+# Ceratops-AI-Agents-Kit
 
 Project-specific rules for this skills repository.
 

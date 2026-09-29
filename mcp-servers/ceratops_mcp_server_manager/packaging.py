@@ -7,7 +7,7 @@ Ordinary PEP 517 tooling executes reviewed MCP server source during a build. A d
 local package may supply a prebuilt wheel and its third-party lock; the package
 source is never copied into the MCP server build. Build scratch is owned here and
 removed on success or failure. Nothing requires a skills directory or an
-AI-Agent-Skills checkout after the manager is installed.
+Ceratops-AI-Agents-Kit checkout after the manager is installed.
 """
 
 from __future__ import annotations

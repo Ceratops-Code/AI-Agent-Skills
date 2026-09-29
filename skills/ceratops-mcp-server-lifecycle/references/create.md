@@ -33,8 +33,8 @@ repository.
    build and validate that package wheel first; register the MCP server with
    `package --source <mcp-server-source> --package-wheel <wheel> --package-lock
    <package-pylock.toml>`. Keep the package source and lock in its package
-   directory. An AI-Agent-Skills checkout is not required. If the manager is
-   absent, use bootstrap only when first installation is authorized.
+   directory. A Ceratops-AI-Agents-Kit checkout is not required. If the manager
+   is absent, use bootstrap only when first installation is authorized.
 6. Hand authorized deployment to this skill's install action. Use a new version
    when artifact contents change; a published identity/version is immutable.
 

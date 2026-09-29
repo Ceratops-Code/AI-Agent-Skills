@@ -45,7 +45,7 @@ global Python and uv remain independently maintained prerequisites.
 
 ## Source installation and use
 
-From an active AI-Agent-Skills source checkout:
+From an active Ceratops-AI-Agents-Kit source checkout:
 
 ```powershell
 uv run --locked scripts/deploy-mcp-server-manager.py
@@ -145,7 +145,7 @@ modifying user data. Create and test MCP servers in their owning development
 repositories; MCP server creation never runs through this manager.
 
 After the manager's first installation, use its public launcher from any
-directory; an AI-Agent-Skills checkout is not required:
+directory; a Ceratops-AI-Agents-Kit checkout is not required:
 
 ```powershell
 C:\AI-Agents-MCP-Servers\ceratops_mcp_server_manager\bin\ceratops_mcp_server_manager.cmd package --source <mcp-server-source> --lock

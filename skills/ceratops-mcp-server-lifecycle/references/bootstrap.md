@@ -6,7 +6,7 @@ Install the first manager using the same engine as its CLI and MCP interfaces.
 
 ## Workflow
 
-1. Require first-install authorization and an active AI-Agent-Skills source
+1. Require first-install authorization and an active Ceratops-AI-Agents-Kit source
    checkout. From that checkout run
    `uv run --locked scripts/deploy-mcp-server-manager.py`.
    This validates existing global CPython 3.14 and uv 0.12.10 or newer 0.12.x,
