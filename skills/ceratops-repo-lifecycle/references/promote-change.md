@@ -2,14 +2,13 @@
 
 ## Goal
 
-Fast-forward selected committed task branches into a local promotion branch and
-apply the lifecycle helper's promotion gate to the assembled commit. Use
-`release/local` by default. When the
-repository already has an authoritative `release` branch, use `promote/local`
-because Git cannot store both `release` and `release/local`. For
-`promote-and-deploy`, run selected `deploy-local`
-entries in order. Composed shipping validates again at its own boundary and
-owns selected post-merge publication, deployment and cleanup.
+Fast-forward selected committed task branches into local `release/local` and
+apply the lifecycle helper's promotion gate to the assembled commit. If
+`refs/heads/release` occupies that branch namespace, stop and report the
+repository as incompatible; never substitute another promotion branch. For
+`promote-and-deploy`, run selected `deploy-local` entries in order. Composed
+shipping validates again at its own boundary and owns selected post-merge
+publication, deployment and cleanup.
 
 ## Context
 
@@ -34,9 +33,9 @@ owns selected post-merge publication, deployment and cleanup.
   --release-branch release/local --remote-name origin
   --run-operation ID [--run-operation ID...]
   [--parameter name=value ...]`.
-- When `refs/heads/release` exists, use the same exact command with
-  `--release-branch promote/local`; use that same branch argument when
-  finalizing its saved result.
+- When `refs/heads/release` exists, stop before mutation and report that the
+  repository must free the `release/local` branch namespace; never substitute a
+  different promotion branch.
 - (D) Promotion followed by terminal shipping uses the same command with
   `--ship-after-promotion` as its complete operation choice. Do not add
   `--run-operation` or `--no-run-operation`; shipping alone publishes or
@@ -52,8 +51,8 @@ owns selected post-merge publication, deployment and cleanup.
 ### Inputs To Capture
 
 - Repository checkout, selected committed source branches, main branch, local
-  promotion branch, and remote. Use `promote/local` only when
-  `refs/heads/release` already exists; otherwise use `release/local`.
+  `release/local` branch, and remote. Treat an existing `refs/heads/release` as
+  an incompatible repository state requiring an explicit repository repair.
 - Whether the selected action is `promote`, `promote-and-deploy`, or composed
   promotion and shipping.
 - Optional PR `--title` and `--body` require `--ship-after-promotion` and pass
@@ -83,10 +82,10 @@ owns selected post-merge publication, deployment and cleanup.
 
 ### Workflow
 
-1. Require clean selected worktrees. Through the promotion helper, establish
-   Git ancestry with the eligible automatic rebase and run `git diff --check`.
-   When `refs/heads/release` exists, pass `--release-branch promote/local` to
-   execution and result finalization; otherwise retain `release/local`.
+1. Require clean selected worktrees. Through the promotion helper, reject an
+   existing `refs/heads/release`, establish Git ancestry with the eligible
+   automatic rebase, run `git diff --check`, and pass
+   `--release-branch release/local` to execution and result finalization.
 2. For `promote`, run the helper with `--no-run-operation`.
 3. For `promote-and-deploy`, repeat `--run-operation LOCATION` in order.
    Repeat `--parameter name=value` for required operation inputs; it is invalid

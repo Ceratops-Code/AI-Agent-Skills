@@ -109,8 +109,6 @@ def _setup(
             },
         )
     _commit(repo)
-    if head_branch == "promote/local":
-        assert run_git(repo, "branch", "release", "HEAD").returncode == 0
     loaded = runpy.run_path(str(SHIP_REPOSITORY))
     original = loaded["_run_json"]
     commands: list[list[str]] = []
@@ -295,36 +293,35 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
     )
 
 
-def test_repository_ship_uses_conflict_free_promotion_branch(
+def test_repository_ship_rejects_release_namespace_conflict(
     tmp_path: pathlib.Path,
 ) -> None:
-    repo, loaded, args, _, _, commands = _setup(
+    repo, loaded, args, log, state, _ = _setup(
         tmp_path,
         contract=False,
-        head_branch="promote/local",
+        head_branch="release",
     )
-    release_head = run_git(repo, "rev-parse", "release").stdout.strip()
-
-    result = loaded["ship_repository"](args)
-
-    assert result["status"] == "shipped"
-    assert run_git(repo, "rev-parse", "release").stdout.strip() == release_head
-    remote = next(
-        command for command in commands if str(PR_WORKFLOW_ENTRYPOINT) in command
-    )
-    assert remote[remote.index("--head-branch") + 1] == "promote/local"
-
-
-def test_repository_ship_rejects_promote_branch_without_release(
-    tmp_path: pathlib.Path,
-) -> None:
-    repo, loaded, args, _, _, _ = _setup(tmp_path, contract=False)
-    assert run_git(repo, "branch", "-m", "promote/local").returncode == 0
-    args.head_branch = "promote/local"
+    args.head_branch = "release/local"
 
     with pytest.raises(
         loaded["RepositoryShipError"],
-        match="reserved for repositories with an existing release branch",
+        match="refs/heads/release blocks the required release/local branch namespace",
+    ):
+        loaded["ship_repository"](args)
+    assert state["calls"] == 0 and not log.exists()
+
+
+def test_repository_ship_rejects_noncanonical_legacy_promotion_branch(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo, loaded, args, _, _, _ = _setup(tmp_path, contract=False)
+    legacy_branch = "/".join(("promote", "local"))
+    assert run_git(repo, "branch", "-m", legacy_branch).returncode == 0
+    args.head_branch = legacy_branch
+
+    with pytest.raises(
+        loaded["RepositoryShipError"],
+        match="Head branch must be release/local",
     ):
         loaded["ship_repository"](args)
 
@@ -571,7 +568,7 @@ def test_repository_ship_rejects_noncanonical_release_branch_before_remote_proce
     _, loaded, args, log, state, _ = _setup(tmp_path)
     args.head_branch = "release/task"
     with pytest.raises(
-        loaded["RepositoryShipError"], match="Head branch must be one of"
+        loaded["RepositoryShipError"], match="Head branch must be release/local"
     ):
         loaded["ship_repository"](args)
     assert state["calls"] == 0 and not log.exists()
@@ -676,6 +673,7 @@ def test_repository_ship_blocks_selected_worktree_caller_before_remote_process(
     ship_repository = loaded["ship_repository"]
     ship_repository.__globals__["_branch_worktree"] = branch_worktree
     ship_repository.__globals__["_run_json"] = run_json
+    ship_repository.__globals__["_local_branch_exists"] = lambda *_args: False
     ship_repository.__globals__["_prepare_operation_batch"] = lambda *args, **kwargs: (
         None
     )

@@ -119,10 +119,10 @@ and publication.
 - Use `create-or-publish`, `apply-ceratops-compatibility`,
   `repo-contracts-review`, `codeql-disposition`, `health-audit`, or
   `dependency-maintenance` for their named repository surfaces.
-- Use `promote` when selected committed branches should join the local
-  promotion branch without deployment. The default is `release/local`; use
-  `promote/local` when an authoritative `release` branch occupies that Git ref
-  namespace.
+- Use `promote` when selected committed branches should join local
+  `release/local` without deployment. If `refs/heads/release` occupies that
+  branch namespace, stop and report the repository as incompatible; do not
+  create or use another promotion branch.
 - Use `promote-and-deploy` when promotion should run explicitly selected
   `deploy-local` entries and use their advisory routing for domain work.
 - Use composed promotion and shipping when selected committed branches should

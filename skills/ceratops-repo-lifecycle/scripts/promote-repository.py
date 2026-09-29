@@ -48,7 +48,6 @@ PENDING_MANAGER = SCRIPT_ROOT / "manage-pending-work.py"
 OPERATION_RUNNER = SCRIPT_ROOT / "repository_operation.py"
 SHIP_REPOSITORY = SCRIPT_ROOT / "ship-repository.py"
 RELEASE_BRANCH = "release/local"
-PROMOTION_BRANCHES = (RELEASE_BRANCH, "promote/local")
 DEFAULT_SDLC_CONTRACT = pathlib.Path("sdlc/sdlc.yml")
 
 
@@ -998,10 +997,8 @@ def _promote(
     requested_root = args.repo_root.expanduser().resolve(strict=True)
     if not requested_root.is_dir():
         raise PromotionError("Repository root is not a directory.")
-    if args.release_branch not in PROMOTION_BRANCHES:
-        raise PromotionError(
-            f"release_branch must be one of {', '.join(PROMOTION_BRANCHES)}."
-        )
+    if args.release_branch != RELEASE_BRANCH:
+        raise PromotionError(f"release_branch must be {RELEASE_BRANCH}.")
     branches = list(dict.fromkeys(args.source_branch or []))
     ship_after_promotion = bool(getattr(args, "ship_after_promotion", False))
     if not ship_after_promotion and any(
@@ -1072,14 +1069,9 @@ def _promote(
                 f"Prepare-only requires branch {args.main_branch}, "
                 f"got {current_branch or 'detached HEAD'}."
             )
-    has_release_ref = _ref_exists(repo_root, "refs/heads/release")
-    if args.release_branch == RELEASE_BRANCH and has_release_ref:
+    if _ref_exists(repo_root, "refs/heads/release"):
         raise PromotionError(
-            "release/local conflicts with the existing release branch; select promote/local."
-        )
-    if args.release_branch == "promote/local" and not has_release_ref:
-        raise PromotionError(
-            "promote/local is reserved for repositories with an existing release branch."
+            "refs/heads/release blocks the required release/local branch namespace."
         )
     _clean(repo_root, "before promotion")
     if not _ref_exists(repo_root, f"refs/heads/{args.main_branch}"):
@@ -1848,7 +1840,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--release-branch",
         default=RELEASE_BRANCH,
-        help="release/local, or promote/local when an existing release branch occupies that namespace",
+        help="required local promotion branch: release/local",
     )
     parser.add_argument("--remote-name", default="origin")
     parser.add_argument("--title", help="PR title override for composed shipping.")
