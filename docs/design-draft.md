@@ -285,8 +285,8 @@ temporary installation environments are outputs, not alternate source checkouts.
 5. Compare B and C. Only exact producer-owned receipt/evidence paths may differ;
    test code, validator code, source, build configuration and locks are inputs.
    Account for changed inputs in the index and working folder, including new
-   input files, so unstaged edits cannot escape closure. Read each receipt from C
-   and compare its bytes with the retained expected hash. These are integrity
+   input files, so unstaged edits cannot escape closure. Read each receipt from
+   C and compare its bytes with the retained expected hash. These are integrity
    checks, not another test run.
 6. Unexpected input changes leave the attempt incomplete. Record the changed
    inputs, select affected checks and continue the correction cycle. An unrelated
