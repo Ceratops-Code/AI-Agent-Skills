@@ -729,6 +729,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skill", action="append")
     parser.add_argument("--remove-skill", action="append")
     parser.add_argument("--base-revision")
+    parser.add_argument(
+        "--previous-runtime-source-id",
+        help="Exact prior owner accepted only for this transactional migration.",
+    )
     parser.add_argument("--inventory-output", type=pathlib.Path)
     parser.add_argument("--promotion-result", type=pathlib.Path)
     parser.add_argument("--operation", help="Exact pending SDLC deployment location.")
@@ -750,7 +754,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.repo_root,
                 args.skill,
                 args.remove_skill,
-                args.base_revision, args.promotion_result, args.operation,
+                args.base_revision, args.previous_runtime_source_id,
+                args.promotion_result, args.operation,
                 args.task_temp_root, args.finalize_promotion_with,
             )
         ):
@@ -808,6 +813,7 @@ def main(argv: list[str] | None = None) -> int:
             selected=() if affected.all_managed else affected.deploy,
             remove=affected.remove,
             all_managed=affected.all_managed,
+            previous_runtime_source_id=args.previous_runtime_source_id,
         )
     except (
         DecisionRequired,

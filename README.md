@@ -1,4 +1,4 @@
-# Ceratops Codex Skills
+# Ceratops-AI-Agents-Kit
 
 Reusable Ceratops skills for Codex and other agents compatible with `SKILL.md`.
 
@@ -17,7 +17,7 @@ or another governing contract.
 | [`ceratops-credit-savings-analysis`](skills/ceratops-credit-savings-analysis/README.md) | Analyze one credit-waste surface or run fixed per-thread analyses for the current, named, or recent project-filtered threads while preserving every confirmed finding. |
 | `ceratops-misunderstanding-audit` | Audit N days of misunderstandings or one exchange, preserve exact evidence and repeated clarifications, and propose targeted communication or workflow repairs without applying them. |
 | `ceratops-skill-lifecycle` | Route skill-domain work across create, source-validate, deploy, preferred eligible fast-change, update, skills-contract-review, and skills-consistency-review actions. |
-| `ceratops-tool-lifecycle` | Create and package local Python tools, bootstrap the deployment manager, install exact releases, update tools, and inspect versions. |
+| `ceratops-mcp-server-lifecycle` | Create and package local Python MCP servers, bootstrap the deployment manager, install exact releases, update servers, and inspect versions. |
 | `ceratops-automation-run` | Run recurring automations with shared Ceratops alert, memory, and completion policy. |
 | `ceratops-task-lifecycle` | Route failed-fix-loop breaks, same-thread task resume, whole-task handoff, repository status tables, and closure checks across action references. |
 | `ceratops-code-consistency-audit` | Audit merged refactors for contradictions, docs drift, comment sufficiency, stale follow-through, and merged-only edge cases. |
@@ -25,12 +25,12 @@ or another governing contract.
 
 ## Layout
 
-The independent [tool deployment manager](tools/ceratops_tool_manager/README.md)
-keeps its editable source under `tools/`. Every deployed tool owns
-`C:\AI-Agents-Tools\<tool-name>` with its packages, environments, and state;
-Python and uv are validated global
-prerequisites. Its CLI and local MCP adapters share
-one engine. The tool lifecycle skill contains instructions only; the existing
+The independent [MCP server deployment manager](mcp-servers/ceratops_mcp_server_manager/README.md)
+keeps its editable source under `mcp-servers/`. Every deployed MCP server owns
+`C:\AI-Agents-MCP-Servers\<mcp-server-name>` with its packages, environments,
+and state; Python and uv are validated global prerequisites. Its CLI and local
+MCP adapters share
+one engine. The MCP server lifecycle skill contains instructions only; the existing
 skill installer continues to own `.codex` skill deployment.
 
 ```text
@@ -57,6 +57,10 @@ skills/ceratops-repo-lifecycle/references/templates/
   skill-sections.json.tmpl
 skills/ceratops-skill-lifecycle/references/templates/
   ceratops-logo-500.png
+mcp-servers/
+  ceratops_mcp_server_manager/
+    mcp-server.json
+    pyproject.toml
 hooks/
   bounded-source-search.py
   command-probe.py
@@ -127,7 +131,7 @@ without repository deduplication.
 | `hooks/windows-shell-sanity.py` | Repository-owned source for the user-global Windows PowerShell preflight; rewrites exact command defects, annotates ordinary failures, and blocks unreliable or policy-prohibited forms. |
 | `scripts/deploy-skills.py` | Independent installation and updates; renders selected skills and overlays their files without validation, retirement, or lifecycle runtime calls. |
 | `scripts/deploy-hooks.py` | Independent hook installation and updates; copies the repository hook payloads and merges their registrations while preserving unrelated files and configuration. Does not grant trust or restart Codex. |
-| `scripts/deploy-tool-manager.py` | Install the checkout's declared tool-manager version, including over an existing installation, from the scripts environment; uses the manager's global Python and uv prerequisites, temporary locked libraries, and packaging and deployment code. Never changes Codex settings. |
+| `scripts/deploy-mcp-server-manager.py` | Install the checkout's declared MCP server manager version, including over an existing installation, from the scripts environment; uses the manager's global Python and uv prerequisites, temporary locked libraries, and packaging and deployment code. Never changes Codex settings. |
 | `scripts/testing/run-tests.py` | Sole test-selection, collection-reconciliation, and pytest-execution owner; validates `tests/test-impact.json`, explains deterministic Git-diff selection, rejects mapping gaps before pytest collection or execution, supports explicit committed-diff, worktree, collection, and `--all` modes, adds `--select-only` to check diff/worktree mapping without pytest, and saves failed-pytest streams and structured pre-test failures with captured command output through `--diagnostic-output`; pytest output remains bounded in the console. |
 | `scripts/testing/pytest-diagnostics.py` | Extracts bounded failure summaries using exact pytest identities and source-file evidence; prioritizes reported exceptions and assertion differences over source context. Ambiguous or missing tracebacks use only that test's summary reason. Full diagnostic files remain owned by the runner. |
 | `scripts/run-actionlint.py` | Provisions the pinned, checksum-verified actionlint release inside the scripts environment and validates every GitHub Actions workflow. |
@@ -138,7 +142,7 @@ without repository deduplication.
 | `skills/ceratops-repo-lifecycle/references/templates/validate-repository.py.tmpl`, `validate.yml.tmpl`, and `run-actionlint.py.tmpl` | Repository-neutral validation templates created only when their target files are absent; new validation setups receive a pinned, checksum-verified actionlint runner, and setups without JavaScript package-manager files also receive locked Markdown dependencies and default rules. Existing tooling, Markdown settings, and exclusive validators are preserved. |
 | `skills/ceratops-repo-lifecycle/scripts/ceratops_repo_compatibility_engine/` | Skill-owned package with the shared compatibility-contract loader, read-only compatibility checks, SDLC-contract validation, rollback-protected Ceratops compatibility application, and version-only bootstrap synchronization; it operates on explicit target repositories and is never copied into them. |
 | `skills/ceratops-repo-lifecycle/references/templates/skill-sections.json.tmpl` | Repository-neutral template for creating a target repository's live `skills/skill-sections.json`; never a live manifest. |
-| `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Classifies exact affected sets, owns direct-manifest inventory, and invokes one runtime transaction; emits commit-bound completion evidence and can finalize its saved promotion handoff without replaying deployment. |
+| `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Classifies exact affected sets, owns direct-manifest inventory and explicit prior-owner migration, and invokes one runtime transaction; emits commit-bound completion evidence and can finalize its saved promotion handoff without replaying deployment. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py` | Stages, activates, rolls back, recovers, and cleans one locked selected-skill runtime transaction. |
 | `skills/ceratops-skill-lifecycle/scripts/skill-update-workflow.py` | Records explicit allowed files and non-test checks against the original worktree baseline. Supports approved monotonic amendments before or after verification and repeated corrections without closing the record; preserves unrelated changes and shared-source ownership. Reuses only applicable failed-run search evidence, never runs tests, and finalizes exact owned records after completed caller use. `supersede` remains the explicit failed-request replacement route with inherited cleanup ownership. |
 | `skills/ceratops-skill-lifecycle/scripts/skill_update_checks.py` | Runs declared checks without a shell, records deterministic search applicability for safe reuse, and carries failure evidence to the update workflow. Failed pytest checks print test identities and reported errors from the same run, preserve complete structured failure details before scratch cleanup, mark bounded output, and use the captured terminal diagnostic when the native report is unavailable. |
@@ -223,7 +227,7 @@ validator. The corresponding `actions.install` handoff runs the transactional
 installer. The compatible-repository producer adds these actions only for
 source skills in v4 contracts;
 the generic template declares repository validation and an explicit test no-op.
-SDLC v4 also supports separate packages, apps, tools, skills, and hooks.
+SDLC v4 also supports separate packages, apps, MCP servers, skills, and hooks.
 Its schema lives at
 `skills/ceratops-repo-lifecycle/references/schemas/sdlc.v4.schema.json`;
 `scripts/repository_operation.py` resolves action locations and returns package
@@ -231,7 +235,7 @@ prerequisites through `--prepare-only`. Registered v4 skill validation and
 deployment handoffs pass the exact selected skill to the lifecycle CLI, retain
 completion receipts, and stop on source changes or unsupported inputs. CI still
 defers every handoff; package prerequisites never imply an automatic build.
-Tools built directly from source may declare no package prerequisite.
+MCP servers built directly from source may declare no package prerequisite.
 The compatibility producer and this repository's live declaration use v4.
 Existing v1-v3 repositories are not automatically migrated.
 
@@ -298,8 +302,35 @@ allowed file list, amend it for approved scope extensions, and repeat correction
 and checks in the same record. A passed verification becomes pending when scope
 or checked inputs change. Finalize only at the real end of the requested work;
 do not finalize/reopen between corrections. Existing repository test runners
-remain unchanged. General ownership derivation and test-cache/framework changes
-belong to the later refactor iteration, not this foundation.
+remain unchanged today. Basic affected-check reuse is planned in 2A; general
+ownership derivation and an optional Nx trial remain later work.
+
+### Working-folder lifecycle refactor status
+
+The agreed target methodology is documented in
+[Working-folder acceptance methodology](docs/design-draft.md#working-folder-acceptance-methodology-planned).
+It uses the existing worktree, pre-test and final receipt commits, a shared
+worktree lease with unfinished-attempt admission, separate committed build and
+stored artifact receipts, and merge-back. Standalone Build produces alpha
+versions; Promote builds and qualifies beta versions through the same operation.
+Later delivery consumes the selected version's recorded acceptance and bytes.
+
+| Area | Current status | Next boundary |
+| --- | --- | --- |
+| 1a release declarations | Implemented | Keep current v4/v5 readers; connect exact-output producers later |
+| 1b receipt verification | Implemented v2 | Planned separate committed build receipt and artifact receipt |
+| 1c correction continuity | Implemented; finalization consumes recorded success without rechecking the checkout | Connect the new acceptance records later |
+| 1d build/test/store | Implemented internal v2 transaction | Planned store extraction and recoverable final-commit binding |
+| Completed-build consumption | Current reuse still uses the caller's required-test selection | Separate production from reading completed receipts without current build/test inputs |
+| Worktree leases and working-folder attempts | Planned | Add native locks, durable unfinished-attempt admission and platform-specific child ownership, then affected-check reuse |
+| Merge-back and beta qualification | Planned | Activate promotion through the shared Build operation with actual beta versions |
+| Public Build, receipt Deploy and GitHub release integration | Planned | Connect producers/consumers before repository adoption |
+
+This documentation update implements none of those planned runtime changes.
+Each subsequent implementation step must update this table, actual command
+guidance and affected output-lifecycle rows in the same working revision.
+Unused internal additions stay labeled internal/planned until their consumers
+are connected. Existing supported commands remain usable at every step.
 
 ### Generated-output lifecycle
 
@@ -323,10 +354,12 @@ a completed bundle have the bundle's persistent lifetime, not the scratch
 environment's lifetime. Transaction details and recovery limits are documented
 in [the existing design draft](docs/design-draft.md#exact-artifact-bundle-transaction).
 
-Tool deployment at `deliverables.tools.<name>.actions.install` routes to
-`ceratops-tool-lifecycle/install`. That skill's installed executable binding
-calls the installed tool manager with `--source` set to the selected repository.
-The manager reads the tool name and version from that checkout's `pyproject.toml`.
+MCP server deployment at
+`deliverables.mcp-servers.<name>.actions.install` routes to
+`ceratops-mcp-server-lifecycle/install`. That skill's installed executable
+binding calls the installed MCP server manager with `--source` set to the
+selected repository.
+The manager reads the MCP server name and version from that checkout's `pyproject.toml`.
 There is no separate command named "SDLC install."
 
 `ship` derives its optional pending-work scope from the staged branch. When
@@ -449,10 +482,10 @@ Each repository owns one lifecycle contract:
 - Applying current compatibility creates `sdlc/sdlc.yml` version 4 from the
   repository-neutral schema and template under
   `skills/ceratops-repo-lifecycle/references/`. It separates package build
-  outputs from tools and skills, places structured lifecycle handoffs in
+  outputs from MCP servers and skills, places structured lifecycle handoffs in
   ordered steps, and exposes declared package prerequisites without executing
-  their build or installation actions. Tool installation can also run a
-  repository-owned script directly. A tool may declare one package prerequisite
+  their build or installation actions. MCP server installation can also run a
+  repository-owned script directly. An MCP server may declare one package prerequisite
   or none. Version 5 adds release-unit declarations. The shared loader supports
   only v4 and v5; v1 through v3 require an explicit repository-owned upgrade.
 - Operation `status: completed` records command completion. A successful step
@@ -685,7 +718,7 @@ while stale locks fail instead of changing dependency decisions during checks.
 
 SDLC execution and schemas stay in the repository-lifecycle skill. Target
 repositories receive no engine copy or SDLC launcher. CI sets up uv and calls
-`Ceratops-Code/AI-Agent-Skills/skills/ceratops-repo-lifecycle/scripts@<commit>`
+`Ceratops-Code/Ceratops-AI-Agents-Kit/skills/ceratops-repo-lifecycle/scripts@<commit>`
 with `repo-root` and `evidence-file` inputs. GitHub obtains the action; no Codex
 skills installation is needed on the runner. The action uses its own locked Python
 project, while target scripts use their repository's project.
@@ -782,7 +815,7 @@ deployment-only `UV_PROJECT_ENVIRONMENT` override is not forwarded.
 Deployment checks an existing version without modifying it; if it is damaged
 or the source lock changes, deployment builds a new version and pins newly
 installed skills to it. Running helpers retain their original environment.
-Old versions remain until an idle cleanup. External tools retain their own
+Old versions remain until an idle cleanup. External MCP servers retain their own
 installer-managed environments.
 
 ## Install For Codex
@@ -1002,7 +1035,7 @@ The map format is:
 
 ```json
 {
-  "schema": "ai-agent-skills-pytest-node-map.v1",
+  "schema": "ceratops-ai-agents-kit-pytest-node-map.v1",
   "mappings": {
     "tests/old/test_flow.py::test_case[id]": "tests/new/test_flow.py::test_case[id]"
   }

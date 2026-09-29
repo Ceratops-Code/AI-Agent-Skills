@@ -29,13 +29,15 @@ VERSION_SCHEMAS = {
 NAME = r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*"
 V4_OPERATION_RE = re.compile(
     rf"^(?:repository\.actions\.(?P<repository>bootstrap|validate|test|test-selection)|"
-    rf"deliverables\.(?P<kind>packages|apps|tools|skills|hooks)\."
+    rf"deliverables\.(?P<kind>packages|apps|mcp-servers|skills|hooks)\."
     rf"(?P<name>{NAME})\.actions\.(?P<action>validate|test|build|install|publish|verify-publish))$"
 )
 V4_ACTIONS_BY_KIND = {
     "packages": frozenset({"validate", "test", "build", "publish", "verify-publish"}),
     "apps": frozenset({"validate", "test", "install", "publish", "verify-publish"}),
-    "tools": frozenset({"validate", "test", "install", "publish", "verify-publish"}),
+    "mcp-servers": frozenset(
+        {"validate", "test", "install", "publish", "verify-publish"}
+    ),
     "skills": frozenset({"validate", "test", "install"}),
     "hooks": frozenset({"validate", "test", "install"}),
 }
@@ -282,7 +284,7 @@ def _typed_semantic_errors(value: Mapping[str, Any]) -> list[str]:
     path_fields = {
         "packages": ("source", "project"),
         "apps": ("source", "manifest", "project"),
-        "tools": ("source", "manifest", "project"),
+        "mcp-servers": ("source", "manifest", "project"),
         "skills": ("source", "project"),
         "hooks": ("source", "project"),
     }
@@ -325,16 +327,20 @@ def _typed_semantic_errors(value: Mapping[str, Any]) -> list[str]:
     for name in packages:
         visit(name)
     lifecycle_by_kind = {
-        "tools": "ceratops-tool-lifecycle",
+        "mcp-servers": "ceratops-mcp-server-lifecycle",
         "skills": "ceratops-skill-lifecycle",
     }
     for kind, lifecycle in lifecycle_by_kind.items():
         for name, record in deliverables.get(kind, {}).items():
             for action_name in ("validate", "install"):
                 action = record["actions"][action_name]
-                # A tool may have no separate validation step. Installation
-                # may use a repository-owned script or a tool-lifecycle handoff.
-                if kind == "tools" and action_name == "validate" and "no-op" in action:
+                # An MCP server may have no separate validation step. Installation
+                # may use a repository script or an MCP-server-lifecycle handoff.
+                if (
+                    kind == "mcp-servers"
+                    and action_name == "validate"
+                    and "no-op" in action
+                ):
                     continue
                 handoffs = [
                     step["handoff"]
@@ -343,7 +349,7 @@ def _typed_semantic_errors(value: Mapping[str, Any]) -> list[str]:
                 ]
                 if not handoffs:
                     if (
-                        kind == "tools"
+                        kind == "mcp-servers"
                         and action_name == "install"
                         and action.get("steps")
                     ):
@@ -356,7 +362,7 @@ def _typed_semantic_errors(value: Mapping[str, Any]) -> list[str]:
                     errors.append(
                         f"{kind}.{name}.actions.{action_name} must hand off to {lifecycle}"
                     )
-                identity = "tool" if kind == "tools" else "skill"
+                identity = "mcp-server" if kind == "mcp-servers" else "skill"
                 if handoffs[0]["inputs"].get(identity) != name:
                     errors.append(
                         f"{kind}.{name}.actions.{action_name} must identify {identity} {name}"

@@ -960,9 +960,13 @@ def read_runtime_manifest(path: pathlib.Path) -> dict[str, object]:
 
 
 def install_target_error(
-    path: pathlib.Path, source_id: str, *, expected_skill: str | None = None
+    path: pathlib.Path,
+    source_id: str,
+    *,
+    expected_skill: str | None = None,
+    previous_source_id: str | None = None,
 ) -> str | None:
-    """Return why an existing target cannot be changed by this source."""
+    """Return why a target is outside the current or explicit prior owner."""
 
     if not path.exists() and not path.is_symlink():
         return None
@@ -979,10 +983,13 @@ def install_target_error(
         return f"unsupported ownership manifest: {path}"
     if manifest.get("skill") != skill:
         return f"mismatched ownership manifest: {path}"
-    if manifest.get("runtime_source_id") != source_id:
+    owner = manifest.get("runtime_source_id")
+    if owner != source_id and (
+        previous_source_id is None or owner != previous_source_id
+    ):
         return (
             "runtime skill is owned by "
-            f"{manifest.get('runtime_source_id')!r}: {path}"
+            f"{owner!r}: {path}"
         )
     return None
 
@@ -1211,6 +1218,7 @@ def recover_interrupted(
     install_root: pathlib.Path,
     source_id: str,
     *,
+    previous_source_id: str | None,
     remove_names: set[str],
     all_managed: bool,
     source_names: set[str],
@@ -1224,14 +1232,21 @@ def recover_interrupted(
             canonical = install_root / skill
             for path in paths.values():
                 error = install_target_error(
-                    path, source_id, expected_skill=skill
+                    path,
+                    source_id,
+                    expected_skill=skill,
+                    previous_source_id=previous_source_id,
                 )
                 if error is not None:
                     raise TransactionError(
                         error, phase="recovery", skill=skill
                     )
             if canonical.exists() or canonical.is_symlink():
-                error = install_target_error(canonical, source_id)
+                error = install_target_error(
+                    canonical,
+                    source_id,
+                    previous_source_id=previous_source_id,
+                )
                 if error is not None:
                     raise TransactionError(
                         error, phase="recovery", skill=skill
@@ -1294,9 +1309,12 @@ def recover_interrupted(
 
 
 def same_source_stale(
-    install_root: pathlib.Path, source_names: set[str], source_id: str
+    install_root: pathlib.Path,
+    source_names: set[str],
+    source_id: str,
+    previous_source_id: str | None = None,
 ) -> list[str]:
-    """Return stale same-source canonical skills for an all-managed install."""
+    """Return stale canonical skills owned by the current or explicit prior source."""
 
     stale: list[str] = []
     if not install_root.is_dir():
@@ -1313,7 +1331,13 @@ def same_source_stale(
         if (
             manifest.get("schema") == RUNTIME_MANIFEST_SCHEMA
             and manifest.get("skill") == path.name
-            and manifest.get("runtime_source_id") == source_id
+            and (
+                manifest.get("runtime_source_id") == source_id
+                or (
+                    previous_source_id is not None
+                    and manifest.get("runtime_source_id") == previous_source_id
+                )
+            )
         ):
             stale.append(path.name)
     return sorted(stale)
@@ -1354,8 +1378,9 @@ def install_transaction(
     selected: Sequence[str] = (),
     remove: Sequence[str] = (),
     all_managed: bool = False,
+    previous_runtime_source_id: str | None = None,
 ) -> TransactionResult:
-    """Install one exact selected batch under a single writer transaction."""
+    """Install one batch, accepting one explicit prior owner only for migration."""
 
     configure_repo(repo_root)
     manifest = load_manifest()
@@ -1406,26 +1431,52 @@ def install_transaction(
     if errors:
         raise TransactionError(errors[0], phase="preflight")
     source_id = cast(str, manifest["runtime_source_id"])
+    if previous_runtime_source_id is not None:
+        if not previous_runtime_source_id.strip():
+            raise TransactionError(
+                "previous runtime source identity must be nonempty",
+                phase="preflight",
+            )
+        if previous_runtime_source_id == source_id:
+            raise TransactionError(
+                "previous runtime source identity must differ from current identity",
+                phase="preflight",
+            )
     install_root = install_root.resolve()
 
     with runtime_lock(install_root):
         if all_managed:
             remove_names.update(
-                same_source_stale(install_root, source_names, source_id)
+                same_source_stale(
+                    install_root,
+                    source_names,
+                    source_id,
+                    previous_runtime_source_id,
+                )
             )
         recover_interrupted(
             install_root,
             source_id,
+            previous_source_id=previous_runtime_source_id,
             remove_names=remove_names,
             all_managed=all_managed,
             source_names=source_names,
         )
         if all_managed:
             remove_names.update(
-                same_source_stale(install_root, source_names, source_id)
+                same_source_stale(
+                    install_root,
+                    source_names,
+                    source_id,
+                    previous_runtime_source_id,
+                )
             )
         for skill in sorted(deploy_names | remove_names):
-            error = install_target_error(install_root / skill, source_id)
+            error = install_target_error(
+                install_root / skill,
+                source_id,
+                previous_source_id=previous_runtime_source_id,
+            )
             if error is not None:
                 raise TransactionError(
                     error, phase="preflight", skill=skill
@@ -1538,6 +1589,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skill", action="append")
     parser.add_argument("--remove-skill", action="append")
     parser.add_argument("--all-managed", action="store_true")
+    parser.add_argument("--previous-runtime-source-id")
     return parser
 
 
@@ -1552,6 +1604,7 @@ def main(argv: list[str] | None = None) -> int:
             selected=args.skill or (),
             remove=args.remove_skill or (),
             all_managed=args.all_managed,
+            previous_runtime_source_id=args.previous_runtime_source_id,
         )
     except (
         InstallBusy,

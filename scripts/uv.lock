@@ -3,7 +3,7 @@ revision = 3
 requires-python = "==3.14.*"
 
 [[package]]
-name = "ai-agent-skills-tooling"
+name = "ceratops-ai-agents-kit-tooling"
 version = "0.0.0"
 source = { virtual = "." }
 dependencies = [

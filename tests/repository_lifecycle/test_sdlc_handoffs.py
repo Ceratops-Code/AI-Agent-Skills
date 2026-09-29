@@ -587,22 +587,22 @@ def _v4_fixture() -> dict[str, Any]:
                     },
                 },
             },
-            "tools": {
-                "insurance-claims-tool": {
+            "mcp-servers": {
+                "insurance-claims-mcp-server": {
                     "source": "packages/claims",
-                    "manifest": "packages/claims/tool.json",
+                    "manifest": "packages/claims/mcp-server.json",
                     "prerequisites": ["claims"],
                     "actions": {
                         "validate": {
                             "requires": {"capabilities": []},
-                            "no-op": "Package tests cover the tool.",
+                            "no-op": "Package tests cover the MCP server.",
                         },
                         "install": _v4_action(
                             {
                                 "handoff": {
-                                    "lifecycle": "ceratops-tool-lifecycle",
+                                    "lifecycle": "ceratops-mcp-server-lifecycle",
                                     "action": "install",
-                                    "inputs": {"tool": "insurance-claims-tool"},
+                                    "inputs": {"mcp-server": "insurance-claims-mcp-server"},
                                 }
                             }
                         ),
@@ -684,8 +684,8 @@ def test_v4_template_and_typed_operation_index(tmp_path: pathlib.Path) -> None:
         "deliverables.packages.claims.actions.build",
         "deliverables.apps.claims-mobile.actions.validate",
         "deliverables.apps.claims-mobile.actions.install",
-        "deliverables.tools.insurance-claims-tool.actions.validate",
-        "deliverables.tools.insurance-claims-tool.actions.install",
+        "deliverables.mcp-servers.insurance-claims-mcp-server.actions.validate",
+        "deliverables.mcp-servers.insurance-claims-mcp-server.actions.install",
         "deliverables.skills.claims-catalog-invoice.actions.validate",
         "deliverables.skills.claims-catalog-invoice.actions.install",
     }
@@ -699,7 +699,7 @@ def test_v4_template_and_typed_operation_index(tmp_path: pathlib.Path) -> None:
     )
     assert (
         runner.operation_category(
-            "deliverables.tools.insurance-claims-tool.actions.install"
+            "deliverables.mcp-servers.insurance-claims-mcp-server.actions.install"
         )
         == "deploy-local"
     )
@@ -739,10 +739,10 @@ def test_v4_prerequisites_are_exposed_without_build_or_install(
         "repository.actions.test",
     ]
     assert runner.validation_operations(
-        tmp_path, ["deliverables.tools.insurance-claims-tool.actions.install"]
+        tmp_path, ["deliverables.mcp-servers.insurance-claims-mcp-server.actions.install"]
     ) == [
         "repository.actions.validate",
-        "deliverables.tools.insurance-claims-tool.actions.validate",
+        "deliverables.mcp-servers.insurance-claims-mcp-server.actions.validate",
         "repository.actions.test",
     ]
     result = run_operation_cli(tmp_path, location, prepare_only=True)
@@ -1304,18 +1304,18 @@ def test_build_receipt_cli_works_from_isolated_skill_and_preserves_inputs(
     assert missing.returncode == 2 and "--target" in missing.stderr
 
 
-def test_v4_source_installed_tool_needs_no_package_artifact(
+def test_v4_source_installed_mcp_server_needs_no_package_artifact(
     tmp_path: pathlib.Path,
 ) -> None:
     fixture = _v4_fixture()
-    tool = fixture["deliverables"]["tools"]["insurance-claims-tool"]
-    tool["prerequisites"] = []
+    mcp_server = fixture["deliverables"]["mcp-servers"]["insurance-claims-mcp-server"]
+    mcp_server["prerequisites"] = []
     assert contracts.validation_errors(fixture) == []
 
     (tmp_path / "sdlc").mkdir()
     (tmp_path / "sdlc/sdlc.yml").write_text(json.dumps(fixture))
     _repository(tmp_path)
-    location = "deliverables.tools.insurance-claims-tool.actions.install"
+    location = "deliverables.mcp-servers.insurance-claims-mcp-server.actions.install"
     prepared = runner.prepare_operations(tmp_path, [runner.OperationRequest(location)])[
         0
     ]
@@ -1324,10 +1324,10 @@ def test_v4_source_installed_tool_needs_no_package_artifact(
     assert not (tmp_path / "dist").exists()
 
 
-def test_v4_tool_install_can_run_standalone_script(tmp_path: pathlib.Path) -> None:
+def test_v4_mcp_server_install_can_run_standalone_script(tmp_path: pathlib.Path) -> None:
     fixture = _v4_fixture()
-    tool = fixture["deliverables"]["tools"]["insurance-claims-tool"]
-    tool["actions"]["install"] = _v4_action(
+    mcp_server = fixture["deliverables"]["mcp-servers"]["insurance-claims-mcp-server"]
+    mcp_server["actions"]["install"] = _v4_action(
         {
             "run": [
                 sys.executable,
@@ -1343,7 +1343,7 @@ def test_v4_tool_install_can_run_standalone_script(tmp_path: pathlib.Path) -> No
         tmp_path,
         [
             runner.OperationRequest(
-                "deliverables.tools.insurance-claims-tool.actions.install",
+                "deliverables.mcp-servers.insurance-claims-mcp-server.actions.install",
             )
         ],
     )[0]
@@ -1528,13 +1528,13 @@ def test_v4_package_build_waits_for_declared_test_gate(tmp_path: pathlib.Path) -
             "package prerequisite cycle",
         ),
         (
-            lambda x: x["deliverables"]["tools"]["insurance-claims-tool"]["actions"][
+            lambda x: x["deliverables"]["mcp-servers"]["insurance-claims-mcp-server"]["actions"][
                 "install"
             ]["steps"][0]["handoff"].update(lifecycle="ceratops-skill-lifecycle"),
-            "must hand off to ceratops-tool-lifecycle",
+            "must hand off to ceratops-mcp-server-lifecycle",
         ),
         (
-            lambda x: x["deliverables"]["tools"]["insurance-claims-tool"][
+            lambda x: x["deliverables"]["mcp-servers"]["insurance-claims-mcp-server"][
                 "actions"
             ].update(
                 install={
@@ -1568,7 +1568,7 @@ def test_v4_package_build_waits_for_declared_test_gate(tmp_path: pathlib.Path) -
             "filename-pattern must be a filename pattern",
         ),
         (
-            lambda x: x["deliverables"]["tools"]["insurance-claims-tool"]["actions"][
+            lambda x: x["deliverables"]["mcp-servers"]["insurance-claims-mcp-server"]["actions"][
                 "install"
             ]["steps"][0]["handoff"]["inputs"].update(
                 **{"prerequisite-packages": ["core"]}
@@ -1620,10 +1620,10 @@ def test_v4_rejects_invalid_dependency_or_lifecycle_boundary(
         lambda x: x["deliverables"]["apps"]["claims-mobile"]["actions"].update(
             build=_v4_action({"run": ["python"]})
         ),
-        lambda x: x["deliverables"]["tools"]["insurance-claims-tool"].update(
+        lambda x: x["deliverables"]["mcp-servers"]["insurance-claims-mcp-server"].update(
             package="claims"
         ),
-        lambda x: x["deliverables"]["tools"]["insurance-claims-tool"].update(
+        lambda x: x["deliverables"]["mcp-servers"]["insurance-claims-mcp-server"].update(
             prerequisites=["core", "claims"]
         ),
         lambda x: x["deliverables"]["skills"]["claims-catalog-invoice"]["actions"][
@@ -1798,13 +1798,13 @@ def test_tool_install_binding_uses_checkout_metadata_and_propagates_failures(
     failure: str | None,
 ) -> None:
     handoffs = runner
-    skill = tmp_path / "skills/ceratops-tool-lifecycle/references"
+    skill = tmp_path / "skills/ceratops-mcp-server-lifecycle/references"
     skill.mkdir(parents=True)
     shutil.copyfile(
-        ROOT / "skills/ceratops-tool-lifecycle/references/action-executors.json",
+        ROOT / "skills/ceratops-mcp-server-lifecycle/references/action-executors.json",
         skill / "action-executors.json",
     )
-    source = tmp_path / "repo with spaces & punctuation/skills/ceratops-tool-lifecycle"
+    source = tmp_path / "repo with spaces & punctuation/skills/ceratops-mcp-server-lifecycle"
     (source / "references").mkdir(parents=True)
     shutil.copyfile(skill / "action-executors.json", source / "references/action-executors.json")
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
@@ -1820,13 +1820,13 @@ def test_tool_install_binding_uses_checkout_metadata_and_propagates_failures(
         )
 
     monkeypatch.setattr(handoffs.subprocess, "run", run)
-    result = handoffs.execute_handoff("ceratops-tool-lifecycle/install", repo)
+    result = handoffs.execute_handoff("ceratops-mcp-server-lifecycle/install", repo)
     assert result["status"] == ("operation_failed" if failure else "completed")
     assert calls[0][0] == [
         sys.executable,
         "-I",
         "-B",
-        str(source) + "/scripts/install-tool.py",
+        str(source) + "/scripts/install-mcp-server.py",
         "--repo-root",
         str(repo),
     ]
@@ -1846,7 +1846,7 @@ def test_tool_install_helper_attests_existing_manager_result_without_reinstall(
     commit = _repository(repo)
     task = projects / "tmp/claims/task"
     task.mkdir(parents=True)
-    operation = "deliverables.tools.insurance-claims-tool.actions.install"
+    operation = "deliverables.mcp-servers.insurance-claims-mcp-server.actions.install"
     promotion = {
         "status": "ready",
         "head": commit,
@@ -1860,7 +1860,7 @@ def test_tool_install_helper_attests_existing_manager_result_without_reinstall(
                     "commit": commit,
                     "status": "completed",
                     "steps": [],
-                    "handoff": "ceratops-tool-lifecycle/install",
+                    "handoff": "ceratops-mcp-server-lifecycle/install",
                 }
             ],
         },
@@ -1872,7 +1872,7 @@ def test_tool_install_helper_attests_existing_manager_result_without_reinstall(
         "manifest_sha256": "a" * 64,
         "reconnection_required": False,
         "running_version": None,
-        "tool_name": "insurance-claims-tool",
+        "mcp_server_name": "insurance-claims-mcp-server",
     }
     manager_path = task / "manager.json"
     manager_path.write_text(json.dumps(manager_result), encoding="utf-8")
@@ -1880,28 +1880,28 @@ def test_tool_install_helper_attests_existing_manager_result_without_reinstall(
     instance = "b" * 32
     selected = {
         "schema": 1,
-        "tool_id": "insurance-claims-tool",
+        "mcp_server_id": "insurance-claims-mcp-server",
         "version": "1.2.3",
         "manifest_sha256": "a" * 64,
         "instance": instance,
         "module": "insurance_claims_tool",
     }
-    tool_root = install_root / "insurance-claims-tool"
-    immutable = tool_root / "versions/1.2.3" / instance
+    mcp_server_root = install_root / "insurance-claims-mcp-server"
+    immutable = mcp_server_root / "versions/1.2.3" / instance
     immutable.mkdir(parents=True)
-    (tool_root / "current.json").write_text(json.dumps(selected), encoding="utf-8")
+    (mcp_server_root / "current.json").write_text(json.dumps(selected), encoding="utf-8")
     (immutable / "receipt.json").write_text(json.dumps(selected), encoding="utf-8")
     helper = runpy.run_path(
-        str(ROOT / "skills/ceratops-tool-lifecycle/scripts/install-tool.py")
+        str(ROOT / "skills/ceratops-mcp-server-lifecycle/scripts/install-mcp-server.py")
     )
     monkeypatch.setitem(helper["main"].__globals__, "INSTALL_ROOT", install_root)
-    output = task / "tool-completion.json"
+    output = task / "mcp-server-completion.json"
     code = helper["main"](
         [
             "--repo-root",
             str(repo),
-            "--tool-name",
-            "insurance-claims-tool",
+            "--mcp-server-name",
+            "insurance-claims-mcp-server",
             "--manager-result",
             str(manager_path),
             "--promotion-result",
@@ -1915,9 +1915,9 @@ def test_tool_install_helper_attests_existing_manager_result_without_reinstall(
     assert code == 0
     receipt = json.loads(capsys.readouterr().out)
     assert json.loads(output.read_text(encoding="utf-8")) == receipt
-    assert receipt["producer"] == "ceratops-tool-lifecycle/install"
+    assert receipt["producer"] == "ceratops-mcp-server-lifecycle/install"
     assert receipt["commit"] == commit
-    assert receipt["deployed"] == ["insurance-claims-tool"]
+    assert receipt["deployed"] == ["insurance-claims-mcp-server"]
     assert receipt["transaction_id"] == instance
     assert receipt["promotion"]["operation"] == operation
     promote = runpy.run_path(
@@ -1948,39 +1948,39 @@ def test_tool_install_helper_runs_manager_once_and_attests_selection(
         "manifest_sha256": "c" * 64,
         "reconnection_required": False,
         "running_version": None,
-        "tool_name": "sample-tool",
+        "mcp_server_name": "sample-mcp-server",
     }
     install_root = tmp_path / "installed"
     instance = "d" * 32
     selected = {
         "schema": 1,
-        "tool_id": "sample-tool",
+        "mcp_server_id": "sample-mcp-server",
         "version": "2.0.0",
         "manifest_sha256": "c" * 64,
         "instance": instance,
         "module": "sample_tool",
     }
-    tool_root = install_root / "sample-tool"
-    immutable = tool_root / "versions/2.0.0" / instance
+    mcp_server_root = install_root / "sample-mcp-server"
+    immutable = mcp_server_root / "versions/2.0.0" / instance
     immutable.mkdir(parents=True)
-    (tool_root / "current.json").write_text(json.dumps(selected), encoding="utf-8")
+    (mcp_server_root / "current.json").write_text(json.dumps(selected), encoding="utf-8")
     (immutable / "receipt.json").write_text(json.dumps(selected), encoding="utf-8")
     helper = runpy.run_path(
-        str(ROOT / "skills/ceratops-tool-lifecycle/scripts/install-tool.py")
+        str(ROOT / "skills/ceratops-mcp-server-lifecycle/scripts/install-mcp-server.py")
     )
     calls = []
 
     def install(args, source_root):
-        calls.append((args.tool_name, source_root))
+        calls.append((args.mcp_server_name, source_root))
         return payload
 
     monkeypatch.setitem(helper["main"].__globals__, "INSTALL_ROOT", install_root)
     monkeypatch.setitem(helper["main"].__globals__, "_install", install)
     assert helper["main"](
-        ["--repo-root", str(repo), "--tool-name", "sample-tool"]
+        ["--repo-root", str(repo), "--mcp-server-name", "sample-mcp-server"]
     ) == 0
     receipt = json.loads(capsys.readouterr().out)
-    assert calls == [("sample-tool", repo)]
+    assert calls == [("sample-mcp-server", repo)]
     assert receipt["commit"] == commit
     assert receipt["promotion"] is None
     assert receipt["transaction_id"] == instance
@@ -2219,20 +2219,22 @@ def _v5_fixture() -> dict[str, Any]:
         "claims": {
             "members": [
                 "deliverables.packages.claims",
-                "deliverables.tools.insurance-claims-tool",
+                "deliverables.mcp-servers.insurance-claims-mcp-server",
             ]
         },
         "desktop": {"members": ["deliverables.apps.claims-mobile"]},
     }
-    tool = document["deliverables"]["tools"]["insurance-claims-tool"]
-    tool["project"] = "tools/insurance-claims-tool/pyproject.toml"
-    tool["artifact"] = {
+    mcp_server = document["deliverables"]["mcp-servers"]["insurance-claims-mcp-server"]
+    mcp_server["project"] = "mcp-servers/insurance-claims-mcp-server/pyproject.toml"
+    mcp_server["artifact"] = {
         "type": "python-wheel",
-        "distribution": "insurance-claims-tool",
-        "output-directory": "dist/claims-tool",
-        "filename-pattern": "insurance_claims_tool-*.whl",
+        "distribution": "insurance-claims-mcp-server",
+        "output-directory": "dist/claims-mcp-server",
+        "filename-pattern": "insurance_claims_mcp_server-*.whl",
     }
-    tool["actions"]["build"] = _v4_action({"run": ["build-claims-tool"]})
+    mcp_server["actions"]["build"] = _v4_action(
+        {"run": ["build-claims-mcp-server"]}
+    )
     app = document["deliverables"]["apps"]["claims-mobile"]
     app["prerequisites"] = ["core"]
     app["artifact"] = {
@@ -2264,7 +2266,7 @@ def test_v5_reader_keeps_shared_dependencies_out_of_membership(
     assert entries["core"]["dependencies"] == {}
     assert list(entries["claims"]["members"]) == [
         "deliverables.packages.claims",
-        "deliverables.tools.insurance-claims-tool",
+        "deliverables.mcp-servers.insurance-claims-mcp-server",
     ]
     assert list(entries["desktop"]["members"]) == ["deliverables.apps.claims-mobile"]
     for name in ("claims", "desktop"):
@@ -2277,13 +2279,13 @@ def test_v5_reader_keeps_shared_dependencies_out_of_membership(
             dependency["action-locations"]["build"]
             == "deliverables.packages.core.actions.build"
         )
-    tool = entries["claims"]["members"]["deliverables.tools.insurance-claims-tool"]
+    mcp_server = entries["claims"]["members"]["deliverables.mcp-servers.insurance-claims-mcp-server"]
     assert (
-        tool["action-locations"]["build"]
-        == "deliverables.tools.insurance-claims-tool.actions.build"
+        mcp_server["action-locations"]["build"]
+        == "deliverables.mcp-servers.insurance-claims-mcp-server.actions.build"
     )
-    assert tool["prerequisites"] == ["claims"]
-    tool["artifact"]["type"] = "changed-view"
+    assert mcp_server["prerequisites"] == ["claims"]
+    mcp_server["artifact"]["type"] = "changed-view"
     entries["claims"]["dependencies"]["deliverables.packages.core"][
         "prerequisites"
     ].append("changed-view")
@@ -2312,7 +2314,7 @@ def test_v5_reader_resolves_transitive_dependency_owners() -> None:
     "kind,name",
     [
         ("packages", "claims"),
-        ("tools", "insurance-claims-tool"),
+        ("mcp-servers", "insurance-claims-mcp-server"),
         ("apps", "claims-mobile"),
         ("skills", "claims-catalog-invoice"),
         ("hooks", "example-hook"),
@@ -2381,7 +2383,7 @@ def test_v5_rejects_invalid_release_declarations(
 ) -> None:
     document = _v5_fixture()
     units = document["repository"]["release-units"]
-    tool = document["deliverables"]["tools"]["insurance-claims-tool"]
+    mcp_server = document["deliverables"]["mcp-servers"]["insurance-claims-mcp-server"]
     core = document["deliverables"]["packages"]["core"]
     if problem == "empty_units":
         units.clear()
@@ -2404,16 +2406,16 @@ def test_v5_rejects_invalid_release_declarations(
     elif problem == "package_cycle":
         core["prerequisites"] = ["claims"]
     elif problem == "no_artifact":
-        del tool["artifact"]
+        del mcp_server["artifact"]
     elif problem == "no_build":
-        del tool["actions"]["build"]
+        del mcp_server["actions"]["build"]
     elif problem == "noop_build":
-        tool["actions"]["build"] = {
+        mcp_server["actions"]["build"] = {
             "requires": {"capabilities": []},
             "no-op": "No build.",
         }
     elif problem == "handoff_build":
-        tool["actions"]["build"] = _v4_action(
+        mcp_server["actions"]["build"] = _v4_action(
             {
                 "handoff": {
                     "lifecycle": "some-builder",
@@ -2423,9 +2425,9 @@ def test_v5_rejects_invalid_release_declarations(
             }
         )
     elif problem == "wheel_without_project":
-        del tool["project"]
+        del mcp_server["project"]
     else:
-        del tool["artifact"]["distribution"]
+        del mcp_server["artifact"]["distribution"]
     errors = contracts.validation_errors(document)
     assert errors, problem
     path = tmp_path / "sdlc.yml"
@@ -2455,25 +2457,25 @@ def test_v5_rejects_unit_cycle_even_when_package_graph_is_acyclic() -> None:
         ("source", "C:outside"),
         ("source", "C:/outside"),
         ("project", "/outside/pyproject.toml"),
-        ("manifest", r"tools\outside.json"),
+        ("manifest", r"mcp-servers\outside.json"),
         ("output-directory", "dist/../../escape"),
         ("filename-pattern", "../*.whl"),
         ("filename-pattern", "C:*.whl"),
         ("cwd", "../escape"),
-        ("cwd", r"tools\outside"),
+        ("cwd", r"mcp-servers\outside"),
         ("source", "invalid\x00name"),
         ("project", "invalid\nname"),
     ],
 )
 def test_v5_rejects_unsafe_paths(field: str, bad_path: str) -> None:
     document = _v5_fixture()
-    tool = document["deliverables"]["tools"]["insurance-claims-tool"]
+    mcp_server = document["deliverables"]["mcp-servers"]["insurance-claims-mcp-server"]
     if field in {"output-directory", "filename-pattern"}:
-        tool["artifact"][field] = bad_path
+        mcp_server["artifact"][field] = bad_path
     elif field == "cwd":
-        tool["actions"]["build"]["steps"][0]["cwd"] = bad_path
+        mcp_server["actions"]["build"]["steps"][0]["cwd"] = bad_path
     else:
-        tool[field] = bad_path
+        mcp_server[field] = bad_path
     assert contracts.validation_errors(document)
 
 
@@ -2487,11 +2489,13 @@ def test_v5_does_not_change_v4_or_infer_units() -> None:
         "claims": {"members": ["deliverables.packages.claims"]}
     }
     assert contracts.validation_errors(legacy)
-    tool = before["deliverables"]["tools"]["insurance-claims-tool"]
-    tool["artifact"] = _v5_fixture()["deliverables"]["tools"]["insurance-claims-tool"][
+    mcp_server = before["deliverables"]["mcp-servers"]["insurance-claims-mcp-server"]
+    mcp_server["artifact"] = _v5_fixture()["deliverables"]["mcp-servers"]["insurance-claims-mcp-server"][
         "artifact"
     ]
-    tool["actions"]["build"] = _v4_action({"run": ["build-tool"]})
+    mcp_server["actions"]["build"] = _v4_action(
+        {"run": ["build-mcp-server"]}
+    )
     assert contracts.validation_errors(before)
     document = _v5_fixture()
     del document["repository"]["release-units"]
@@ -2514,18 +2518,24 @@ def test_v5_prepare_and_gates_keep_typed_deliverable_selection(
     tmp_path: pathlib.Path,
 ) -> None:
     document = _v5_fixture()
-    tools = document["deliverables"]["tools"]
-    tools["other-tool"] = deepcopy(tools["insurance-claims-tool"])
-    tools["other-tool"]["actions"]["install"]["steps"][0]["handoff"]["inputs"][
-        "tool"
-    ] = "other-tool"
-    tools["other-tool"]["actions"]["test"] = _v4_action({"run": ["other-tests"]})
-    selected_tool = tools["insurance-claims-tool"]
-    selected_tool["actions"]["test"] = _v4_action({"run": ["selected-tests"]})
+    mcp_servers = document["deliverables"]["mcp-servers"]
+    mcp_servers["other-mcp-server"] = deepcopy(
+        mcp_servers["insurance-claims-mcp-server"]
+    )
+    mcp_servers["other-mcp-server"]["actions"]["install"]["steps"][0]["handoff"]["inputs"][
+        "mcp-server"
+    ] = "other-mcp-server"
+    mcp_servers["other-mcp-server"]["actions"]["test"] = _v4_action(
+        {"run": ["other-tests"]}
+    )
+    selected_mcp_server = mcp_servers["insurance-claims-mcp-server"]
+    selected_mcp_server["actions"]["test"] = _v4_action(
+        {"run": ["selected-tests"]}
+    )
     (tmp_path / "sdlc").mkdir()
     (tmp_path / "sdlc/sdlc.yml").write_text(json.dumps(document), encoding="utf-8")
     _repository(tmp_path)
-    location = "deliverables.tools.insurance-claims-tool.actions.build"
+    location = "deliverables.mcp-servers.insurance-claims-mcp-server.actions.build"
     prepared = runner.prepare_operations(tmp_path, [runner.OperationRequest(location)])[
         0
     ]
@@ -2534,9 +2544,9 @@ def test_v5_prepare_and_gates_keep_typed_deliverable_selection(
     gates = runner.validation_operations(tmp_path, [location])
     assert gates == [
         "repository.actions.validate",
-        "deliverables.tools.insurance-claims-tool.actions.validate",
+        "deliverables.mcp-servers.insurance-claims-mcp-server.actions.validate",
         "repository.actions.test",
-        "deliverables.tools.insurance-claims-tool.actions.test",
+        "deliverables.mcp-servers.insurance-claims-mcp-server.actions.test",
     ]
     assert (
         runner.validation_operations(

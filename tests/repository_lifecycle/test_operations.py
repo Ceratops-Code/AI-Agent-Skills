@@ -139,7 +139,7 @@ def test_live_sdlc_v4_selects_validation_and_tests_for_every_install() -> None:
     installs = (
         "deliverables.skills.ceratops-repo-lifecycle.actions.install",
         "deliverables.hooks.codex-hooks.actions.install",
-        "deliverables.tools.ceratops-tool-manager.actions.install",
+        "deliverables.mcp-servers.ceratops-mcp-server-manager.actions.install",
     )
     for install in installs:
         locations = runner.validation_operations(ROOT, [install])
@@ -258,7 +258,7 @@ def test_sdlc_template_is_a_schema_valid_empty_skeleton(tmp_path: pathlib.Path) 
     assert validation[0] == "repository.actions.validate"
     assert "deliverables.skills.ceratops-repo-lifecycle.actions.validate" in validation
     assert "deliverables.hooks.codex-hooks.actions.validate" in validation
-    assert "deliverables.tools.ceratops-tool-manager.actions.validate" in validation
+    assert "deliverables.mcp-servers.ceratops-mcp-server-manager.actions.validate" in validation
     assert validation[-1] == "repository.actions.test"
 
 

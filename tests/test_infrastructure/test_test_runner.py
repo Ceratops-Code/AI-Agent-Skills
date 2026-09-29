@@ -87,7 +87,7 @@ def test_auto_uses_explicit_ci_context_and_preserves_local_full_selection(
     context: str,
 ) -> None:
     execution = DeterministicExecution(
-        test_runner_module, b"M\0tools/ceratops_tool_manager/cli.py\0"
+        test_runner_module, b"M\0mcp-servers/ceratops_mcp_server_manager/cli.py\0"
     )
     monkeypatch.delenv("CERATOPS_SDLC_TEST_CONTEXT", raising=False)
     monkeypatch.setenv("GITHUB_ACTIONS", "false" if context == "local" else "true")
@@ -142,7 +142,7 @@ def test_auto_uses_explicit_ci_context_and_preserves_local_full_selection(
             "source_branch": "codex/task",
             "target_branch": "main",
         }
-        assert result["pytest_targets"] == ["tests/tool_manager"]
+        assert result["pytest_targets"] == ["tests/mcp_server_manager"]
     else:
         assert code == 0 and result["full_suite"]
         assert result["context"]["trigger"] == context
@@ -464,7 +464,7 @@ def assert_pretest_diagnostic(
     """Check the persisted failure and the exact evidence reference returned."""
     content = path.read_bytes()
     complete = json.loads(content)
-    assert complete["schema"] == "ai-agent-skills-test-runner-diagnostic.v1"
+    assert complete["schema"] == "ceratops-ai-agents-kit-test-runner-diagnostic.v1"
     assert complete["exit_code"] == exit_code
     assert complete["result"] == {
         key: value for key, value in result.items() if key != "diagnostic"

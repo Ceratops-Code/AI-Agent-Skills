@@ -1,5 +1,5 @@
 {
-  "runtime_source_id": "Ceratops-Code/AI-Agent-Skills",
+  "runtime_source_id": "Ceratops-Code/Ceratops-AI-Agents-Kit",
   "validation_profile": "ceratops",
   "sections": {
     "core": "skills/sections/core.md",
@@ -57,7 +57,7 @@
     "ceratops-repo-lifecycle",
     "ceratops-skill-lifecycle",
     "ceratops-task-lifecycle",
-    "ceratops-tool-lifecycle",
+    "ceratops-mcp-server-lifecycle",
     "ceratops-design-document-lifecycle",
     "ceratops-openai-docs-managed"
   ],
@@ -107,7 +107,7 @@
       "core",
       "multi-action-skill"
     ],
-    "ceratops-tool-lifecycle": [
+    "ceratops-mcp-server-lifecycle": [
       "core",
       "multi-action-skill"
     ]
