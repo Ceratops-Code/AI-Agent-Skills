@@ -169,6 +169,72 @@ def test_targeted_install_keeps_stale_and_rejects_other_source_collision(tmp_pat
     assert "unsupported ownership manifest" in legacy_collision.stderr
 
 
+def test_explicit_runtime_source_identity_migration_is_scoped(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "source"
+    install_root = tmp_path / "installed"
+    old_source = "example/old-source"
+    new_source = "example/new-source"
+    create_compatible_repo(
+        repo,
+        old_source,
+        ["alpha-tool", "beta-tool", "retired-tool"],
+    )
+    assert run_builder(repo, install_root, "--all-managed").returncode == 0
+    shutil.rmtree(repo / "skills" / "retired-tool")
+    write_manifest(repo, new_source)
+
+    rejected = run_builder(repo, install_root, "--skill", "alpha-tool")
+    assert rejected.returncode == 1
+    assert f"owned by {old_source!r}" in rejected.stderr
+
+    migrated = run_builder(
+        repo,
+        install_root,
+        "--skill",
+        "alpha-tool",
+        "--previous-runtime-source-id",
+        old_source,
+    )
+    assert migrated.returncode == 0, migrated.stderr
+    assert runtime_owner(install_root, "alpha-tool") == new_source
+    assert runtime_owner(install_root, "beta-tool") == old_source
+    assert runtime_owner(install_root, "retired-tool") == old_source
+
+    public = subprocess.run(
+        [
+            sys.executable,
+            str(RUNTIME_INSTALLER),
+            "--repo-root",
+            str(repo),
+            "--install-root",
+            str(install_root),
+            "--skill",
+            "beta-tool",
+            "--previous-runtime-source-id",
+            old_source,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert public.returncode == 0, public.stderr
+    assert runtime_owner(install_root, "beta-tool") == new_source
+
+    converged = run_builder(
+        repo,
+        install_root,
+        "--all-managed",
+        "--previous-runtime-source-id",
+        old_source,
+    )
+    assert converged.returncode == 0, converged.stderr
+    assert not (install_root / "retired-tool").exists()
+    assert runtime_owner(install_root, "alpha-tool") == new_source
+    assert runtime_owner(install_root, "beta-tool") == new_source
+
+
 def test_transaction_stages_complete_batch_before_canonical_mutation(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,

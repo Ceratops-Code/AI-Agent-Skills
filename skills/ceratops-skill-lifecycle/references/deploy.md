@@ -17,10 +17,11 @@ deployment operations or the independent bootstrap installer.
 - Source-validation handoff: `references/source-validate.md` with the same
   source checkout and `full` mode.
 - (D) Managed runtime transaction: `python
-  "<skill-root>/scripts/runtime/install-managed-skills.py" --repo-root <repo-root>
-  [--install-root <skills-root>] [--skill <name>...]
-  [--remove-skill <name>...] [--base-revision <full-sha>]` from the installed
-  or source lifecycle bundle.
+  "<skill-root>/scripts/runtime/install-managed-skills.py"
+  --repo-root <repo-root> [--install-root <skills-root>]
+  [--skill <name>...] [--remove-skill <name>...]
+  [--base-revision <full-sha>] [--previous-runtime-source-id <id>]` from the
+  installed or source lifecycle bundle.
 
 - Before classifying or replacing runtime paths, the installer changes its
   process working directory to the verified `<repo-root>`.
@@ -30,6 +31,9 @@ deployment operations or the independent bootstrap installer.
 - Source checkout, install root, validation profile, and deployment mode.
 - Exact selected or removed skills when the mode is not all-managed.
 - Full base revision only for an explicitly requested affected-set deployment.
+- For an authorized source-identity rename, bind `<id>` to the exact previous
+  owner recorded in installed runtime manifests; the new owner comes from the
+  source section manifest.
 
 ## Constraints
 
@@ -54,6 +58,9 @@ deployment operations or the independent bootstrap installer.
    installation; it stops before installation if source validation fails.
 2. Select exactly one runtime mode: all-managed by default, explicit selected
    and removed skills, or affected-set deployment from one full base revision.
+   For an authorized source-identity rename, pass the exact previous identity;
+   the transaction accepts only the current or previous owner for selected
+   targets and writes only the current identity.
 3. Before invoking the installer for a saved promotion handoff, select
    `--promotion-result PATH --operation LOCATION --task-temp-root ROOT
    --finalize-promotion-with HELPER`, where HELPER is the promotion helper

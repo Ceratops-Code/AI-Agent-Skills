@@ -187,7 +187,7 @@
         "installed .runtime-manifest.json ownership",
         "transaction behavior tests"
       ],
-      "pass_condition": "The installer resolves an explicit, base-revision, or all-managed affected set before mutation and invokes one locked batch transaction. Every selected present skill stages and validates before canonical mutation; existing targets retire, the complete staged batch activates, and pre-commit failures restore the prior batch. Targeted installs remove only declared absent skills; all-managed installs include same-source stale skills. Inventory reads direct manifests only and does not claim runtime validation."
+      "pass_condition": "The installer resolves an explicit, base-revision, or all-managed affected set before mutation and invokes one locked batch transaction. Every selected present skill stages and validates before canonical mutation; existing targets retire, the complete staged batch activates, and pre-commit failures restore the prior batch. Targeted installs remove only declared absent skills; all-managed installs include same-source stale skills. For an authorized source-identity rename, an exact previous identity admits only current or previous ownership and the transaction persists only the current identity. Inventory reads direct manifests only and does not claim runtime validation."
     },
     {
       "id": "skill.public_doc_alignment",
