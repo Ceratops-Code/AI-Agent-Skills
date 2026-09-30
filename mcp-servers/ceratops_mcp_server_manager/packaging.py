@@ -37,7 +37,7 @@ from .contracts import (
     schema,
     token,
 )
-from .engine import Engine, global_runtime, run, wheel_metadata
+from .engine import Engine, global_runtime, preflight_release, run, wheel_metadata
 from .storage import Layout
 
 
@@ -130,7 +130,7 @@ def install_from_source(source: Path, mcp_server_name: str | None = None, *,
 def package(source: Path, *, lock_only: bool = False,
             package_wheel: Path | None = None,
             package_lock: Path | None = None) -> dict:
-    """Register an MCP server wheel and optional package prerequisite."""
+    """Preflight and register an MCP server wheel set without activating it."""
     selected = source_metadata(source)
     source, identity, version = selected.path, selected.mcp_server_name, selected.version
     if (package_wheel is None) != (package_lock is None) or (lock_only and package_wheel is not None):
@@ -252,6 +252,13 @@ def package(source: Path, *, lock_only: bool = False,
         manifest_path = temporary / "manifest.json"
         manifest_path.write_text(json.dumps(release, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         release_hash = digest(manifest_path)
+        candidate = temporary / "preflight"
+        candidate.mkdir()
+        try:
+            preflight_release(layout, release, wheels, candidate, runtime)
+        finally:
+            if candidate.exists():
+                shutil.rmtree(candidate)
         with layout.lock("registry"):
             catalog_path = layout.path("registry.json")
             catalog = registry(read_json(catalog_path) if catalog_path.exists() else {"schema": 1, "mcp_server_id": identity, "versions": {}}, identity)

@@ -137,6 +137,112 @@ def wheel_metadata(path: Path) -> tuple[str, str]:
         raise DeploymentError("invalid wheel") from exc
 
 
+def preflight_release(
+    layout: Layout,
+    release: dict[str, Any],
+    wheel_paths: list[Path],
+    candidate: Path,
+    runtime: Runtime,
+) -> None:
+    """Install and readiness-check one exact wheel set in an empty candidate.
+
+    The caller owns candidate cleanup. Packaging supplies a disposable staging
+    candidate before registry mutation; deployment supplies the final candidate
+    and commits it only after this function succeeds.
+    """
+
+    if not candidate.is_dir() or any(candidate.iterdir()):
+        raise DeploymentError("candidate environment must start as an empty directory")
+    expected = {wheel["filename"]: wheel for wheel in release["wheels"]}
+    supplied = {path.name: path for path in wheel_paths}
+    if len(supplied) != len(wheel_paths) or set(supplied) != set(expected):
+        raise DeploymentError("candidate wheel set does not match release manifest")
+    requirements: list[str] = []
+    distributions: dict[str, str] = {}
+    for filename in sorted(expected):
+        wheel = expected[filename]
+        path = supplied[filename]
+        if not path.is_file() or digest(path) != wheel["sha256"]:
+            raise DeploymentError("wheel digest mismatch")
+        name, wheel_version = wheel_metadata(path)
+        if name in distributions:
+            raise DeploymentError("duplicate distribution in release")
+        distributions[name] = wheel_version
+        requirements.append(f"{path.resolve().as_uri()} --hash=sha256:{wheel['sha256']}")
+    identity = release["mcp_server_id"]
+    version = release["version"]
+    if distributions.get(release["distribution"].replace("-", "_")) != version:
+        raise DeploymentError("MCP server distribution version mismatch")
+
+    temporary = candidate / "tmp"
+    temporary.mkdir()
+    env = child_environment(layout, temporary)
+    lock = candidate / "requirements.txt"
+    lock.write_text("\n".join(requirements) + "\n", encoding="utf-8")
+    environment = candidate / "environment"
+    run(
+        [
+            str(runtime.uv),
+            "venv",
+            "--no-config",
+            "--python",
+            str(runtime.python),
+            str(environment),
+        ],
+        cwd=candidate,
+        env=env,
+    )
+    executable = environment / "Scripts" / "python.exe"
+    run(
+        [
+            str(runtime.uv),
+            "pip",
+            "sync",
+            "--python",
+            str(executable),
+            "--no-config",
+            "--no-index",
+            "--require-hashes",
+            "--only-binary",
+            ":all:",
+            str(lock),
+        ],
+        cwd=candidate,
+        env=env,
+    )
+    run(
+        [
+            str(runtime.uv),
+            "pip",
+            "check",
+            "--python",
+            str(executable),
+            "--no-config",
+        ],
+        cwd=candidate,
+        env=env,
+    )
+    output = run(
+        [
+            str(executable),
+            "-I",
+            "-B",
+            "-m",
+            release["module"],
+            "--deployment-check",
+        ],
+        cwd=candidate,
+        env=env,
+        timeout=30,
+    )
+    try:
+        ready = json.loads(output)
+    except json.JSONDecodeError as exc:
+        raise DeploymentError("invalid readiness response") from exc
+    if ready != {"mcp_server_id": identity, "version": version, "ready": True}:
+        raise DeploymentError("MCP server readiness failed")
+
+
 class Engine:
     def __init__(self) -> None:
         self.layout = Layout()
@@ -202,44 +308,17 @@ class Engine:
                 raise DeploymentError("release selection mismatch")
             if mcp_server_name == MCP_SERVER_NAME and (release["module"], release["distribution"]) != ("ceratops_mcp_server_manager", MCP_SERVER_NAME):
                 raise DeploymentError("manager entry point is fixed")
-            requirements = []
-            distributions: dict[str, str] = {}
+            wheel_paths: list[Path] = []
             for wheel in release["wheels"]:
                 path = layout.path("artifacts", version, sha256, wheel["filename"])
-                if digest(path) != wheel["sha256"]:
-                    raise DeploymentError("wheel digest mismatch")
-                name, wheel_version = wheel_metadata(path)
-                if name in distributions:
-                    raise DeploymentError("duplicate distribution in release")
-                distributions[name] = wheel_version
-                requirements.append(f"{path.as_uri()} --hash=sha256:{wheel['sha256']}")
-            if distributions.get(release["distribution"].replace("-", "_")) != version:
-                raise DeploymentError("MCP server distribution version mismatch")
+                wheel_paths.append(path)
             runtime = global_runtime()
-            python, uv = runtime.python, runtime.uv
             instance = uuid.uuid4().hex
             candidate = layout.directory("versions", version, instance)
             committed = False
             try:
-                temporary = candidate / "tmp"
-                temporary.mkdir()
-                env = child_environment(layout, temporary)
-                lock = candidate / "requirements.txt"
-                lock.write_text("\n".join(requirements) + "\n", encoding="utf-8")
-                environment = candidate / "environment"
-                run([str(uv), "venv", "--no-config", "--python", str(python), str(environment)], cwd=candidate, env=env)
-                executable = environment / "Scripts" / "python.exe"
-                run([str(uv), "pip", "sync", "--python", str(executable), "--no-config", "--no-index",
-                     "--require-hashes", "--only-binary", ":all:", str(lock)], cwd=candidate, env=env)
-                run([str(uv), "pip", "check", "--python", str(executable), "--no-config"], cwd=candidate, env=env)
-                output = run([str(executable), "-I", "-B", "-m", release["module"], "--deployment-check"], cwd=candidate, env=env, timeout=30)
-                try:
-                    ready = json.loads(output)
-                except json.JSONDecodeError as exc:
-                    raise DeploymentError("invalid readiness response") from exc
-                if ready != {"mcp_server_id": mcp_server_name, "version": version, "ready": True}:
-                    raise DeploymentError("MCP server readiness failed")
-                layout.remove_scratch(temporary)
+                preflight_release(layout, release, wheel_paths, candidate, runtime)
+                layout.remove_scratch(candidate / "tmp")
                 selection = {"schema": 1, "mcp_server_id": mcp_server_name, "version": version, "manifest_sha256": sha256,
                              "instance": instance, "module": release["module"]}
                 layout.atomic_json(candidate / "receipt.json", selection)

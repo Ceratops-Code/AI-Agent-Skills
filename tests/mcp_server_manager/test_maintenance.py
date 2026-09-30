@@ -19,7 +19,7 @@ from tests.mcp_server_manager.test_engine import (
     storage,
 )
 from tests.mcp_server_manager.test_engine import (
-    deployment as deployment,  # explicit re-export of the shared pytest fixture
+    deployment as deployment,  # noqa: PLC0414 - explicit pytest fixture re-export
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -108,6 +108,9 @@ def source_package(tmp_path, monkeypatch, request):
         return ""
 
     monkeypatch.setattr(package_module, "run", build)
+    # Packaging tests isolate build/registry behavior; engine tests exercise the
+    # shared installer/readiness implementation with simulated candidate runs.
+    monkeypatch.setattr(package_module, "preflight_release", lambda *_args: None)
     return project, runtime_root, calls
 
 
@@ -123,6 +126,63 @@ def test_packaging_refuses_changed_version_and_publishes_atomically(source_packa
     assert not list((runtime_root / "fixture/staging").iterdir())
     assert package_module.package(project) == result
     assert not (runtime_root / "fixture/current.json").exists()
+
+
+def test_package_preflight_failure_leaves_registry_and_artifacts_unchanged(
+    source_package, monkeypatch
+):
+    project, runtime_root, _ = source_package
+    server_root = runtime_root / "fixture"
+    server_root.mkdir()
+    registry_path = server_root / "registry.json"
+    registry_path.write_text(
+        '{"schema":1,"mcp_server_id":"fixture","versions":{}}',
+        encoding="utf-8",
+    )
+    before = registry_path.read_bytes()
+
+    def fail_preflight(*_args):
+        raise contracts.DeploymentError("MCP server readiness failed")
+
+    monkeypatch.setattr(package_module, "preflight_release", fail_preflight)
+    with pytest.raises(contracts.DeploymentError, match="readiness failed"):
+        package_module.package(project)
+
+    assert registry_path.read_bytes() == before
+    assert not (server_root / "artifacts").exists()
+    assert not list((server_root / "staging").iterdir())
+
+
+def test_shared_preflight_rejects_inexact_readiness_response(tmp_path, monkeypatch):
+    release_root = tmp_path / "release"
+    release_root.mkdir()
+    bundle = make_release(release_root, "1.0.0")
+    release = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    wheels = [bundle / item["filename"] for item in release["wheels"]]
+    store = tmp_path / "store"
+    store.mkdir()
+    monkeypatch.setattr(storage, "INSTALL_ROOT", store)
+    layout = storage.Layout("fixture")
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    runtime = engine_module.Runtime(
+        tmp_path / "python.exe", tmp_path / "uv.exe", "3.14.7", "0.12.10"
+    )
+
+    def candidate_run(command, *, cwd, env, timeout=120):
+        if "venv" in command:
+            executable = Path(command[-1]) / "Scripts" / "python.exe"
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(b"fixture executable")
+        if "--deployment-check" in command:
+            return json.dumps(
+                {"mcp_server_id": "wrong", "version": "1.0.0", "ready": True}
+            )
+        return ""
+
+    monkeypatch.setattr(engine_module, "run", candidate_run)
+    with pytest.raises(contracts.DeploymentError, match="readiness failed"):
+        engine_module.preflight_release(layout, release, wheels, candidate, runtime)
 
 
 @pytest.mark.usefixtures("deployment")
@@ -512,6 +572,7 @@ def build(command, **kwargs):
     shutil.copyfile(sys.argv[4], Path(command[command.index('--out-dir') + 1]) / Path(sys.argv[4]).name)
     return ''
 packaging.run = build
+packaging.preflight_release = lambda *_args: None
 def install(self, mcp_server_name, version):
     assert mcp_server_name == 'fixture' and version == '1.0.0'
     assert (storage.INSTALL_ROOT / mcp_server_name / 'registry.json').is_file()

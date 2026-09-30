@@ -2116,6 +2116,65 @@ class GHContractStateEngineTests(unittest.TestCase):
                 disposition="suppression",
             )
 
+    def test_codeql_capture_generates_sentinels_and_closes_evidence(self):
+        commit = "b" * 40
+        alert = {
+            "number": 42,
+            "tool": {"name": "CodeQL"},
+            "rule": {"id": "py/clear-text-logging-sensitive-data"},
+            "most_recent_instance": {
+                "state": "open",
+                "commit_sha": commit,
+                "location": {"path": "safe.py", "start_line": 10},
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            contract = root / "command.json"
+            evidence_path = root / "evidence.json"
+            command = [
+                sys.executable,
+                "-c",
+                (
+                    "import json,os,pathlib;"
+                    "assert os.environ['CODEQL_SENTINEL_TOKEN'].startswith('CODEQL_SENTINEL_');"
+                    "assert 'REAL_API_TOKEN' not in os.environ;"
+                    "path=pathlib.Path(os.environ['CODEQL_TRACE_OUTPUT']);"
+                    "path.write_text(json.dumps({'exercised':True,'trace':["
+                    "{'role':'source','path':'test_safe.py','line':5},"
+                    "{'role':'sink','path':'safe.py','line':10}]}),encoding='utf-8');"
+                    "print('token=<redacted>')"
+                ),
+            ]
+            contract.write_text(
+                json.dumps({"command": command, "sentinel_names": ["token"]}),
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                repo="owner/repo",
+                alert_number=42,
+                commit=commit,
+                action="dismissal",
+                test_command_json=contract,
+                evidence=evidence_path,
+            )
+            with (
+                mock.patch.object(codeql_disposition, "fetch_alert", return_value=alert),
+                mock.patch.object(codeql_disposition, "run_gh_api") as mutate,
+                mock.patch.dict(os.environ, {"REAL_API_TOKEN": "real-secret"}),
+            ):
+                result = codeql_disposition.capture(args)
+
+            self.assertEqual(result["status"], "evidence_captured")
+            self.assertFalse(result["mutated"])
+            mutate.assert_not_called()
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            sentinel = evidence["execution"]["sentinel_credentials"]["token"]
+            self.assertTrue(sentinel.startswith("CODEQL_SENTINEL_TOKEN_"))
+            self.assertNotIn(sentinel, evidence["execution"]["captured_output"])
+            self.assertIn("<redacted>", evidence["execution"]["captured_output"])
+            self.assertEqual(evidence["source_to_sink"]["trace"][-1]["path"], "safe.py")
+
     def test_codeql_dismissal_requires_explicit_authorization_before_patch(self):
         commit = "a" * 40
         alert = {

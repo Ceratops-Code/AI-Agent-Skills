@@ -19,7 +19,10 @@ repository.
    JSON must report exact MCP server identity and installed package version with
    `ready: true`; check required dependencies without modifying user data.
 4. Add focused behavioral tests and usage documentation in the owning repo.
-   Validate package readiness and failure behavior before registering a release.
+   The manager's `package` operation must install the built wheel set in an
+   isolated candidate environment and validate the exact `--deployment-check`
+   identity, version, and readiness response before committing registry state.
+   A failed preflight must leave the registry unchanged.
 5. Use the installed manager's public CLI:
 
    ```powershell

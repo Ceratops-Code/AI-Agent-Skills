@@ -154,8 +154,11 @@ C:\AI-Agents-MCP-Servers\ceratops_mcp_server_manager\bin\ceratops_mcp_server_man
 
 The first command writes a standard `pylock.toml` for review and commit. The
 second builds the wheel, fetches compatible hash-locked PyPI dependency wheels,
-and registers one immutable local artifact record without installing or
-activating it. Both commands are implemented inside the installed manager.
+installs the exact wheel set in a disposable isolated environment, and requires
+the exact readiness response before registering one immutable local artifact
+record. A failed preflight leaves the registry unchanged and its disposable
+environment is removed. Packaging does not activate or retain that candidate.
+Both commands are implemented inside the installed manager.
 Packaging executes reviewed build code and downloads dependencies; it is an
 explicit CLI capability, not an MCP operation or public-repository upload.
 The source installer uses this same implementation for first installation and
