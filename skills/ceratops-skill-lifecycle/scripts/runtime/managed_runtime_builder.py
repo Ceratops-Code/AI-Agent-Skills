@@ -222,7 +222,10 @@ def validate_manifest(
         or len(python_skills) != len({item for item in python_skills if isinstance(item, str)})
         or not all(isinstance(item, str) and item in source_names for item in python_skills)
     ):
-        errors.append("section manifest python_runtime_skills must list unique source skills")
+        errors.append(
+            "section manifest python_runtime_skills must be an array of unique "
+            "source skill names; use [] when no skill needs the managed Python runtime"
+        )
     if errors or not isinstance(sections, Mapping) or not isinstance(assignments, Mapping):
         return errors
 
