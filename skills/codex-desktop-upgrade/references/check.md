@@ -32,18 +32,30 @@ notes establish what is published when they expose an exact version.
 
 ## Workflow
 
-1. Resolve the active managed executable through the patcher's launcher and
-   selected runtime state. Read its `.code-version.json`; record the exact base
-   version, generation, effective patch names, and patcher source identity.
-2. Read the installed official `OpenAI.Codex` package version. Retrieve the
-   current official Store listing or package metadata and official OpenAI Codex
-   desktop release notes. Record source links and retrieval dates.
+1. From the active patcher checkout, run
+   `pwsh -NoProfile -ExecutionPolicy Bypass -File
+   scripts\Test-CodexRuntimeHealth.ps1 -Component Context
+   -RequireRunningCodex -FailOnBlocked` exactly once. Read
+   `%LOCALAPPDATA%\CodexDesktopPatcher\launcher-config.json`, require the
+   reported running path to be beneath its `packageRoot`, resolve exactly one
+   App-Code `patched/*-<generation-prefix>-source-v2` tag from its `storeRoot`,
+   and read only `<tag>:.code-version.json`. Do not read the full generation
+   record or scan the package tree.
+2. Run one bounded `Get-AppxPackage -Name 'OpenAI.Codex'` query that emits only
+   identity, version, architecture, signature, status, and install location.
+   Retrieve one current official Store listing or public package manifest and
+   the official OpenAI release notes; record source links and retrieval dates.
+   When Store metadata omits the exact version or reports `Unknown`, stop version
+   discovery and report that limitation instead of probing alternate endpoints.
 3. Compare the newest officially evidenced version with the running base. If
    publication metadata does not expose an exact newer version, report that
    limitation instead of inferring one from dates or prose.
-4. Summarize only release notes newer than the running base when a reliable
-   version boundary exists; otherwise summarize the newest relevant entries and
-   label the boundary uncertain.
+4. Report a separate dated `New official features` list of user-visible Codex
+   desktop features newer than the running base. Use an exact version-to-note
+   mapping when available. Otherwise use the original App-Code tag commit date
+   only as a labeled local-capture lower bound, state that the notes do not prove
+   inclusion in a specific Store build, and exclude unrelated ChatGPT-only
+   entries.
 5. Map each relevant native change to the effective patch set by behavior and
    owner. Classify patches as no apparent overlap, retirement candidate, or
    insufficient evidence. For each candidate, name the behavior that the
@@ -56,13 +68,15 @@ notes establish what is published when they expose an exact version.
 
 ### Completion Gate
 
-The running-base comparison is supported by current official evidence, every
-effective patch has a retirement disposition, and all unavailable or ambiguous
-version boundaries are explicit.
+The running-base comparison is supported by current official evidence, a dated
+post-base feature list is reported from official notes, every effective patch
+has a retirement disposition, and all unavailable or ambiguous version
+boundaries are explicit.
 
 ### Output Contract
 
 Report the running base, installed official version, latest officially
-evidenced version, whether a newer release exists, linked release-note summary,
-patch-by-patch candidate analysis, and one recommended next action. Do not claim
-that any patch is retired or compatible.
+evidenced version, whether a newer release exists, a dated linked `New official
+features` list, patch-by-patch candidate analysis, and one recommended next
+action. Keep version-to-note uncertainty explicit and do not claim that any
+patch is retired or compatible.
