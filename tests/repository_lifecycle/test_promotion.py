@@ -2335,3 +2335,144 @@ def test_managed_installer_finalizes_only_its_bound_promotion_record(
     assert not record.exists()
     assert scope.read_bytes() == scope_bytes
     assert retained.read_text() == "preserve"
+
+
+def test_completion_receipt_requires_unique_promotion_binding_batch() -> None:
+    loaded = runpy.run_path(str(PROMOTE_REPOSITORY))
+    parse = loaded["_receipt_promotion_bindings"]
+    error = loaded["PromotionError"]
+    bindings = [{"operation": "alpha"}, {"operation": "beta"}]
+    assert parse({"promotion": bindings}) == bindings
+    for invalid in ([], [{"operation": "alpha"}, {"operation": "alpha"}], [{}]):
+        with pytest.raises(error, match="missing or duplicated"):
+            parse({"promotion": invalid})
+
+
+def test_managed_installer_finalizes_multiple_handoffs_once(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from tests.skill_lifecycle.support import load_runtime_installer
+    from tests.support.repositories import create_compatible_repo
+
+    repo, _, _, environment = prepare_repository_lifecycle_repo(tmp_path)
+    skills = ["alpha-tool", "beta-tool"]
+    create_compatible_repo(repo, "example/completion-batch", skills)
+    applications = {
+        f"{skill}-deployment": {
+            "source": ".",
+            "manifest": "README.md",
+            "prerequisites": [],
+            "actions": {
+                "validate": {
+                    "requires": {"capabilities": []},
+                    "no-op": "Repository validation covers this fixture.",
+                },
+                "install": {
+                    "requires": {"capabilities": []},
+                    "steps": [
+                        {
+                            "handoff": {
+                                "lifecycle": "ceratops-skill-lifecycle",
+                                "action": "deploy",
+                                "inputs": {"skill": skill},
+                            }
+                        }
+                    ],
+                },
+            },
+        }
+        for skill in skills
+    }
+    write_sdlc_contract(repo, deliverables={"apps": applications})
+    assert run_git(repo, "add", ".").returncode == 0
+    assert run_git(repo, "commit", "-m", "managed deployment batch").returncode == 0
+    operations = [
+        f"deliverables.apps.{skill}-deployment.actions.install" for skill in skills
+    ]
+    task = repo.parent / "tmp" / repo.name / "promotion-completion-batch"
+    task.mkdir(parents=True)
+    record = task / "promotion.json"
+    promotion_command = [
+        sys.executable,
+        str(PROMOTE_REPOSITORY),
+        "--repo-root",
+        str(repo),
+        "--source-branch",
+        "approved",
+        "--result-file",
+        str(record),
+    ]
+    for operation in operations:
+        promotion_command.extend(("--run-operation", operation))
+    promoted = subprocess.run(
+        promotion_command,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert promoted.returncode == 0, promoted.stderr
+    promotion = json.loads(record.read_text(encoding="utf-8"))
+    destination = tmp_path / "installed"
+    loaded = load_runtime_installer()
+
+    def installer_arguments(*selected_operations: str) -> list[str]:
+        arguments = [
+            "--repo-root",
+            str(repo),
+            "--install-root",
+            str(destination),
+            "--promotion-result",
+            str(record),
+            "--task-temp-root",
+            str(task),
+            "--finalize-promotion-with",
+            str(PROMOTE_REPOSITORY),
+        ]
+        for skill in skills:
+            arguments.extend(("--skill", skill))
+        for operation in selected_operations:
+            arguments.extend(("--operation", operation))
+        return arguments
+
+    assert loaded["main"](installer_arguments(operations[0], operations[0])) == 1
+    duplicate = json.loads(capsys.readouterr().err)
+    assert duplicate["reason"] == "promotion operations must be unique"
+    assert record.is_file() and not destination.exists()
+
+    missing_operation = "deliverables.apps.missing.actions.install"
+    assert loaded["main"](
+        installer_arguments(operations[0], missing_operation)
+    ) == 1
+    missing = json.loads(capsys.readouterr().err)
+    assert "selected pending skill deployment" in missing["reason"]
+    assert record.is_file() and not destination.exists()
+
+    process = subprocess.run
+    finalizations = 0
+
+    def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        nonlocal finalizations
+        if "--finalize-result" in argv:
+            finalizations += 1
+        return process(argv, **kwargs)
+
+    monkeypatch.chdir(tmp_path)
+    with monkeypatch.context() as patch:
+        patch.setattr(subprocess, "run", run)
+        code = loaded["main"](installer_arguments(*operations))
+    captured = capsys.readouterr()
+    assert code == 0, (captured.out, captured.err)
+    receipt = json.loads(captured.out)
+    assert finalizations == 1
+    assert receipt["commit"] == promotion["head"]
+    assert receipt["deployed"] == skills
+    assert [item["operation"] for item in receipt["promotion"]] == operations
+    assert receipt["promotion_cleanup"] == {
+        "status": "completed",
+        "replay_required": False,
+    }
+    assert not record.exists()
+    assert all((destination / skill / "SKILL.md").is_file() for skill in skills)

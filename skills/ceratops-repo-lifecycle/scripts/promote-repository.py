@@ -1372,6 +1372,35 @@ def _cleanup_path(path: pathlib.Path) -> pathlib.Path:
     return absolute
 
 
+def _receipt_promotion_bindings(receipt: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return one or more unique promotion bindings from a completion receipt."""
+    raw = receipt.get("promotion")
+    values = [raw] if isinstance(raw, dict) else raw
+    if (
+        not isinstance(values, list)
+        or not values
+        or not all(isinstance(item, dict) for item in values)
+    ):
+        raise PromotionError(
+            "Completion evidence operation is missing or duplicated."
+        )
+    operations: set[str] = set()
+    bindings: list[dict[str, Any]] = []
+    for item in values:
+        operation = item.get("operation")
+        if (
+            not isinstance(operation, str)
+            or not operation
+            or operation in operations
+        ):
+            raise PromotionError(
+                "Completion evidence operation is missing or duplicated."
+            )
+        operations.add(operation)
+        bindings.append(item)
+    return bindings
+
+
 def _validate_completion(
     receipt: object,
     *,
@@ -1414,7 +1443,10 @@ def _validate_completion(
         raise PromotionError(
             "Deployment completion evidence identifies a different repository or commit."
         )
-    if receipt["producer"] != outcome.get("handoff") or receipt["promotion"] != binding:
+    promotion_matches = receipt["promotion"] is None and binding is None
+    if binding is not None:
+        promotion_matches = binding in _receipt_promotion_bindings(receipt)
+    if receipt["producer"] != outcome.get("handoff") or not promotion_matches:
         raise PromotionError(
             "Deployment completion evidence does not match this handoff and saved record."
         )
@@ -1740,13 +1772,17 @@ def finalize_result(args: argparse.Namespace) -> None:
         if len(evidence) > 4_194_304:
             raise PromotionError("Completion evidence exceeds the supported size.")
         value = json.loads(evidence, object_pairs_hook=_unique_result_object)
-        binding = value.get("promotion") if isinstance(value, dict) else None
-        operation = binding.get("operation") if isinstance(binding, dict) else None
-        if not isinstance(operation, str) or not operation or operation in external:
+        if not isinstance(value, dict):
             raise PromotionError(
                 "Completion evidence operation is missing or duplicated."
             )
-        external[operation] = value
+        for binding in _receipt_promotion_bindings(value):
+            operation = binding["operation"]
+            if operation in external:
+                raise PromotionError(
+                    "Completion evidence operation is missing or duplicated."
+                )
+            external[operation] = value
     if args.promotion_only:
         _completed_promotion_only(result, args.expected_commit, args.release_branch)
     else:

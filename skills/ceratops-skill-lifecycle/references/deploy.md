@@ -20,8 +20,10 @@ deployment operations or the independent bootstrap installer.
   "<skill-root>/scripts/runtime/install-managed-skills.py"
   --repo-root <repo-root> [--install-root <skills-root>]
   [--skill <name>...] [--remove-skill <name>...]
-  [--base-revision <full-sha>] [--previous-runtime-source-id <id>]` from the
-  installed or source lifecycle bundle.
+  [--base-revision <full-sha>] [--previous-runtime-source-id <id>]
+  [--promotion-result PATH --operation LOCATION [--operation LOCATION...]
+  --task-temp-root ROOT --finalize-promotion-with HELPER]` from the installed
+  or source lifecycle bundle.
 
 - Before classifying or replacing runtime paths, the installer changes its
   process working directory to the verified `<repo-root>`.
@@ -61,17 +63,19 @@ deployment operations or the independent bootstrap installer.
    For an authorized source-identity rename, pass the exact previous identity;
    the transaction accepts only the current or previous owner for selected
    targets and writes only the current identity.
-3. Before invoking the installer for a saved promotion handoff, select
-   `--promotion-result PATH --operation LOCATION --task-temp-root ROOT
+3. Before invoking the installer for saved promotion handoffs, select
+   `--promotion-result PATH`, repeat `--operation LOCATION` in promotion order
+   for every selected skill-deployment handoff, and add `--task-temp-root ROOT
    --finalize-promotion-with HELPER`, where HELPER is the promotion helper
    selected by repository lifecycle.
 4. Run the installer once. Its JSON receipt identifies the source commit,
    installation destination, exact changed skills, and cleanup debt.
-   Cleanup-blocked output means deployment completed with retained debt. For a
-   saved handoff, it binds the receipt to the original record before deployment
-   and invokes the selected finalizer once after debt-free completion. If
-   cleanup fails, retain the returned receipt and retry finalization with it;
-   never reinstall solely to recover evidence or delete the record.
+   Cleanup-blocked output means deployment completed with retained debt. For
+   saved handoffs, it binds the receipt to every selected operation before
+   deployment and invokes the selected finalizer once after debt-free
+   completion. If cleanup fails, retain the returned receipt and retry
+   finalization with it; never reinstall solely to recover evidence or delete
+   the record.
 
 ## Done When
 

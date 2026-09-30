@@ -161,13 +161,16 @@ branches, and pending-work scope before finalization. The helper requires a
 ready result for the expected commit with no deployment operations or evidence.
 Without `--promotion-only`, deployment completion checks still apply.
 
-For a completed handoff, add `--deployment-evidence FILE` or pass its JSON on
-stdin with `--deployment-evidence -`. Bound evidence permits omission of the
-caller digest when every outcome uses this protocol. The receipt must bind the
-original record digest and operation to its producer, repository, clean commit,
-installation destination, exact deployed and removed skills, transaction, and
-cleanup debt. Finalization validates these fields and requires completed status
-with no debt; a handoff or `OK` alone cannot establish completion.
+For completed handoffs, add `--deployment-evidence FILE` or pass JSON on
+stdin with `--deployment-evidence -`. One receipt may bind one operation or a
+nonempty ordered list of operations from the same unchanged promotion record.
+Bound evidence permits omission of the caller digest when every outcome uses
+this protocol. The receipt must bind the original record digest and operations
+to its producer, repository, clean commit, installation destination, exact
+deployed and removed skills, transaction, and cleanup debt. Finalization maps
+the receipt to every bound operation, rejects duplicate or unselected
+operations, and requires completed status with no debt; a handoff or `OK` alone
+cannot establish completion.
 
 Finalization deletes only the named promotion record. It preserves failed,
 incomplete, mismatched, changed, linked, and out-of-scope records, other task
