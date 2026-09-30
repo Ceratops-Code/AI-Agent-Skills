@@ -13,13 +13,13 @@ import stat
 import subprocess
 import sys
 import threading
-import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import tomllib
 
 from tests.repository_lifecycle.support import (
     REPOSITORY_LIFECYCLE_SCRIPTS,
@@ -95,14 +95,25 @@ def _bundle_diagnostic(repo: pathlib.Path, selection: dict[str, str]) -> pathlib
     return runner._build_diagnostic_path(store / ".diagnostics", selection)
 
 
-def test_bundle_transaction_reuses_exact_success_and_preserves_inputs(tmp_path) -> None:
+def test_completed_build_reader_preserves_recorded_acceptance_and_paths(tmp_path) -> None:
     repo, kwargs, calls = _bundle_transaction(tmp_path)
     receipt_path = runner.build_bundle(repo, **kwargs)
     saved = {path.relative_to(receipt_path.parent): path.read_bytes()
              for path in receipt_path.parent.rglob("*") if path.is_file()}
     assert calls == ["build", "test"]
-    assert runner.build_bundle(repo, **kwargs) == receipt_path
+    (repo / "source.txt").write_text("changed working input\n", encoding="utf-8")
+    kwargs["required_tests"] = ["replacement-artifact-test"]
+    selected = runner.read_completed_build(repo, selection=kwargs["selection"])
+    explicit = runner.read_completed_build(repo, receipt_path=receipt_path)
     assert calls == ["build", "test"]
+    assert selected == explicit
+    assert selected.receipt_path == receipt_path
+    assert selected.artifacts == (receipt_path.parent / "artifacts/example.whl",)
+    assert selected.dependencies == ()
+    assert {path.relative_to(receipt_path.parent).as_posix()
+            for path in selected.supporting_files} == {
+        "supporting-files/build-inputs.json", "supporting-files/test.json",
+    }
     assert {path.relative_to(receipt_path.parent): path.read_bytes()
             for path in receipt_path.parent.rglob("*") if path.is_file()} == saved
     store = receipt_path.parent.parent
@@ -111,14 +122,50 @@ def test_bundle_transaction_reuses_exact_success_and_preserves_inputs(tmp_path) 
     assert [path.name for path in (store / ".locks").iterdir()] == ["store.lock"]
     assert not diagnostic.exists()
     assert not (receipt_path.parent / "work").exists()
-    assert run_git(repo, "status", "--porcelain").stdout == ""
+    assert run_git(repo, "status", "--porcelain").stdout == " M source.txt\n"
 
+    with pytest.raises(runner.OperationError, match="already exists"):
+        runner.build_bundle(repo, **kwargs)
     conflicting = {**kwargs, "inputs": {**kwargs["inputs"], "lock": "b" * 64}}
-    with pytest.raises(runner.OperationError, match="different locked inputs"):
+    with pytest.raises(runner.OperationError, match="already exists"):
         runner.build_bundle(repo, **conflicting)
     assert calls == ["build", "test"] and diagnostic.is_file()
-    assert runner.build_bundle(repo, **kwargs) == receipt_path
-    assert not diagnostic.exists()
+
+
+def test_completed_build_reader_returns_recorded_dependency_paths(tmp_path) -> None:
+    repo, kwargs, calls = _bundle_transaction(tmp_path)
+    original_build = kwargs["build"]
+
+    def build_with_dependency(bundle, work):
+        product = original_build(bundle, work)
+        dependency = bundle / "dependencies/example-dependency.whl"
+        dependency.parent.mkdir()
+        dependency.write_bytes(b"exact dependency artifact")
+        return runner.BuildProduct(
+            artifacts=product.artifacts,
+            dependencies=[{
+                "identity": {
+                    **kwargs["selection"],
+                    "sourceCommit": "d" * 40,
+                    "releaseUnit": "example-dependency",
+                    "version": "0.1+alpha",
+                },
+                "artifacts": [{
+                    "deliverable": "deliverables.packages.example-dependency",
+                    "type": "wheel",
+                    "path": "dependencies/example-dependency.whl",
+                }],
+            }],
+        )
+
+    receipt = runner.build_bundle(repo, **{**kwargs, "build": build_with_dependency})
+    completed = runner.read_completed_build(repo, receipt_path=receipt)
+    assert len(completed.dependencies) == 1
+    assert completed.dependencies[0].identity["releaseUnit"] == "example-dependency"
+    assert completed.dependencies[0].artifacts == (
+        receipt.parent / "dependencies/example-dependency.whl",
+    )
+    assert calls == ["build", "test"]
 
 
 @pytest.mark.parametrize("problem", ["failed", "blocked", "skipped", "missing", "evidence", "changed", "unlisted", "coverage"])
@@ -166,9 +213,45 @@ def test_bundle_transaction_corruption_does_not_trigger_rebuild(tmp_path) -> Non
     artifact = receipt.parent / "artifacts/example.whl"
     artifact.write_bytes(b"corrupt saved artifact")
     with pytest.raises(results.StepResultError):
-        runner.build_bundle(repo, **kwargs)
+        runner.read_completed_build(repo, selection=kwargs["selection"])
     assert calls == ["build", "test"]
     assert artifact.read_bytes() == b"corrupt saved artifact"
+
+
+@pytest.mark.parametrize(
+    "problem",
+    ["missing", "unfinished", "failed", "malformed", "wrong-build", "missing-file", "modified-file"],
+)
+def test_completed_build_reader_rejects_unusable_records(tmp_path, problem) -> None:
+    repo, kwargs, calls = _bundle_transaction(tmp_path)
+    receipt = runner.build_bundle(repo, **kwargs)
+    selected_receipt = receipt
+    artifact = receipt.parent / "artifacts/example.whl"
+
+    if problem == "missing":
+        receipt.unlink()
+    elif problem == "unfinished":
+        unfinished = receipt.parent.parent / ".staging" / receipt.parent.name
+        shutil.copytree(receipt.parent, unfinished)
+        selected_receipt = unfinished / "receipt.json"
+    elif problem == "failed":
+        record = json.loads(receipt.read_text(encoding="utf-8"))
+        record["status"] = "failed"
+        receipt.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    elif problem == "malformed":
+        receipt.write_text("{\n", encoding="utf-8")
+    elif problem == "wrong-build":
+        wrong = receipt.parent.with_name("f" * 64)
+        receipt.parent.rename(wrong)
+        selected_receipt = wrong / "receipt.json"
+    elif problem == "missing-file":
+        artifact.unlink()
+    elif problem == "modified-file":
+        artifact.write_bytes(b"modified stored artifact")
+
+    with pytest.raises((runner.OperationError, results.StepResultError)):
+        runner.read_completed_build(repo, receipt_path=selected_receipt)
+    assert calls == ["build", "test"]
 
 
 def test_bundle_transaction_requires_test_contract_before_build(tmp_path) -> None:
@@ -231,7 +314,9 @@ def test_bundle_transaction_serializes_concurrent_callers(tmp_path) -> None:
             second = executor.submit(runner.build_bundle, repo, **kwargs)
         finally:
             release.set()
-        assert first.result(timeout=15) == second.result(timeout=15)
+        assert first.result(timeout=15).is_file()
+        with pytest.raises(runner.OperationError, match="already exists"):
+            second.result(timeout=15)
     assert calls == ["build", "test"]
 
 
@@ -241,7 +326,9 @@ def test_bundle_transaction_worktrees_share_the_same_store(tmp_path) -> None:
     worktree = tmp_path / "other-worktree"
     added = run_git(repo, "worktree", "add", "-b", "another-task", str(worktree))
     assert added.returncode == 0, added.stderr
-    assert runner.build_bundle(worktree, **kwargs) == receipt
+    assert runner.read_completed_build(
+        worktree, selection=kwargs["selection"],
+    ).receipt_path == receipt
     assert calls == ["build", "test"]
 
 
@@ -309,8 +396,16 @@ def test_bundle_transaction_cleanup_failure_retains_diagnostic_and_recovers(tmp_
     diagnostic = _bundle_diagnostic(repo, kwargs["selection"])
     assert "Staging cleanup failed" in diagnostic.read_text()
     assert runner.shutil.rmtree is original
-    assert runner.build_bundle(repo, **kwargs).is_file()
-    assert calls == ["build", "test"]
+    assert runner.read_completed_build(
+        repo, selection=kwargs["selection"],
+    ).receipt_path.is_file()
+    next_selection = {
+        **kwargs["selection"],
+        "sourceCommit": "2" * 40,
+        "version": "1.0+alpha.2",
+    }
+    assert runner.build_bundle(repo, **{**kwargs, "selection": next_selection}).is_file()
+    assert calls == ["build", "test", "build", "test"]
     assert not diagnostic.exists()
 
 

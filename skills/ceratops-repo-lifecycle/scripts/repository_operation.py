@@ -122,6 +122,25 @@ class BuildProduct:
     supporting_files: Sequence[Mapping[str, Any]] = ()
 
 
+@dataclass(frozen=True)
+class CompletedDependency:
+    """One recorded dependency identity and its exact stored artifact paths."""
+
+    identity: Mapping[str, str]
+    artifacts: tuple[pathlib.Path, ...]
+
+
+@dataclass(frozen=True)
+class CompletedBuild:
+    """A verified completed v2 build selected for downstream consumption."""
+
+    receipt_path: pathlib.Path
+    receipt: Mapping[str, Any]
+    artifacts: tuple[pathlib.Path, ...]
+    dependencies: tuple[CompletedDependency, ...]
+    supporting_files: tuple[pathlib.Path, ...]
+
+
 def _build_json(value: object) -> bytes:
     return (json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
             + "\n").encode("utf-8")
@@ -135,7 +154,9 @@ def _build_directory(path: pathlib.Path) -> pathlib.Path:
     return sdlc_results._plain_path(path, directory=True)[0]
 
 
-def _build_store(repo_root: pathlib.Path) -> pathlib.Path:
+def _build_store_path(repo_root: pathlib.Path) -> pathlib.Path:
+    """Resolve the shared store location without creating reader-visible state."""
+
     result = subprocess.run(
         ["git", "-C", str(repo_root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
         capture_output=True, text=True, check=False,
@@ -143,7 +164,26 @@ def _build_store(repo_root: pathlib.Path) -> pathlib.Path:
     if result.returncode:
         raise OperationError("Build storage requires a Git repository.")
     common = sdlc_results._plain_path(pathlib.Path(result.stdout.strip()), directory=True)[0]
-    return _build_directory(common / "ceratops" / "builds")
+    return common / "ceratops" / "builds"
+
+
+def _build_store(repo_root: pathlib.Path) -> pathlib.Path:
+    return _build_directory(_build_store_path(repo_root))
+
+
+def _validated_build_selection(selection: Mapping[str, str]) -> dict[str, str]:
+    """Return one canonical v2 build identity after schema validation."""
+
+    result_validator = sdlc_results._operation_result_validator()
+    validator = result_validator.evolve(schema={
+        "$ref": "#/$defs/buildSelection",
+        "$defs": result_validator.schema["$defs"],
+    })
+    errors = list(validator.iter_errors(dict(selection)))
+    if errors:
+        raise OperationError(f"Invalid build selection: {errors[0].message}")
+    identity = json.loads(_build_json(dict(selection)))
+    return {field: identity[field] for field in sdlc_results.BUILD_SELECTION_FIELDS}
 
 
 def _build_file(root: pathlib.Path, descriptor: Mapping[str, Any]) -> dict[str, Any]:
@@ -165,15 +205,33 @@ def _build_file(root: pathlib.Path, descriptor: Mapping[str, Any]) -> dict[str, 
     return record
 
 
-def _build_test_gate(receipt: Mapping[str, Any], required_tests: Sequence[str]) -> None:
+def _recorded_test_gate(receipt: Mapping[str, Any]) -> None:
     tests = receipt["tests"]
     if (receipt["status"] != "passed"
-            or sorted(test["id"] for test in tests) != sorted(required_tests)
+            or not tests
             or any(test["status"] != "passed" or not test["evidence"] for test in tests)):
         raise OperationError("Every required artifact test must pass with recorded evidence.")
     tested = {item["path"] for test in tests for item in test["artifacts"]}
     if not {item["path"] for item in receipt["artifacts"]}.issubset(tested):
         raise OperationError("Required tests do not cover every built artifact.")
+
+
+def _completed_build_gate(receipt: Mapping[str, Any]) -> None:
+    """Require recorded successful acceptance without consulting today's tests."""
+
+    _recorded_test_gate(receipt)
+    if not any(
+        item["type"] == "build-inputs"
+        and item["path"] == "supporting-files/build-inputs.json"
+        for item in receipt["supportingFiles"]
+    ):
+        raise OperationError("Completed build lacks its recorded build inputs.")
+
+
+def _build_test_gate(receipt: Mapping[str, Any], required_tests: Sequence[str]) -> None:
+    if sorted(test["id"] for test in receipt["tests"]) != sorted(required_tests):
+        raise OperationError("Every required artifact test must pass with recorded evidence.")
+    _recorded_test_gate(receipt)
 
 
 def _build_inventory(root: pathlib.Path, receipt: Mapping[str, Any]) -> None:
@@ -189,6 +247,85 @@ def _build_inventory(root: pathlib.Path, receipt: Mapping[str, Any]) -> None:
             actual.add(path.relative_to(root).as_posix())
     if actual != expected:
         raise OperationError("Build bundle contains missing or unlisted files.")
+
+
+def _recorded_build_path(
+    root: pathlib.Path, record: Mapping[str, Any],
+) -> pathlib.Path:
+    """Resolve a previously verified record without repeating its byte checks."""
+
+    path = root.joinpath(*sdlc_results._bundle_relative_path(record["path"]).parts)
+    path, _info = sdlc_results._plain_path(path)
+    if not path.is_relative_to(root):
+        raise OperationError("Build receipt path escapes its completed bundle.")
+    return path
+
+
+def read_completed_build(
+    repo_root: pathlib.Path,
+    *,
+    selection: Mapping[str, str] | None = None,
+    receipt_path: pathlib.Path | None = None,
+) -> CompletedBuild:
+    """Read one explicitly selected completed v2 build without building or testing.
+
+    Callers select either the six-field build identity or an absolute saved
+    ``receipt.json`` path in this repository's shared store. The v2 reader checks
+    identity plus every recorded file once here. Returned paths come only from
+    that verified record, so nested consumers need not reopen or reinterpret it.
+    """
+
+    if (selection is None) == (receipt_path is None):
+        raise OperationError("Select a completed build by identity or receipt path, not both.")
+    try:
+        store = sdlc_results._plain_path(_build_store_path(repo_root), directory=True)[0]
+        if receipt_path is None:
+            assert selection is not None
+            identity = _validated_build_selection(selection)
+            key = hashlib.sha256(_build_json(identity)).hexdigest()
+            bundle = store / key
+            selected_receipt = bundle / "receipt.json"
+        else:
+            selected_receipt = pathlib.Path(receipt_path)
+            if not selected_receipt.is_absolute():
+                raise OperationError("An explicit completed-build receipt path must be absolute.")
+            selected_receipt, _info = sdlc_results._plain_path(selected_receipt)
+            bundle = sdlc_results._plain_path(selected_receipt.parent, directory=True)[0]
+            if selected_receipt.name != "receipt.json" or bundle.parent != store:
+                raise OperationError("Completed-build receipt is outside the shared build store.")
+            identity = _validated_build_selection(
+                sdlc_results._read_build_receipt(selected_receipt)["identity"]
+            )
+            key = hashlib.sha256(_build_json(identity)).hexdigest()
+        if bundle.parent != store or bundle.name != key:
+            raise OperationError("Completed build directory does not match its identity.")
+        receipt = sdlc_results.verify_release_unit_build(
+            selected_receipt, bundle, expected=identity,
+        )
+        _completed_build_gate(receipt)
+        _build_inventory(bundle, receipt)
+    except (OSError, UnicodeError, ValueError, RecursionError) as exc:
+        if isinstance(exc, (OperationError, StepResultError)):
+            raise
+        raise OperationError(f"Cannot read completed build: {exc}"[:1024]) from exc
+
+    return CompletedBuild(
+        receipt_path=selected_receipt,
+        receipt=receipt,
+        artifacts=tuple(_recorded_build_path(bundle, item) for item in receipt["artifacts"]),
+        dependencies=tuple(
+            CompletedDependency(
+                identity=deepcopy(item["identity"]),
+                artifacts=tuple(
+                    _recorded_build_path(bundle, artifact) for artifact in item["artifacts"]
+                ),
+            )
+            for item in receipt["dependencies"]
+        ),
+        supporting_files=tuple(
+            _recorded_build_path(bundle, item) for item in receipt["supportingFiles"]
+        ),
+    )
 
 
 def _remove_build_tree(path: pathlib.Path, parent: pathlib.Path, label: str) -> None:
@@ -370,24 +507,18 @@ def build_bundle(
     removes recognizable staging left by any killed transaction. Completed
     bundles are grouped by repository, release unit, channel and target, retaining
     the newest three by completion time. One helper-owned diagnostic per group is
-    atomically overwritten on failure and removed on successful completion/reuse.
+    atomically overwritten on failure and removed after a successful new publication.
     Diagnostic excerpts are never test evidence.
     This is process-crash recovery, not a power-loss durability guarantee.
     """
     from filelock import FileLock
 
     validator = sdlc_results._operation_result_validator()
-    identity_validator = validator.evolve(schema={
-        "$ref": "#/$defs/buildSelection", "$defs": validator.schema["$defs"],
-    })
-    errors = list(identity_validator.iter_errors(dict(selection)))
-    if errors:
-        raise OperationError(f"Invalid build selection: {errors[0].message}")
     if (isinstance(required_tests, (str, bytes)) or not required_tests
             or any(not isinstance(item, str) or not item.strip() for item in required_tests)
             or len(set(required_tests)) != len(required_tests)):
         raise OperationError("Build requires a nonempty unique list of required test IDs.")
-    identity = json.loads(_build_json(dict(selection)))
+    identity = _validated_build_selection(selection)
     locked_inputs = _build_json({"inputs": inputs, "requiredTests": sorted(required_tests)})
     key = hashlib.sha256(_build_json(identity)).hexdigest()
     store = _build_store(repo_root)
@@ -411,20 +542,9 @@ def build_bundle(
             _cleanup_build_diagnostic_temps(diagnostics)
             _prune_completed_builds(store, validator)
             if completed.exists() or completed.is_symlink():
-                receipt_path = completed / "receipt.json"
-                receipt = sdlc_results.verify_release_unit_build(
-                    receipt_path, completed, expected=identity,
+                raise OperationError(
+                    "Completed build identity already exists; read it explicitly or use a new identity."
                 )
-                _build_test_gate(receipt, required_tests)
-                _build_inventory(completed, receipt)
-                recorded = completed / "supporting-files" / "build-inputs.json"
-                if (not any(item["path"] == "supporting-files/build-inputs.json"
-                            and item["type"] == "build-inputs"
-                            for item in receipt["supportingFiles"])
-                        or recorded.read_bytes() != locked_inputs):
-                    raise OperationError("Completed build has different locked inputs; it cannot be replaced.")
-                _clear_build_diagnostic(diagnostic_path)
-                return receipt_path
 
             work = _build_directory(staging / "work")
             bundle = _build_directory(staging / "bundle")

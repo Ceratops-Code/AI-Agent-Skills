@@ -107,14 +107,18 @@ executable bindings. This avoids each lifecycle helper implementing its own
 interpretation of those declarations. It does not move repository tests into
 the skill.
 
-The shared SDLC loader also owns the opt-in v5 release-unit reader. Units group
-artifact-producing deliverables for a shared release; package prerequisites
-remain separate dependencies whose release-unit owners are resolved without
-merging membership. The schema and semantic validator reject ambiguous owners,
-unresolved dependencies, cycles, unsafe paths, and missing build declarations.
-The reader returns metadata only. Automatic unit builds and receipt-based
-publication or deployment are later lifecycle integrations; the compatibility
-producer and the live repository configuration remain v4.
+The v4/v5 declaration owners are
+`skills/ceratops-repo-lifecycle/references/schemas/sdlc.v5.schema.json` and
+`skills/ceratops-repo-lifecycle/scripts/ceratops_repo_compatibility_engine/sdlc_contract_validation.py`.
+Their opt-in v5 release-unit reader groups artifact-producing deliverables for a
+shared release; package prerequisites remain generic dependencies whose
+release-unit owners are resolved without merging membership. The schema and
+semantic validator reject ambiguous ownership, unresolved dependencies, cycles,
+unsafe paths and missing build declarations while preserving v4 and rejecting
+v1-v3. The reader returns metadata and executes no commands. Automatic unit
+builds and receipt-based publication or deployment are later integrations; the
+compatibility producer and live repository declaration remain v4. Exact-output
+declaration changes remain step 3 work.
 
 `sdlc_results.py` owns explicit build-receipt verification alongside bounded
 operation-result capture. The existing operation-result schema adds a v2 build
@@ -175,14 +179,17 @@ result-only commit stability.
 
 ## Exact-artifact bundle transaction
 
-This is the implemented v2 baseline. The planned replacement and the isolated
-reuse correction are described in the working-folder methodology below.
+This is the implemented v2 baseline after the 1R production/consumption split.
+The planned two-record replacement is described in the working-folder
+methodology below.
 
-Steps 1a and 1b provide metadata and verification; 1c makes skill-update
-corrections resumable; 1d supplies internal artifact storage.
-`repository_operation.build_bundle` coordinates adapters, tests and publication.
-`sdlc_results.verify_release_unit_build` remains the read-only integrity owner;
-it neither stores bundles nor decides whether required tests passed.
+Steps 1a and 1b provide metadata and verification; 1R separates production from
+completed-build consumption; 1c makes skill-update corrections resumable; 1d
+supplies internal artifact storage. `repository_operation.build_bundle`
+coordinates adapters, tests and publication. `repository_operation.read_completed_build`
+selects an existing completed v2 build for consumption.
+`sdlc_results.verify_release_unit_build` remains the read-only byte-integrity
+owner; it neither stores bundles nor decides which tests are required today.
 
 The caller provides all six selection fields (repository, commit, unit, channel,
 version, target), resolved locked inputs, required test IDs and two adapter
@@ -198,10 +205,9 @@ The transaction uses the following sequence:
    waiter races. While holding it, remove every recognizable abandoned staging
    directory and interrupted diagnostic write left by earlier instances, then
    apply completed-bundle retention.
-2. If the final directory exists, verify its receipt and every file, require
-   the exact required passed test set, and compare canonical recorded inputs.
-   Reuse the exact receipt path; corruption or changed inputs never cause a
-   replacement build under that identity.
+2. If the final directory exists, reject the production request. Completed
+   identities are immutable and another build must use a new identity; the
+   producer neither returns nor replaces an older record.
 3. Otherwise create `.staging/<key>/bundle` and a separate `work` directory.
    The build adapter gets both locations and returns explicit output descriptors,
    not supplied hashes. The transaction measures artifacts and dependency files
@@ -217,13 +223,26 @@ The transaction uses the following sequence:
 5. Rename the complete bundle directory to `builds/<key>` on the same
    filesystem, apply retention again, return its exact `receipt.json` path and
    clean remaining private work. A retained directory is never overwritten.
-   Later consumers must still verify saved bytes; this is not a signature or
-   authenticity guarantee.
+   This is not a signature or authenticity guarantee.
+
+Completed-build consumption is a separate read-only path. The caller supplies
+either the six-field selected identity or an absolute saved `receipt.json` in
+the shared store; it cannot also supply adapters, new build inputs or a current
+required-test list. The reader requires a completed successful record, matches
+the build directory and identity, verifies every recorded size and SHA-256 once
+through the v2 verifier, rejects missing or unlisted files, and returns the exact
+artifact, dependency-artifact and supporting-file paths from that record. The
+saved `supporting-files/build-inputs.json` participates in those integrity
+checks but is not compared with the working folder. Nested consumers receive the
+verified record and paths rather than reopening it. The reader does not build,
+run tests, mutate retention or diagnostics, rewrite the receipt, or substitute
+current-worktree files.
 
 Callbacks must finish their child processes before returning. Their required
 test implementation and resolved dependency/toolchain inputs belong in the
-caller-supplied locked inputs. The store checks that these inputs agree on reuse;
-it does not discover missing dependencies or infer test coverage from source.
+caller-supplied locked inputs. A changed source, lock or other build input needs
+a new identity and qualification; it does not revoke an earlier accepted build.
+The store does not discover missing dependencies or infer test coverage from source.
 Real package/skill adapters and installed-artifact tests arrive in later steps.
 The existing SDLC commands and installers are unchanged.
 
@@ -240,11 +259,13 @@ releases the repository lock; the next transaction cleans all recognizable
 orphaned staging before reuse or building. This is call-triggered recovery, not
 a background sweeper or a power-loss durability guarantee.
 
-Existing `tests/repository_lifecycle/test_sdlc_handoffs.py` exercises exact reuse,
-input conflicts, failed/missing tests, changed artifacts, corruption, concurrent
-callers, worktree sharing, bounded retention, killed-owner recovery and cleanup
-failure. The store keeps one reusable lock, at most three completed bundles per
-release group and one current diagnostic per group. No public Build command is
+Existing `tests/repository_lifecycle/test_sdlc_handoffs.py` exercises production
+qualification, immutable identity collisions, consumption after working inputs
+change, explicit receipt and identity selection, zero build/test callbacks on
+reads, failed/missing/malformed/wrong records, changed files, concurrent callers,
+worktree sharing, bounded retention, killed-owner recovery and cleanup failure.
+The store keeps one reusable lock, at most three completed bundles per release
+group and one current diagnostic per group. No public Build or Deploy command is
 introduced.
 
 ## Working-folder acceptance methodology (planned)
@@ -426,23 +447,19 @@ Failed/missing required checks still prevent first acceptance of a new candidate
 An explicit request for additional checks is a distinct operation, not a
 retroactive rewrite of the earlier receipt.
 
-The current v2 store's reuse path incorrectly feeds today's required-test IDs
-and serialized inputs into completed-build consumption. Correct it independently
-through separate internal production and reading helpers. Production accepts
-source/dependency/build inputs and required tests, publishes successful records
-only after qualification, and never overwrites a completed build identity.
-
-The completed-build reader accepts an explicit receipt or selected completed
-identity, with no new build inputs or current test list. It reads recorded
-successful completion without reconstructing acceptance by comparing test lists.
-Perform safe parsing, identity matching and recorded-file integrity comparisons
-once at the consumption boundary, then pass the result through nested helpers.
-Return its exact artifact/dependency/supporting paths without building, testing,
-rewriting the receipt or substituting current-worktree files. The original
-build-inputs record is retained and hash-checked, not compared with new inputs.
-Changed source or locks belong to a new build; they do not revoke an earlier
-artifact's acceptance. Missing, failed, unfinished, malformed, wrong-identity or
-corrupt records/files still block consumption.
+The implemented v2 store has separate internal production and reading helpers.
+Production accepts source/dependency/build inputs and required tests, publishes
+successful records only after qualification, and rejects an existing completed
+identity. The completed-build reader accepts an explicit saved receipt or the
+selected completed identity, with no new build inputs or current test list. It
+uses recorded successful completion without reconstructing acceptance from
+today's test catalog, performs safe parsing, identity matching and recorded-file
+integrity comparisons once at the consumption boundary, and returns exact
+artifact, dependency and supporting-file paths. The original build-inputs record
+is retained and hash-checked, not compared with new inputs. Changed source or
+locks belong to a new build; they do not revoke an earlier artifact's acceptance.
+Missing, failed, unfinished, malformed, wrong-identity or corrupt records/files
+still block consumption. Public receipt-based Deploy remains a later integration.
 
 ### Merge-back, promotion and Ship
 
@@ -595,7 +612,11 @@ pending on amendment; changed inputs after each success start another numbered
 verification generation with no arbitrary one-correction limit. Original
 branch, descendant-commit, ownership and unrelated-change checks still apply.
 Tests remain in the repository runner, not this helper. Finalization is the
-explicit end-of-work cleanup trigger, never an intermediate correction step.
+explicit end-of-work cleanup trigger, never an intermediate correction step. It
+consumes recorded successful verification without rechecking the live checkout,
+so later source advancement does not repeat completed finalization checks. Shared
+worktree admission remains 2A work; new acceptance-record cleanup handoffs remain
+step 7 work.
 
 `supersede` remains a subcommand of `skill-update-workflow.py` for an explicitly
 revised update request after failed verification. It creates a successor

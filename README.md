@@ -239,21 +239,24 @@ MCP servers built directly from source may declare no package prerequisite.
 The compatibility producer and this repository's live declaration use v4.
 Existing v1-v3 repositories are not automatically migrated.
 
+The v4/v5 release-declaration owners are
+`skills/ceratops-repo-lifecycle/references/schemas/sdlc.v5.schema.json` and
+`skills/ceratops-repo-lifecycle/scripts/ceratops_repo_compatibility_engine/sdlc_contract_validation.py`.
 SDLC v5 adds optional `repository.release-units`. Each unit declares a nonempty
 `members` list of full deliverable references, such as
 `deliverables.apps.desktop`. Members can be any supported deliverable kind;
 each member has a build action and artifact metadata and belongs to at most one
-unit. Package prerequisites remain dependencies, not additional members. Every
-package dependency of a unit must have its own declared release-unit owner or
-belong to the consuming unit; dependency cycles are rejected.
+unit. Package prerequisites remain dependencies rather than members. Every
+package dependency has one declared release-unit owner or belongs to the
+consuming unit; ambiguous ownership and dependency cycles are rejected.
 
-The existing SDLC loader validates v5 and exposes
-`release_unit_entries(contract)`: member metadata and action locations, plus
-external package dependencies with their owning release units. Reading this
-information runs no commands. Existing action preparation and validation/test
-gates understand v5, but automatic release-unit Build, Promote, Ship, and Deploy
-are not connected yet. Compatibility generation remains v4. The v5 schema lives
-at `skills/ceratops-repo-lifecycle/references/schemas/sdlc.v5.schema.json`.
+The loader exposes `release_unit_entries(contract)`: member metadata and action
+locations plus external package dependencies with their owning release units.
+Loading and reading this metadata execute no commands. Existing action
+preparation and validation/test gates understand v5, while compatibility
+generation and this repository's live declaration remain v4. Automatic
+release-unit Build, Promote, Ship, and Deploy are not connected yet; exact
+artifact-output declarations and their consumers remain step 3 work.
 
 Build receipts use `ceratops-build-result.v2` in the existing
 `operation-result.v1.schema.json`. The repository-owned `sdlc_results.py`
@@ -273,20 +276,41 @@ invalid input or a mismatch returns a nonzero exit code. The Python function
 `verify_release_unit_build` returns the checked receipt with its recorded
 build and test statuses unchanged. Neither interface writes bundle files.
 
+The internal v2 lifecycle now separates production from consumption.
+`repository_operation.build_bundle` accepts the selected source, dependency and
+build inputs plus the required tests; it records those inputs, the original test
+IDs, successful results, tested hashes and evidence, and publishes only after
+qualification succeeds. A completed identity is immutable: another production
+request must use a new identity instead of returning or replacing the old one.
+
+`repository_operation.read_completed_build` instead accepts either the selected
+six-field identity or an absolute saved `receipt.json`. It requires a completed,
+successful v2 record, verifies the selected identity and every recorded file at
+that consumption boundary, and returns the exact recorded artifact, dependency
+artifact and supporting-file paths. It accepts no build callback, test callback,
+new build inputs or current required-test list; `build-inputs.json` is checked as
+a recorded file rather than compared with today's working folder. Missing,
+unfinished, failed, malformed, wrong-identity or corrupt records and files fail
+closed. This reader is internal and does not yet switch public deployment.
+
 ### Exact-artifact foundation and update methodology
 
-The implemented foundation has four separate responsibilities:
+The implemented foundation has five separate responsibilities:
 
 - **1a — declarations:** SDLC v5 describes release-unit members and their
   dependencies; loading it validates metadata without building anything.
 - **1b — verification:** the receipt verifier establishes which files and bytes
   a record identifies. `RECEIPT_VERIFIED` does not convert failed or absent tests
   into passed tests.
+- **1R — completed-build consumption:** production qualifies and publishes a
+  new identity once; the internal reader consumes its recorded acceptance and
+  exact stored files without applying current tests or build inputs.
 - **1c — correction continuity:** the skill-update workflow keeps one active
   record through approved scope extensions and repeated edit/check/fix cycles.
-  It does not derive ownership from Git or select tests; that generic redesign
-  belongs to the later refactor iteration.
-- **1d — completion and reuse:** the internal `build_bundle` function in
+  Its finalizer consumes recorded verification without rechecking the advanced
+  checkout. It does not derive ownership from Git or select tests; shared
+  admission arrives in 2A and acceptance-record cleanup integration in step 7.
+- **1d — production and storage:** the internal `build_bundle` function in
   `skills/ceratops-repo-lifecycle/scripts/repository_operation.py` owns a
   reserved build/test/store transaction. It creates a final receipt only after
   every required artifact test passes, then publishes the complete directory.
@@ -301,9 +325,12 @@ For skill maintenance, prepare one update record before edits. Keep its explicit
 allowed file list, amend it for approved scope extensions, and repeat corrections
 and checks in the same record. A passed verification becomes pending when scope
 or checked inputs change. Finalize only at the real end of the requested work;
-do not finalize/reopen between corrections. Existing repository test runners
-remain unchanged today. Basic affected-check reuse is planned in 2A; general
-ownership derivation and an optional Nx trial remain later work.
+do not finalize/reopen between corrections. Finalization consumes the saved
+successful verification, so later source advancement does not repeat its checks.
+Existing repository test runners remain unchanged today. Shared worktree
+admission and affected-check reuse are planned in 2A; new acceptance-record
+cleanup handoffs remain step 7, with general ownership derivation and an optional
+Nx trial later.
 
 ### Working-folder lifecycle refactor status
 
@@ -321,16 +348,16 @@ Later delivery consumes the selected version's recorded acceptance and bytes.
 | 1b receipt verification | Implemented v2 | Planned separate committed build receipt and artifact receipt |
 | 1c correction continuity | Implemented; finalization consumes recorded success without rechecking the checkout | Connect the new acceptance records later |
 | 1d build/test/store | Implemented internal v2 transaction | Planned store extraction and recoverable final-commit binding |
-| Completed-build consumption | Current reuse still uses the caller's required-test selection | Separate production from reading completed receipts without current build/test inputs |
+| Completed-build consumption | Implemented internal v2 reader; recorded acceptance and exact stored paths survive current test/input changes | Connect public receipt-based Deploy in later steps |
 | Worktree leases and working-folder attempts | Planned | Add native locks, durable unfinished-attempt admission and platform-specific child ownership, then affected-check reuse |
 | Merge-back and beta qualification | Planned | Activate promotion through the shared Build operation with actual beta versions |
 | Public Build, receipt Deploy and GitHub release integration | Planned | Connect producers/consumers before repository adoption |
 
-This documentation update implements none of those planned runtime changes.
-Each subsequent implementation step must update this table, actual command
-guidance and affected output-lifecycle rows in the same working revision.
-Unused internal additions stay labeled internal/planned until their consumers
-are connected. Existing supported commands remain usable at every step.
+The 1R reader remains an internal capability; it does not activate public Build
+or receipt-based Deploy. Each subsequent implementation step must update this
+table, actual command guidance and affected output-lifecycle rows in the same
+working revision. Unused internal additions stay labeled internal/planned until
+their consumers are connected. Existing supported commands remain usable.
 
 ### Generated-output lifecycle
 
@@ -340,10 +367,10 @@ policy. These are the runtime paths used by the foundation and update workflow:
 
 | Runtime path | Class and owner | Rewrite, retention, or cleanup trigger |
 | --- | --- | --- |
-| `<shared-git-directory>/ceratops/builds/<build-key>/`, including receipt, artifacts and supporting files | Persistent immutable output; `build_bundle` | Grouped by repository, release unit, channel and target. At transaction startup and after publication, keep the newest completed bundle plus two predecessors by completion time and key; remove older directories without modifying retained bundles. |
+| `<shared-git-directory>/ceratops/builds/<build-key>/`, including receipt, artifacts and supporting files | Persistent immutable output; `build_bundle` produces and `read_completed_build` consumes | Grouped by repository, release unit, channel and target. At production startup and after publication, keep the newest completed bundle plus two predecessors by completion time and key; remove older directories without modifying retained bundles. Reading performs no retention or cleanup mutation. |
 | `builds/`, `.staging/`, `.locks/`, `.diagnostics/` and `.locks/store.lock` | Persistent bounded infrastructure; `build_bundle` and `filelock` | One repository lock serializes transaction and cleanup ownership. The file remains reusable; the OS releases the held lock on normal exit or process death. No per-build lock history accumulates. |
 | `.staging/<build-key>/work/` and `bundle/` | Temporary private work; `build_bundle` | Removed on success or failure. At every transaction startup, while holding the repository lock, remove every recognizable staging directory left by an earlier instance. Preserve unrecognized entries and report cleanup failure. |
-| `.diagnostics/<release-group-key>.json` and its `.tmp` write file | Persistent latest-failure report and temporary write; `build_bundle` | Atomically overwrite the group's report on failure and remove it after successful completion/reuse. At startup remove interrupted `.tmp` writes. Reports contain bounded excerpts and are never artifact-test evidence. |
+| `.diagnostics/<release-group-key>.json` and its `.tmp` write file | Persistent latest-failure report and temporary write; `build_bundle` | Atomically overwrite the group's report on failure and remove it after successful new publication. At production startup remove interrupted `.tmp` writes. The completed-build reader does not rewrite diagnostics. Reports contain bounded excerpts and are never artifact-test evidence. |
 | Update request, state, evidence and active-update marker under the task temp root | Temporary resumable records; `skill-update-workflow.py` | Retained across corrections/interruption; state and evidence are rewritten by verification. Explicit `finalize` consumes recorded success without rechecking the checkout, checks cleanup ownership and file integrity, removes only recorded owned files, and removes the task root only if empty. |
 | Update check scratch directories and cleanup records | Temporary check work; `skill_update_scratch.py` | Removed when each check scope exits; recorded unfinished cleanup is retried before another check. Explicit check-output paths remain caller-owned. |
 | Existing test-runner scratch and `.build/test-diagnostics/pytest-failure.json` | Temporary execution scratch and persistent latest-failure report; repository test runner | Scratch is removed when the subprocess exits; failure evidence is rewritten on failure and removed by a successful run at that selected path. The existing runner remains its owner. |
