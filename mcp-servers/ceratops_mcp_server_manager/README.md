@@ -65,9 +65,9 @@ writes installation files.
 | CLI command | MCP tool | Inputs |
 | --- | --- | --- |
 | `package --source <directory> [--lock]` | Not exposed | Reviewed MCP server source; optional lock refresh |
-| `package --source <mcp-server-directory> --package-wheel <wheel> --package-lock <pylock.toml>` | Not exposed | Build only MCP server source; register its separate package wheel and locked dependencies |
+| `package --source <mcp-server-directory> --package-wheel <wheel> --package-lock <lockfile>` | Not exposed | Build only MCP server source; register its separate package wheel and locked dependencies |
 | `install [--source <directory>] [--mcp-server-name <name>]` | Not exposed | Repository or MCP server source; defaults to the current directory |
-| `install --source <mcp-server-directory> --package-wheel <wheel> --package-lock <pylock.toml>` | Not exposed | Build the MCP server and install it with the declared package wheel |
+| `install --source <mcp-server-directory> --package-wheel <wheel> --package-lock <lockfile>` | Not exposed | Build the MCP server and install it with the declared package wheel |
 | Not exposed | `install` | `mcp_server_name`, `version` for an exact registered release |
 | `update <mcp-server-name> <version>` | `update` | `mcp_server_name`, `version` |
 | `versions [mcp-server-name]` | `versions` | optional `mcp_server_name` |
@@ -88,8 +88,8 @@ failed queries stop before building. Ignored environments are excluded.
 The manager does not read `sdlc/sdlc.yml`. Repository lifecycle hands the
 selected MCP server and any package prerequisite to `ceratops-mcp-server-lifecycle/install`.
 That action builds and validates a declared package wheel, then passes its
-wheel and lock to the manager. The selected MCP server source still determines its
-name and version; YAML does not supply a version override.
+wheel and canonical lockfile to the manager. The selected MCP server source
+still determines its name and version; YAML does not supply a version override.
 
 For example, from a repository root:
 
@@ -130,8 +130,12 @@ validation. Source metadata must remain stable during the build, and its name
 and version must agree with the built wheel. A source-only MCP server keeps its
 lock inside its MCP server directory. An MCP server with a separate package
 dependency declares its exact version in `pyproject.toml` and supplies the
-package's prebuilt wheel and lock through the paired CLI flags. Installation
-never refreshes a lock.
+package's prebuilt wheel and canonical lockfile through the paired CLI flags.
+The lockfile may be the package's `uv.lock` beside `pyproject.toml`, or an
+existing PEP 751 lockfile. For `uv.lock`, the manager runs a locked export that
+omits the package itself and development dependencies, then consumes the
+temporary PEP 751 output inside its disposable staging transaction. It never
+writes or replaces a package lockfile during installation.
 
 Use a pinned maintained build backend. The module's fixed readiness invocation
 is `python -I -B -m <module> --deployment-check`. It must return exactly:

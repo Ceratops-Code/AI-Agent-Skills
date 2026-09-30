@@ -24,13 +24,13 @@ validation.
 
 `sdlc/sdlc.yml` routes MCP server installation to this action; the manager
 itself reads MCP server `pyproject.toml` and `mcp-server.json`, not SDLC.
-Earlier SDLC bindings use `--source` to build an MCP server directly. SDLC v4
+Earlier SDLC bindings use `--source` to build an MCP server directly. SDLC
 returns the selected MCP server and its package prerequisite records to this
 action. For a package-backed MCP server, run the package's declared build
 action and require its wheel validation to pass. Select exactly one wheel
 matching its artifact directory and filename pattern. The MCP server source
 must declare that package at the wheel's exact version. Pass the wheel and the
-package's `pylock.toml` to the manager; do not pass package source as MCP
+package's canonical lockfile to the manager; do not pass package source as MCP
 server source. An MCP server without a package prerequisite keeps the
 source-build path.
 
@@ -43,7 +43,7 @@ source-build path.
    supply its already validated wheel and package lock as well:
 
    ```powershell
-   python <skill-root>/scripts/install-mcp-server.py --repo-root <repo-root> --source <mcp-server-directory> [--mcp-server-name <name>] --package-wheel <package-wheel.whl> --package-lock <package-pylock.toml>
+   python <skill-root>/scripts/install-mcp-server.py --repo-root <repo-root> --source <mcp-server-directory> [--mcp-server-name <name>] --package-wheel <package-wheel.whl> --package-lock <package-lockfile>
    ```
 
    Omit both package flags for a source-built MCP server without a package

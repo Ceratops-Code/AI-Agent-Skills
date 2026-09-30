@@ -4,8 +4,9 @@ Packaging alone never activates an installation. Repository installation calls
 packaging then the deployment engine with the source-declared name and version.
 Lock refresh is explicit. These build capabilities are not exposed over MCP.
 Ordinary PEP 517 tooling executes reviewed MCP server source during a build. A declared
-local package may supply a prebuilt wheel and its third-party lock; the package
-source is never copied into the MCP server build. Build scratch is owned here and
+local package may supply a prebuilt wheel and its canonical lock; the package
+source is never copied into the MCP server build. A canonical uv.lock is exported
+to PEP 751 only inside disposable build scratch. Build scratch is owned here and
 removed on success or failure. Nothing requires a skills directory or an
 Ceratops-AI-Agents-Kit checkout after the manager is installed.
 """
@@ -72,6 +73,19 @@ def source_metadata(source: Path) -> MCPServerSource:
     return MCPServerSource(source, token(project["name"]), token(project["version"], "version"), token(config["module"], "module"))
 
 
+def locked_dependencies(path: Path) -> dict:
+    """Read one PEP 751 dependency lock and reject lookalike lock schemas."""
+    try:
+        locked = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise DeploymentError("package lock is not valid TOML") from exc
+    packages = locked.get("packages")
+    if (locked.get("lock-version") != "1.0" or not isinstance(packages, list)
+            or not all(isinstance(package, dict) for package in packages)):
+        raise DeploymentError("package lock must be a PEP 751 pylock.toml or canonical uv.lock")
+    return locked
+
+
 def resolve_source(source: Path, mcp_server_name: str | None = None) -> MCPServerSource:
     """Select one declared MCP server before builds.
 
@@ -136,6 +150,9 @@ def package(source: Path, *, lock_only: bool = False,
     if (package_wheel is None) != (package_lock is None) or (lock_only and package_wheel is not None):
         raise DeploymentError("package wheel and lock must be supplied together, without --lock")
     required_package: tuple[str, str] | None = None
+    package_lock_sha256: str | None = None
+    package_project: Path | None = None
+    package_project_sha256: str | None = None
     if package_wheel is not None:
         # The wheel is a release input, not a source directory. Check its exact
         # distribution/version against the MCP server's PEP 508 dependency before any
@@ -147,6 +164,15 @@ def package(source: Path, *, lock_only: bool = False,
         package_lock = package_lock.resolve(strict=True)
         if not package_wheel.is_file() or not package_lock.is_file():
             raise DeploymentError("package wheel and lock must be regular files")
+        package_lock_sha256 = digest(package_lock)
+        if package_lock.name == "uv.lock":
+            project_candidate = package_lock.parent / "pyproject.toml"
+            if project_candidate.is_symlink() or not project_candidate.is_file():
+                raise DeploymentError("uv.lock requires an adjacent regular pyproject.toml")
+            package_project = project_candidate.resolve(strict=True)
+            if package_project.parent != package_lock.parent:
+                raise DeploymentError("uv.lock and pyproject.toml must share one package directory")
+            package_project_sha256 = digest(package_project)
         token(package_wheel.name, "wheel")
         required_package = wheel_metadata(package_wheel)
         try:
@@ -193,8 +219,23 @@ def package(source: Path, *, lock_only: bool = False,
             run([str(uv), "pip", "compile", "pyproject.toml", "--python", str(python), "--python-platform", "windows",
                  "--format", "pylock.toml", "--output-file", "pylock.toml", "--no-header", "--no-config", "--no-sources"], cwd=source, env=env)
             return {"lock": str(lock)}
-        locked = tomllib.loads(lock.read_text(encoding="utf-8") if package_lock is not None
-                              else source_file(source, "pylock.toml").read_text(encoding="utf-8"))
+        if package_lock is not None and package_lock.name == "uv.lock":
+            assert package_project is not None
+            assert package_lock_sha256 is not None
+            assert package_project_sha256 is not None
+            lock = temporary / "pylock.package.toml"
+            run([
+                str(uv), "export", "--project", str(package_lock.parent),
+                "--locked", "--format", "pylock.toml", "--no-dev",
+                "--no-emit-project", "--output-file", str(lock),
+                "--no-header", "--no-config",
+            ], cwd=package_lock.parent, env=env)
+            if (digest(package_lock) != package_lock_sha256
+                    or digest(package_project) != package_project_sha256):
+                raise DeploymentError("package uv.lock or pyproject.toml changed during export")
+        locked = locked_dependencies(
+            lock if package_lock is not None else source_file(source, "pylock.toml")
+        )
         run([str(uv), "build", str(source), "--wheel", "--out-dir", str(temporary), "--python", str(python), "--no-config", "--no-sources"], cwd=source, env=env)
         wheels = list(temporary.glob("*.whl"))
         if len(wheels) != 1 or wheel_metadata(wheels[0]) != (identity.replace("-", "_"), version):
@@ -213,6 +254,14 @@ def package(source: Path, *, lock_only: bool = False,
             wheels.append(copied)
         if source_metadata(source) != selected:
             raise DeploymentError("source metadata changed during the build")
+        if package_lock is not None:
+            assert package_lock_sha256 is not None
+            if digest(package_lock) != package_lock_sha256:
+                raise DeploymentError("package lock changed during the build")
+            if package_project is not None:
+                assert package_project_sha256 is not None
+                if digest(package_project) != package_project_sha256:
+                    raise DeploymentError("package pyproject.toml changed during the build")
         supported = list(cpython_tags((3, 14), ["cp314"], ["win_amd64"])) + list(compatible_tags((3, 14), "cp314", ["win_amd64"]))
         ranks = {tag: index for index, tag in enumerate(supported)}
         marker_environment = {"implementation_name": "cpython", "implementation_version": runtime.python_version,

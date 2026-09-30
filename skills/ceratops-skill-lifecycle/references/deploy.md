@@ -43,7 +43,7 @@ deployment operations or the independent bootstrap installer.
   repository `deploy` operation first when declared.
 - Never invoke `sdlc/sdlc.yml` or `scripts/deploy-skills.py` from
   this action.
-- For SDLC v4, inspect the named skill's returned package prerequisites and
+- For SDLC, inspect the named skill's returned package prerequisites and
   verify the exact required artifact before installation. A package build
   action is separate from this managed skill transaction and is never inferred
   from the handoff alone.

@@ -102,6 +102,10 @@ def source_package(tmp_path, monkeypatch, request):
         if "compile" in command:
             (project / "pylock.toml").write_text('lock-version="1.0"\npackages=[]\n')
             return ""
+        if "export" in command:
+            destination = Path(command[command.index("--output-file") + 1])
+            destination.write_text('lock-version="1.0"\npackages=[]\n')
+            return ""
         destination = Path(command[command.index("--out-dir") + 1])
         source = next(bundle.glob("*.whl"))
         (destination / source.name).write_bytes(source.read_bytes())
@@ -230,6 +234,143 @@ def test_package_wheel_prerequisite_is_registered_and_installed_without_package_
     assert cli.main(["install", *options]) == 0
     assert json.loads(capsys.readouterr().out)["installed_version"] == "1.0.0"
     assert len(calls) == 2  # one server build per command; neither builds the package
+
+
+@pytest.mark.usefixtures("deployment")
+def test_uv_package_lock_is_exported_only_inside_disposable_staging(
+    source_package, tmp_path, capsys
+):
+    project, runtime_root, calls = source_package
+    package = tmp_path / "package"
+    package.mkdir()
+    bundle = make_release(
+        package, "1.0.0", mcp_server="claims_runtime", metadata_name="claims-runtime"
+    )
+    wheel = next(bundle.glob("*.whl"))
+    lock = package / "uv.lock"
+    lock.write_text("version = 1\nrevision = 3\nrequires-python = \"==3.14.*\"\n")
+    (package / "pyproject.toml").write_text(
+        '[project]\nname="claims-runtime"\nversion="1.0.0"\n'
+    )
+    (project / "pyproject.toml").write_text(
+        '[project]\nname="fixture"\nversion="1.0.0"\n'
+        'dependencies=["claims-runtime==1.0.0"]\n'
+    )
+
+    options = [
+        "--source", str(project), "--package-wheel", str(wheel),
+        "--package-lock", str(lock),
+    ]
+    assert cli.main(["package", *options]) == 0
+    registered = json.loads(capsys.readouterr().out)
+
+    assert len(calls) == 2
+    export_command, export_options = calls[0]
+    assert export_command[1] == "export"
+    assert export_options["cwd"] == package
+    assert {"--locked", "--no-dev", "--no-emit-project", "--no-header"} <= set(export_command)
+    assert export_command[export_command.index("--format") + 1] == "pylock.toml"
+    exported = Path(export_command[export_command.index("--output-file") + 1])
+    assert exported.name == "pylock.package.toml" and not exported.exists()
+    assert calls[1][0][1] == "build"
+    release_dir = (
+        runtime_root / "fixture" / "artifacts" / "1.0.0"
+        / registered["manifest_sha256"]
+    )
+    release = json.loads((release_dir / "manifest.json").read_text())
+    assert wheel.name in {entry["filename"] for entry in release["wheels"]}
+    assert not list((runtime_root / "fixture" / "staging").iterdir())
+
+
+def test_uv_package_lock_requires_adjacent_project_before_build(
+    source_package, tmp_path, capsys
+):
+    project, runtime_root, calls = source_package
+    package = tmp_path / "package"
+    package.mkdir()
+    bundle = make_release(
+        package, "1.0.0", mcp_server="claims_runtime", metadata_name="claims-runtime"
+    )
+    wheel = next(bundle.glob("*.whl"))
+    lock = package / "uv.lock"
+    lock.write_text("version = 1\n")
+    (project / "pyproject.toml").write_text(
+        '[project]\nname="fixture"\nversion="1.0.0"\n'
+        'dependencies=["claims-runtime==1.0.0"]\n'
+    )
+
+    assert cli.main([
+        "package", "--source", str(project), "--package-wheel", str(wheel),
+        "--package-lock", str(lock),
+    ]) == 2
+
+    assert "adjacent regular pyproject.toml" in capsys.readouterr().err
+    assert not calls and not (runtime_root / "fixture" / "registry.json").exists()
+
+
+def test_uv_package_lock_change_during_export_stops_before_build(
+    source_package, tmp_path, monkeypatch, capsys
+):
+    project, runtime_root, calls = source_package
+    package = tmp_path / "package"
+    package.mkdir()
+    bundle = make_release(
+        package, "1.0.0", mcp_server="claims_runtime", metadata_name="claims-runtime"
+    )
+    wheel = next(bundle.glob("*.whl"))
+    lock = package / "uv.lock"
+    lock.write_text("version = 1\n")
+    (package / "pyproject.toml").write_text(
+        '[project]\nname="claims-runtime"\nversion="1.0.0"\n'
+    )
+    (project / "pyproject.toml").write_text(
+        '[project]\nname="fixture"\nversion="1.0.0"\n'
+        'dependencies=["claims-runtime==1.0.0"]\n'
+    )
+    original_run = package_module.run
+
+    def change_lock(command, **kwargs):
+        result = original_run(command, **kwargs)
+        if command[1] == "export":
+            lock.write_text("version = 1\n# changed\n")
+        return result
+
+    monkeypatch.setattr(package_module, "run", change_lock)
+    assert cli.main([
+        "package", "--source", str(project), "--package-wheel", str(wheel),
+        "--package-lock", str(lock),
+    ]) == 2
+
+    assert "changed during export" in capsys.readouterr().err
+    assert len(calls) == 1 and calls[0][0][1] == "export"
+    assert not (runtime_root / "fixture" / "registry.json").exists()
+    assert not list((runtime_root / "fixture" / "staging").iterdir())
+
+
+def test_package_lock_rejects_non_pep751_schema_before_build(
+    source_package, tmp_path, capsys
+):
+    project, runtime_root, calls = source_package
+    package = tmp_path / "package"
+    package.mkdir()
+    bundle = make_release(
+        package, "1.0.0", mcp_server="claims_runtime", metadata_name="claims-runtime"
+    )
+    wheel = next(bundle.glob("*.whl"))
+    lock = package / "renamed.lock"
+    lock.write_text('version = 1\n[[package]]\nname = "dependency"\n')
+    (project / "pyproject.toml").write_text(
+        '[project]\nname="fixture"\nversion="1.0.0"\n'
+        'dependencies=["claims-runtime==1.0.0"]\n'
+    )
+
+    assert cli.main([
+        "package", "--source", str(project), "--package-wheel", str(wheel),
+        "--package-lock", str(lock),
+    ]) == 2
+
+    assert "PEP 751" in capsys.readouterr().err
+    assert not calls and not (runtime_root / "fixture" / "registry.json").exists()
 
 
 @pytest.mark.parametrize("case", ["missing-lock", "wrong-version", "undeclared"])

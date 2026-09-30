@@ -2,7 +2,7 @@
 
 Repository installation builds reviewed MCP server source, then invokes the
 shared engine. Package-backed MCP servers supply a separate prebuilt package
-wheel and its lock.
+wheel and its canonical lockfile.
 MCP accepts only registered releases; build inputs stay in this development CLI.
 """
 
@@ -25,12 +25,12 @@ def main(argv: list[str] | None = None) -> int:
     packaging.add_argument("--source", type=Path, required=True, help="reviewed MCP server source directory")
     packaging.add_argument("--lock", action="store_true", help="refresh pylock.toml instead of building a package")
     packaging.add_argument("--package-wheel", type=Path, help="prebuilt local package prerequisite wheel")
-    packaging.add_argument("--package-lock", type=Path, help="the package's third-party pylock.toml")
+    packaging.add_argument("--package-lock", type=Path, help="the package's canonical uv.lock or PEP 751 lockfile")
     install = commands.add_parser("install", help="build and install the version declared by the selected source")
     install.add_argument("--source", type=Path, default=Path.cwd(), help="repository or MCP server directory; defaults to the current directory")
     install.add_argument("--mcp-server-name", help="project.name; required when the repository declares multiple MCP servers")
     install.add_argument("--package-wheel", type=Path, help="prebuilt local package prerequisite wheel")
-    install.add_argument("--package-lock", type=Path, help="the package's third-party pylock.toml")
+    install.add_argument("--package-lock", type=Path, help="the package's canonical uv.lock or PEP 751 lockfile")
     update = commands.add_parser("update")
     update.add_argument("mcp_server_name")
     update.add_argument("version")

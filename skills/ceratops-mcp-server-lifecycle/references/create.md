@@ -35,7 +35,7 @@ repository.
    activating it. For an MCP server declaring a separate SDLC package prerequisite,
    build and validate that package wheel first; register the MCP server with
    `package --source <mcp-server-source> --package-wheel <wheel> --package-lock
-   <package-pylock.toml>`. Keep the package source and lock in its package
+   <package-lockfile>`. Keep the package source and canonical lockfile in its package
    directory. A Ceratops-AI-Agents-Kit checkout is not required. If the manager
    is absent, use bootstrap only when first installation is authorized.
 6. Hand authorized deployment to this skill's install action. Use a new version
