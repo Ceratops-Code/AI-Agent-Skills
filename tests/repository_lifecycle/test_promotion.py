@@ -2343,7 +2343,12 @@ def test_completion_receipt_requires_unique_promotion_binding_batch() -> None:
     error = loaded["PromotionError"]
     bindings = [{"operation": "alpha"}, {"operation": "beta"}]
     assert parse({"promotion": bindings}) == bindings
-    for invalid in ([], [{"operation": "alpha"}, {"operation": "alpha"}], [{}]):
+    invalid_batches: tuple[list[dict[str, str]], ...] = (
+        [],
+        [{"operation": "alpha"}, {"operation": "alpha"}],
+        [{}],
+    )
+    for invalid in invalid_batches:
         with pytest.raises(error, match="missing or duplicated"):
             parse({"promotion": invalid})
 
