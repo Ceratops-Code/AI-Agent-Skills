@@ -479,6 +479,42 @@ def assert_pretest_diagnostic(
     return complete
 
 
+def test_json_output_writes_only_final_path_and_reuses_matching_bytes(
+    test_runner_module: Any,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = test_runner_module
+    destination = tmp_path / "output.json"
+    destination.write_text("{interrupted", encoding="utf-8")
+    expected = b'{\n  "value": 7\n}\n'
+    modes: list[str] = []
+    original_open = pathlib.Path.open
+
+    def guarded_open(
+        path: pathlib.Path, mode: str = "r", *args: Any, **kwargs: Any
+    ) -> Any:
+        if path.parent == tmp_path:
+            assert path == destination
+            modes.append(mode)
+        return original_open(path, mode, *args, **kwargs)
+
+    def reject_replace(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("JSON output must not be published through replacement")
+
+    monkeypatch.setattr(runner.pathlib.Path, "open", guarded_open)
+    monkeypatch.setattr(runner.os, "replace", reject_replace)
+
+    assert runner.write_json(destination, {"value": 7}) == expected
+    assert destination.read_bytes() == expected
+    assert list(tmp_path.iterdir()) == [destination]
+    assert "wb" in modes
+
+    modes.clear()
+    assert runner.write_json(destination, {"value": 7}) == expected
+    assert not any("w" in mode or "a" in mode or "x" in mode for mode in modes)
+
+
 def test_committed_diff_mode_collects_and_invokes_only_selected_suite(
     test_runner_module: Any, capsys: pytest.CaptureFixture[str]
 ) -> None:

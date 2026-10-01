@@ -487,6 +487,11 @@ a completed bundle have the bundle's persistent lifetime, not the scratch
 environment's lifetime. Transaction details and recovery limits are documented
 in [the existing design draft](docs/design-draft.md#exact-artifact-bundle-transaction).
 
+The test runner writes collection snapshots and failure diagnostics directly to
+their selected final paths, reads the bytes back, and reuses an exact existing
+file. A later owning run overwrites an interrupted or different file; it does
+not create a sibling publication file or move another copy into place.
+
 MCP server deployment at
 `deliverables.mcp-servers.<name>.actions.install` routes to
 `ceratops-mcp-server-lifecycle/install`. That skill's installed executable
