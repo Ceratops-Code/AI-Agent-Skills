@@ -1043,12 +1043,11 @@ def read_artifact_receipt_chain(
 ) -> CompletedArtifactSelection:
     """Verify a saved artifact -> Git C -> build receipt -> retained-file chain.
 
-    A direct receipt reads its recorded identity without requiring a tag. A
-    version/tag or completed-operation selection supplies identity independently;
-    no mode searches for a latest version. Git-rooted files are read as blobs at
-    final commit C, while store-rooted files are read below that receipt's exact
-    version/target directory. Recorded results are returned without running or
-    recalculating checks, tests, builds, validators, or coverage.
+    Every selection requires the immutable unit/version tag, which is the
+    completion barrier for direct-written multi-target storage. No mode searches
+    for a latest version. Git-rooted files are read as blobs at final commit C,
+    while store-rooted files are read below that receipt's exact version/target
+    directory. Recorded results are returned without rerunning acceptance.
     """
 
     direct = artifact_receipt_path is not None
@@ -1090,6 +1089,13 @@ def read_artifact_receipt_chain(
             raise StepResultError(
                 "Artifact receipt location does not match its recorded identity."
             )
+        required_tag = (
+            f"{artifact['identity']['releaseUnit']}/{artifact['identity']['version']}"
+        )
+        if tag is not None and tag != required_tag:
+            raise StepResultError("The selected tag does not match the artifact version.")
+        if tag_commit is None:
+            tag_commit = _resolve_git_tag(repo, required_tag)
 
         for field in ARTIFACT_IDENTITY_FIELDS:
             if field in selection and artifact["identity"][field] != selection[field]:
@@ -1102,7 +1108,7 @@ def read_artifact_receipt_chain(
         if "acceptance" in selection and artifact["acceptance"] != selection["acceptance"]:
             raise StepResultError("Artifact receipt acceptance mismatch.")
         if tag_commit is not None and artifact["finalCommit"] != tag_commit:
-            raise StepResultError("Artifact receipt does not match the selected tag.")
+            raise StepResultError("Artifact receipt and selected tag mismatch.")
 
         link = artifact["buildReceipt"]
         raw_build = _read_git_record(

@@ -287,9 +287,9 @@ introduced.
 
 This section owns the agreed target methodology as of 2026-09-29. It does not
 claim that the complete execution path is implemented. The v2 transaction above
-remains usable; the internal versioned reservation and prepared-receipt portion
-is implemented, while worktree admission, final commit binding and public
-lifecycle routing remain later boundaries.
+remains usable; the internal versioned reservation, direct output, receipt,
+final-commit binding and immutable-tag transaction is implemented, while shared
+worktree admission and public lifecycle routing remain later boundaries.
 README records implementation status and actual runtime paths after each step;
 the refactor plan owns delivery order. No additional methodology document is
 needed, and the portable result-record template remains an existing reference
@@ -316,8 +316,8 @@ temporary installation environments are outputs, not alternate source checkouts.
    applicable results. Do not discard an earlier artifact's acceptance or rerun
    its tests merely because a check definition or commit identifier changed.
 4. After every required target succeeds, serialize each build receipt once,
-   calculate its SHA-256 and persist its exact bytes and expected hash in the
-   pending transaction. Write those bytes with the owned evidence and create C.
+   calculate its SHA-256 and write its exact bytes with owned evidence directly
+   at the declared final worktree paths. Validate those bytes and create C.
    Targets share prepared source checkpoint B and final receipt commit C, with
    separate artifact inventories, toolchain identities and test outcomes.
 5. Compare B and C. Only exact producer-owned receipt/evidence paths may differ;
@@ -434,10 +434,10 @@ Both formats use sorted compact JSON encoded as UTF-8 followed by one LF.
 validate that representation and return the original bytes plus their direct
 SHA-256; readers never parse and reserialize data to establish the stored hash.
 The definitions and readers are implemented internally, while full production
-and public lifecycle integration remain pending. The internal producer can reserve
-and prepare exact build-receipt bytes, and the chain reader can verify an
-already-completed C/store record; creation of C and the artifact receipt remains
-1d.3 work.
+and public lifecycle integration remain pending. The internal producer can
+reserve, prepare and commit exact build-receipt bytes, bind direct stored output
+through artifact receipts and create the completion tag; the chain reader
+verifies that completed C/store record without rerunning acceptance.
 
 Each artifact-test result identifies the exact artifact paths/hashes it tested;
 source-check results identify their applicable inputs and check versions.
@@ -451,9 +451,8 @@ identities; secrets, credentials, raw logs, temporary paths, installation paths
 and machine-specific absolute paths are not receipt fields. A supporting log is
 retained only when a result needs it and only after sanitization. Completed logs
 use a `store` reference inside the version directory and inherit its bounded
-artifact-store retention. Temporary logs remain attempt-owned; successful
-finalization later removes its temporary state, while interrupted or unresolved
-state stays protected for explicit recovery. The readers perform no creation,
+artifact-store retention. The internal route creates no temporary log; a future
+caller that creates one must own and remove it. The readers perform no creation,
 cleanup or retention mutation.
 
 Select the full version before B, independently of the not-yet-created C.
@@ -581,75 +580,86 @@ acceptance tests under another name.
 The operation runner owns qualification and later finalization. The implemented
 `store_artifacts.py` preserves current v2 persistence, publication, retention and
 its full-transaction lock. Its separate internal versioned route now reserves
-under short store-lock sections, measures target output before artifact tests,
-rechecks retained qualified bytes, copies Git result evidence and persists each
-target's canonical v3 receipt bytes/hash in recovery state. Public Build remains
-disconnected.
+under short store-lock sections, writes artifacts and evidence only at their final
+paths, measures target output before artifact tests, rechecks qualified bytes and
+writes each target's canonical v3 receipt directly to its final worktree path.
+The finalizer commits only the recorded result paths, binds every target to the
+same C, writes artifact receipts directly and creates the immutable completion
+tag. Public Build remains disconnected.
 
 The exact internal paths are:
 
 - reservation: `ceratops/artifacts/.reservations/<unit>/<version>.json`;
-- journal: `ceratops/artifacts/.pending/<attempt>/journal.json`;
-- prepared receipt: `ceratops/artifacts/.pending/<attempt>/receipts/<target>.json`;
-- retained pending Git result: `ceratops/artifacts/.pending/<attempt>/git/<target>/<result-path>`;
-- output/work staging: `ceratops/artifacts/.staging/<attempt>/<target>/output/`
-  and `work/`;
+- prepared receipt: `.build/<unit>/<version>/receipt.json`, adding `<target>/`
+  for separately qualified targets;
 - latest failure: `ceratops/artifacts/.diagnostics/<unit>/<target>/<alpha|beta|stable>.json`;
 - final output: `ceratops/artifacts/<unit>/<version>/`, adding `<target>/` for
   separately qualified targets.
 
-One attempt owns a unit/version and its complete required-target set. The journal
-records its repository/worktree, B, paths and `reserved`, `receipt_prepared` or
-`receipts_prepared` phase. A worktree may have only one unfinished attempt per
-unit; independent worktrees and units may proceed. Preserve active or unresolved
-reservations and staging, and never apply the v2 delete-all-staging recovery to
-this route. An available lock, elapsed time or missing PID does not authorize
-taking over a reservation. Only explicit recovery of the exact recorded attempt
-may resume it; inconsistent or partial state returns `recovery_required`.
+One attempt owns a unit/version and its complete required-target set. Its
+reservation records repository/worktree, branch, B, declared inputs and targets.
+A worktree may have only one unfinished attempt per unit; independent worktrees
+and units may proceed. Preserve active or unresolved reservations and direct
+version output, and never apply the v2 delete-all-staging recovery to this route.
+An available lock, elapsed time or missing PID does not authorize taking over a
+reservation. Only explicit recovery of the exact recorded attempt may resume it;
+inconsistent, partial or conflicting ownership returns `recovery_required`.
+
+This route owns no `.pending`, `.staging` or `.tmp` path. When a final-path record
+already exists, the owner validates it: byte-identical valid content is reused,
+an invalid interrupted receipt or diagnostic is rewritten directly, and a
+different valid record blocks. Malformed reservation bytes block rather than
+being replaced because they cannot prove which concurrent attempt owns the
+version. Artifact and evidence files are likewise remeasured before completion.
+The immutable tag, not directory existence, is the multi-target completion
+barrier, so a crash cannot make partially written direct output consumable.
 
 Version classification is derived from the selected full version: `aN` is alpha,
 `bN` is beta and a version without either qualifier is stable. Reservation
 startup retains three completed outputs per repository/unit/target/class group
-and excludes pending versions. It also checks `refs/tags/<unit>/<version>` so
-pruned completed bytes do not make a version reusable. Diagnostics have one
-atomically replaced current record per group. Historical committed receipts and
-evidence remain Git data at C; checkout pruning belongs before B, never to
-artifact-store cleanup.
+and excludes reserved versions. Completion applies the same retention bound. It
+also checks `refs/tags/<unit>/<version>` so pruned completed bytes do not make a
+version reusable. Diagnostics have one directly replaced current record per
+group. Historical committed receipts and evidence remain Git data at C; checkout
+pruning belongs before B, never to artifact-store cleanup.
 
 Commit creation, artifact-receipt storage, tagging, ref movement and deployment
-are separate recoverable effects. Before creating C, persist prepared receipt
-bytes/hashes, B, branch, target set, owned result paths, pending artifact identity
-and the intended commit tree. Use a `Ceratops-Attempt` commit trailer. After an
-interruption, identify an already-created C by its recorded parent/tree, attempt
-and receipt hashes; never substitute ambient HEAD. Ambiguous recovery blocks.
+are separate recoverable effects. Before creating C, the finalizer reconstructs
+the exact target set, result paths and hashes from the reservation, direct build
+receipts and final artifact/evidence bytes. It rejects declared inputs changed in
+the index, working tree or untracked set, preserves unrelated staged work and
+uses a `Ceratops-Attempt` commit trailer. After interruption it identifies an
+already-created C from the recorded branch, parent B, exact B-to-C result-only
+diff, trailer and committed hashes; it never substitutes ambient HEAD. Ambiguous
+recovery blocks.
 
-Publish the version directory only after all required target artifact receipts
-are written. Then create the immutable unit/version tag and remove successful
-recovery state. Existing matching receipts/publication/tag complete their phases;
-conflicting identities must not be overwritten. Completion-only retries use the
-prepared bytes and saved outcomes without duplicate commits, builds or tests.
-The working-folder caller delegates this sequence to the shared finalizer.
+After C, the finalizer writes every target artifact receipt directly, then
+creates immutable tag `<unit>/<version>` as the completion barrier and removes
+the reservation and resolved diagnostic. Existing matching receipts and tags
+complete their effects; an invalid partial receipt is rewritten and conflicting
+valid identities are not overwritten. Completion-only retries derive completed
+effects from final files, Git and the tag without duplicate commits, builds or
+tests. The working-folder caller delegates this sequence to the shared finalizer.
 
 ### Output ownership and lifetime
 
-The artifact reservation, pending and staging paths below are implemented
-internally. Worktree admission and successful finalization cleanup remain later
-boundaries:
+The artifact reservation and direct final paths below are implemented internally.
+Shared worktree admission remains a later boundary:
 
 | Path/group | Owner and lifetime |
 | --- | --- |
 | `ceratops/locks/worktrees/<worktree-id>.lock` | Shared lease helper; one reusable lock per registered worktree, never removed while held; prune only removed-worktree entries under registry serialization |
 | `ceratops/operations/worktrees/<worktree-id>.json` | Shared lock helper; one current admission record per registered worktree; unfinished/unreadable records block admission until explicit recovery; never clear by age alone |
 | Committed build receipt/evidence | Producer; current record plus at most two predecessors per unit/check group in the checkout; Git commit history supplies historical retrieval without an extra record database |
-| `ceratops/artifacts/<unit>/<version>/` with optional target subdirectory | Artifact store; immutable artifacts, supporting files and, after 1d.3, the artifact receipt; current plus two predecessors per repository/unit/target and alpha/beta/stable retention group; later consumers supply explicitly bounded active/current/rollback protection |
-| `.reservations/<unit>/<version>.json` and `.pending/<attempt>/journal.json` | Artifact store and operation runner; one unfinished attempt per owning worktree/unit with its complete required-target set; preserve unresolved owners and remove successful recovery state only after 1d.3 binding and tagging |
-| `.pending/<attempt>/receipts/<target>.json` and `git/<target>/<result-path>` | Artifact store; exact prepared receipt bytes/hash and retained Git-result bytes owned by the pending transaction; not an artifact receipt or a second acceptance authority |
-| `.staging/<attempt>/<target>/output/` and `work/` | Versioned build/test owner; no source copy; preserve active/unresolved output and remove only the successfully finalized attempt in 1d.3 |
-| `.diagnostics/<unit>/<target>/<alpha\|beta\|stable>.json` | Artifact store; one atomically replaced bounded failure report per storage group; successful finalization later clears the resolved report |
+| `ceratops/artifacts/<unit>/<version>/` with optional target subdirectory | Artifact store; immutable artifacts, supporting files and artifact receipt; current plus two predecessors per repository/unit/target and alpha/beta/stable retention group; later consumers supply explicitly bounded active/current/rollback protection |
+| `.reservations/<unit>/<version>.json` | Artifact store and operation runner; one unfinished attempt per owning worktree/unit with its complete target set, branch, B and declared inputs; preserve unresolved ownership and remove it only after all target receipts and the immutable tag exist |
+| `.build/<unit>/<version>/receipt.json` with optional target directory | Operation runner; directly written final result, validated and reused by exact bytes, committed at C with other declared Git evidence and retained historically by Git |
+| `artifacts/<unit>/<version>/` with optional target directory | Versioned build/test owner and finalizer; direct final artifact/evidence output is protected while reserved and becomes consumable only after all target artifact receipts and the immutable tag bind it to C |
+| `.diagnostics/<unit>/<target>/<alpha\|beta\|stable>.json` | Artifact store; one directly replaced bounded failure report per storage group; successful finalization clears the resolved report |
 
-Retention now runs at versioned producer startup; 1d.3 adds its required
-post-completion pass. Protected active transactions cannot be pruned; abandoned
-ownership must be recovered or reported.
+Retention runs at versioned producer startup and after completion. Protected
+active transactions cannot be pruned; abandoned ownership must be recovered or
+reported.
 Deleting an unreferenced local copy changes availability, not the historical
 acceptance of its bytes. Reservation checks include immutable version tags, so
 pruning a directory never makes a completed version reusable. Pruning tracked

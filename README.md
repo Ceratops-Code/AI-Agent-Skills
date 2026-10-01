@@ -320,13 +320,12 @@ unavailable; they do not rewrite its historical acceptance.
 Malformed records, unsafe or linked paths, missing files, wrong identities or
 commits, and size/hash mismatches fail closed. This reader runs no validators,
 source checks, artifact tests, coverage, builds or repairs. The definitions,
-pending producer and chain reader remain internal: final commit binding and
-public Build/Promote/Deploy/Ship integration are still pending. The producer may
+direct producer, finalizer and chain reader remain internal: public
+Build/Promote/Deploy/Ship integration is still pending. The producer may
 retain a sanitized supporting log only when a recorded result needs it:
 completed logs belong inside that version's artifact directory and use its
-bounded artifact-store lifetime. Temporary logs remain attempt-owned;
-successful finalization later removes its temporary state, while interrupted or
-unresolved state stays protected for explicit recovery. The readers create,
+bounded artifact-store lifetime. The internal route creates no temporary log;
+future callers that create one must own and remove it. The readers create,
 rotate and clean up nothing.
 
 Call `sdlc_results.py verify-release-unit-build` with `--receipt`,
@@ -359,14 +358,16 @@ closed. This reader is internal and does not yet switch public deployment.
 The separate internal versioned route starts only after the operation owner has
 created pre-test checkpoint B and completed build-independent checks. One short
 store-lock section reserves the complete unit/version/required-target set for a
-single attempt. Builds continue in the existing worktree and write only below
-that attempt's target output directories; `measure_versioned_artifact` records
+single attempt. Builds continue in the existing worktree and write directly to
+that version's final target directories; `measure_versioned_artifact` records
 the bytes artifact tests consume. After successful qualification,
 `prepare_versioned_receipt` rechecks every retained artifact, dependency and
-evidence file, saves Git result evidence, and writes each target's canonical v3
-receipt once under the pending journal. It returns the exact receipt bytes,
-SHA-256 and pending identities without creating final commit C, an artifact
-receipt, a completed version directory or a tag.
+evidence file and writes each target's canonical v3 receipt directly to its
+final worktree path. `complete_versioned_build` validates declared inputs and
+all prepared bytes, creates or recovers exact result-only commit C, writes every
+artifact receipt and creates the immutable version tag. It derives recovery from
+the reservation and validated final effects; it has no pending journal or
+helper-owned output staging.
 
 An existing reservation can be resumed only when recovery explicitly selects
 the same repository, worktree, unit, version, targets, attempt and B. Any partial,
@@ -375,7 +376,7 @@ available lock, missing process or elapsed time never adopts or deletes it.
 Another worktree may own an independent version, but one worktree may have only
 one unfinished attempt for a unit. The legacy v2 producer keeps its supported
 full-transaction lock and delete-recognizable-staging behavior; that cleanup is
-never applied to versioned pending output.
+never applied to direct versioned output.
 
 ### Exact-artifact foundation and update methodology
 
@@ -444,7 +445,7 @@ Later delivery consumes the selected version's recorded acceptance and bytes.
 | 1a release declarations | Implemented | Keep current v4/v5 readers; connect exact-output producers later |
 | 1b receipt verification | Implemented v2 verifier plus internal v3/v1 receipt definitions and saved-chain reader | Connect producers and public lifecycle callers in later steps |
 | 1c correction continuity | Implemented and preservation-verified; finalization consumes recorded success without rechecking the checkout | Connect shared admission in 2A and new acceptance-record cleanup in step 7 |
-| 1d build/test/store | Implemented internal v2 transaction plus versioned reservations, target staging, retention and prepared v3 receipt bytes/hash | Bind all prepared targets to final commit C, publish artifact receipts and immutable tag in 1d.3 |
+| 1d build/test/store | Implemented current v2 transaction plus an internal direct-write versioned route: reservations, final artifact paths, committed v3 build receipts, B-to-C result binding, artifact receipts, immutable tag and effect-derived recovery | Connect shared worktree admission and execution in 2A; public Build and Promote remain pending |
 | Completed-build consumption | Implemented internal v2 reader; recorded acceptance and exact stored paths survive current test/input changes | Connect public receipt-based Deploy in later steps |
 | Worktree leases and working-folder attempts | Planned | Add native locks, durable unfinished-attempt admission and platform-specific child ownership, then affected-check reuse |
 | Merge-back and beta qualification | Planned | Activate promotion through the shared Build operation with actual beta versions |
@@ -466,15 +467,14 @@ policy. These are the runtime paths used by the foundation and update workflow:
 | Runtime path | Class and owner | Rewrite, retention, or cleanup trigger |
 | --- | --- | --- |
 | `<shared-git-directory>/ceratops/builds/<build-key>/`, including receipt, artifacts and supporting files | Persistent immutable output; `store_artifacts.py` publishes and reads on behalf of `repository_operation` | Grouped by repository, release unit, channel and target. At production startup and after publication, keep the newest completed bundle plus two predecessors by completion time and key; remove older directories without modifying retained bundles. Reading performs no retention or cleanup mutation. |
-| `builds/`, `.staging/`, `.locks/`, `.diagnostics/` and `.locks/store.lock` | Persistent bounded infrastructure; `store_artifacts.py` and `filelock` | One repository lock serializes the complete build/test/store transaction and cleanup ownership. The file remains reusable; the OS releases the held lock on normal exit or process death. No per-build lock history accumulates. |
-| `.staging/<build-key>/work/` and `bundle/` | Temporary private work; `store_artifacts.py` | Removed on success or failure. At every transaction startup, while holding the repository lock, remove every recognizable staging directory left by an earlier instance. Preserve unrecognized entries and report cleanup failure. |
-| `.diagnostics/<release-group-key>.json` and its `.tmp` write file | Persistent latest-failure report and temporary write; `store_artifacts.py` | Atomically overwrite the group's report on failure and remove it after successful new publication. At production startup remove interrupted `.tmp` writes. The completed-build reader does not rewrite diagnostics. Reports contain bounded excerpts and are never artifact-test evidence. |
-| `<shared-git-directory>/ceratops/artifacts/.reservations/<unit>/<version>.json` | Persistent pending ownership; versioned `store_artifacts.py` route | Written under the short shared store lock before output production. One attempt owns the complete required-target set. Retain until successful 1d.3 finalization; another attempt never expires, overwrites or removes it. |
-| `artifacts/.pending/<attempt>/journal.json`, `receipts/<target>.json` and `git/<target>/<result-path>` | Persistent recovery state, exact prepared receipt bytes and retained Git-result bytes; versioned `store_artifacts.py` route | Journal records B, repository/worktree, unit/version, targets, staging and phase. Each qualified target receipt is written once and journaled with its exact size/hash. Partial or inconsistent state blocks with `recovery_required`; successful 1d.3 finalization will remove the whole owned pending record. It is not an artifact receipt or acceptance authority. |
-| `artifacts/.staging/<attempt>/<target>/output/` and `work/` | Attempt-owned output and temporary work; versioned producer | Created after reservation. Build/test activity does not hold the store lock and uses no source copy. Preserve every active or unresolved attempt; successful 1d.3 finalization will remove its staging, while this route never runs the v2 delete-all-staging cleanup. |
-| `artifacts/.diagnostics/<unit>/<target>/<alpha\|beta\|stable>.json` | Persistent bounded latest-failure report; versioned `store_artifacts.py` route | Atomically replace the one current report for the repository/unit/target/version-class group. A successful replacement removes its temporary write. Finalization later clears the resolved group's report. |
-| `artifacts/<unit>/<version>/` with optional `<target>/` | Persistent immutable completed output; artifact-store finalizer and reader | Full versions determine alpha, beta or stable retention groups; there are no channel aliases. Reservation startup prunes each repository/unit/target/class group to the current output plus two predecessors, excluding pending reservations. Completion-time pruning is added with 1d.3. Immutable `<unit>/<version>` tags prevent reuse after local bytes are pruned. `artifact-receipt.json` is not produced until 1d.3. |
-| `artifacts/.locks/store.lock` | Persistent reusable short-section lock; `store_artifacts.py` and `filelock` | Protects reservation, journal, pruning and later publication mutations only; build and artifact-test work runs outside it. The lock file is reusable and its availability is not recovery evidence. |
+| `builds/`, `.staging/`, `.locks/`, `.diagnostics/` and `.locks/store.lock` | Persistent bounded infrastructure for the current v2 route; `store_artifacts.py` and `filelock` | One repository lock serializes that route's complete build/test/store transaction and cleanup ownership. The file remains reusable; the OS releases the held lock on normal exit or process death. No per-build lock history accumulates. |
+| `.staging/<build-key>/work/` and `bundle/` | Temporary private work for the current v2 route; `store_artifacts.py` | Removed on success or failure. At every v2 transaction startup, while holding the repository lock, remove every recognizable staging directory left by an earlier instance. Preserve unrecognized entries and report cleanup failure. |
+| `.diagnostics/<release-group-key>.json` and its `.tmp` write file | Persistent latest-failure report and temporary write for the current v2 route; `store_artifacts.py` | Atomically overwrite the group's report on failure and remove it after successful new publication. At v2 production startup remove interrupted `.tmp` writes. The completed-build reader does not rewrite diagnostics. Reports contain bounded excerpts and are never artifact-test evidence. |
+| `<shared-git-directory>/ceratops/artifacts/.reservations/<unit>/<version>.json` | Persistent unfinished ownership; versioned `store_artifacts.py` route | Written directly and read back under the short store lock before output production. One attempt owns the complete required-target set, branch, B and declared inputs. A matching record is reusable only during explicit recovery; malformed or conflicting ownership blocks. Remove it only after every artifact receipt and the immutable tag exist. |
+| `.build/<unit>/<version>/receipt.json` with an optional `<target>/` | Direct final worktree result; operation runner | Qualification validates the final artifact/evidence bytes and writes the canonical receipt directly. A byte-identical valid file is reused, an invalid interrupted write is replaced, and a different valid receipt blocks. C commits these exact result paths without including unrelated staged work. |
+| `artifacts/.diagnostics/<unit>/<target>/<alpha\|beta\|stable>.json` | Persistent bounded latest-failure report; versioned `store_artifacts.py` route | Directly replace the one current report for the repository/unit/target/version-class group and verify its bytes. A later write can replace an interrupted invalid record; successful finalization clears the resolved group's report. No helper-owned temporary file is used. |
+| `artifacts/<unit>/<version>/` with optional `<target>/` | Direct final artifact output; artifact producer, finalizer and reader | Production writes into the final version directory after reservation. Valid existing files are measured and reused; changed or missing qualified bytes block completion. The version remains unreadable as completed until every target artifact receipt exists and immutable tag `<unit>/<version>` points to C. Startup and completion retain the current output plus two predecessors per repository/unit/target/class group while protecting reservations. |
+| `artifacts/.locks/store.lock` | Persistent reusable short-section lock; `store_artifacts.py` and `filelock` | Protects reservation, pruning, artifact-receipt and tag mutations only; build and artifact-test work runs outside it. The lock file is reusable and its availability is not recovery evidence. |
 | Update request, state, evidence and active-update marker under the task temp root | Temporary resumable records; `skill-update-workflow.py` | Retained across corrections/interruption; state and evidence are rewritten by verification. Explicit `finalize` consumes recorded success without rechecking the checkout, checks cleanup ownership and file integrity, removes only recorded owned files, and removes the task root only if empty. |
 | Update check scratch directories and cleanup records | Temporary check work; `skill_update_scratch.py` | Removed when each check scope exits; recorded unfinished cleanup is retried before another check. Explicit check-output paths remain caller-owned. |
 | Existing test-runner scratch and `.build/test-diagnostics/pytest-failure.json` | Temporary execution scratch and persistent latest-failure report; repository test runner | Scratch is removed when the subprocess exits; failure evidence is rewritten on failure and removed by a successful run at that selected path. The existing runner remains its owner. |

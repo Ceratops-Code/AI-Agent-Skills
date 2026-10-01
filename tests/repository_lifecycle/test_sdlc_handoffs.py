@@ -1216,7 +1216,7 @@ def _versioned_build_receipt(
     return receipt
 
 
-def _stage_versioned_receipt(
+def _write_versioned_outputs(
     repository: pathlib.Path,
     transaction: Any,
     receipt: Mapping[str, Any],
@@ -1258,7 +1258,6 @@ def test_versioned_reservations_preserve_owners_and_coordinate_targets(
     sentinel = transaction.target_output(targets[0]) / "owned.bin"
     sentinel.write_bytes(b"preserve this attempt")
     assert all(transaction.target_output(target).is_dir() for target in targets)
-    assert all(transaction.target_work(target).is_dir() for target in targets)
 
     with pytest.raises(runner.OperationError, match="reserved by another attempt"):
         runner.reserve_versioned_build(
@@ -1325,7 +1324,7 @@ def test_versioned_reservations_preserve_owners_and_coordinate_targets(
         attempt_id="attempt-alpha-004",
         pre_test_commit=commit,
     )
-    assert independent.staging_root != transaction.staging_root
+    assert independent.version_root != transaction.version_root
     assert sentinel.read_bytes() == b"preserve this attempt"
 
     diagnostic = storage.write_versioned_failure_diagnostic(
@@ -1337,11 +1336,15 @@ def test_versioned_reservations_preserve_owners_and_coordinate_targets(
     assert json.loads(diagnostic.read_text(encoding="utf-8"))["error"] == (
         "replacement failure"
     )
-    assert not diagnostic.with_name(f"{diagnostic.name}.tmp").exists()
-    transaction.journal_path.with_name("journal.json.tmp").write_bytes(
-        b"interrupted write"
+    diagnostic.write_bytes(b"interrupted diagnostic")
+    storage.write_versioned_failure_diagnostic(
+        transaction, targets[0], "recovered diagnostic"
     )
-    with pytest.raises(storage.RecoveryRequired, match="Interrupted journal write"):
+    assert json.loads(diagnostic.read_text(encoding="utf-8"))["error"] == (
+        "recovered diagnostic"
+    )
+    transaction.reservation_path.write_bytes(b"interrupted reservation")
+    with pytest.raises(storage.RecoveryRequired, match="reservation is unreadable"):
         runner.reserve_versioned_build(
             repository,
             repository="example/project",
@@ -1355,7 +1358,7 @@ def test_versioned_reservations_preserve_owners_and_coordinate_targets(
     assert sentinel.read_bytes() == b"preserve this attempt"
 
 
-def test_versioned_receipts_persist_exact_multi_target_pending_state(tmp_path) -> None:
+def test_versioned_receipts_persist_exact_multi_target_direct_state(tmp_path) -> None:
     repository, commit = _versioned_repository(tmp_path)
     targets = ["python-3.14-windows", "python-3.14-linux"]
     attempt_id = "attempt-beta-001"
@@ -1379,7 +1382,7 @@ def test_versioned_receipts_persist_exact_multi_target_pending_state(tmp_path) -
             required_targets=targets,
             attempt_id=attempt_id,
         )
-        _stage_versioned_receipt(repository, transaction, receipt)
+        _write_versioned_outputs(repository, transaction, receipt)
         measured = runner.measure_versioned_artifact(
             transaction,
             target,
@@ -1391,24 +1394,26 @@ def test_versioned_receipts_persist_exact_multi_target_pending_state(tmp_path) -
         )
         assert result.raw == results.encode_new_receipt(receipt)
         assert result.sha256 == hashlib.sha256(result.raw).hexdigest()
-        assert result.pending_receipt_path.read_bytes() == result.raw
+        assert result.worktree_path.read_bytes() == result.raw
         assert result.receipt_path.endswith(f"/{target}/receipt.json")
         prepared.append(result)
         receipts[target] = receipt
 
-    journal = json.loads(transaction.journal_path.read_text(encoding="utf-8"))
-    assert journal["phase"] == "receipts_prepared"
-    assert set(journal["preparedReceipts"]) == set(targets)
     assert all(item.store_files and item.git_files for item in prepared)
-    assert not (repository / prepared[0].receipt_path).exists()
+    assert all((repository / item.receipt_path).is_file() for item in prepared)
     assert not list(transaction.store.glob("claims/1.2.3b1/**/artifact-receipt.json"))
-    assert not (transaction.store / "claims" / "1.2.3b1").exists()
-    saved_mtime = prepared[0].pending_receipt_path.stat().st_mtime_ns
+    assert transaction.version_root.is_dir()
+    saved_mtime = prepared[0].worktree_path.stat().st_mtime_ns
     repeated = runner.prepare_versioned_receipt(
         transaction, targets[0], receipts[targets[0]]
     )
     assert repeated.raw == prepared[0].raw
-    assert repeated.pending_receipt_path.stat().st_mtime_ns == saved_mtime
+    assert repeated.worktree_path.stat().st_mtime_ns == saved_mtime
+    repeated.worktree_path.write_bytes(b"{")
+    recovered = runner.prepare_versioned_receipt(
+        transaction, targets[0], receipts[targets[0]]
+    )
+    assert recovered.worktree_path.read_bytes() == prepared[0].raw
 
 
 def test_versioned_receipt_rejects_changed_tested_artifact(tmp_path) -> None:
@@ -1432,7 +1437,7 @@ def test_versioned_receipt_rejects_changed_tested_artifact(tmp_path) -> None:
         attempt_id="attempt-beta-002",
     )
     assert receipt["receiptPath"] == ".build/claims/1.2.4b1/receipt.json"
-    _stage_versioned_receipt(repository, transaction, receipt)
+    _write_versioned_outputs(repository, transaction, receipt)
     measured = runner.measure_versioned_artifact(
         transaction,
         target,
@@ -1445,9 +1450,7 @@ def test_versioned_receipt_rejects_changed_tested_artifact(tmp_path) -> None:
     artifact.write_bytes(b"changed after artifact tests")
     with pytest.raises(results.StepResultError, match="(size|SHA-256) mismatch"):
         runner.prepare_versioned_receipt(transaction, target, receipt)
-    assert not transaction.pending_receipt(target).exists()
-    journal = json.loads(transaction.journal_path.read_text(encoding="utf-8"))
-    assert journal["phase"] == "reserved"
+    assert not (repository / transaction.receipt_path(target)).exists()
 
 
 def test_versioned_retention_keeps_three_and_tag_blocks_pruned_reuse(
@@ -1501,6 +1504,226 @@ def test_versioned_retention_keeps_three_and_tag_blocks_pruned_reuse(
             pre_test_commit=commit,
         )
     assert sentinel.read_bytes() == b"pending output stays protected"
+
+
+def _prepared_versioned_completion(
+    tmp_path: pathlib.Path,
+    *,
+    version: str = "1.2.5b1",
+    attempt_id: str = "attempt-complete-001",
+    declared_input_paths: list[str] | None = None,
+):
+    repository, commit = _versioned_repository(tmp_path)
+    targets = ["python-3.14-linux", "python-3.14-windows"]
+    transaction = runner.reserve_versioned_build(
+        repository,
+        repository="example/project",
+        release_unit="claims",
+        version=version,
+        required_targets=targets,
+        attempt_id=attempt_id,
+        pre_test_commit=commit,
+        declared_input_paths=declared_input_paths or [],
+    )
+    prepared = []
+    receipts = {}
+    for target in targets:
+        receipt = _versioned_build_receipt(
+            tmp_path,
+            commit=commit,
+            version=version,
+            target=target,
+            required_targets=targets,
+            attempt_id=attempt_id,
+        )
+        _write_versioned_outputs(repository, transaction, receipt)
+        runner.measure_versioned_artifact(
+            transaction,
+            target,
+            {"type": "python-wheel", "path": receipt["artifacts"][0]["path"]},
+        )
+        prepared.append(runner.prepare_versioned_receipt(transaction, target, receipt))
+        receipts[target] = receipt
+    return repository, commit, transaction, prepared, receipts
+
+
+def test_versioned_completion_commits_only_results_and_binds_every_target(
+    tmp_path,
+) -> None:
+    repository, checkpoint, transaction, prepared, receipts = (
+        _prepared_versioned_completion(tmp_path)
+    )
+    unrelated = _write_fixture_bytes(repository, "notes.txt", b"keep staged\n")
+    assert run_git(repository, "add", "notes.txt").returncode == 0
+    artifact_mtimes = {
+        path: path.stat().st_mtime_ns
+        for target in transaction.required_targets
+        for path in transaction.target_output(target).rglob("*")
+        if path.is_file()
+    }
+
+    completed = runner.complete_versioned_build(transaction, prepared)
+
+    assert run_git(repository, "rev-parse", "HEAD").stdout.strip() == completed.final_commit
+    assert run_git(
+        repository, "rev-parse", f"refs/tags/{completed.tag}^{{commit}}"
+    ).stdout.strip() == completed.final_commit
+    assert run_git(
+        repository, "rev-parse", f"{completed.final_commit}^"
+    ).stdout.strip() == checkpoint
+    expected_paths = {
+        path
+        for receipt in receipts.values()
+        for path in receipt["committedResultPaths"]
+    }
+    assert set(
+        run_git(
+            repository,
+            "diff",
+            "--name-only",
+            checkpoint,
+            completed.final_commit,
+        ).stdout.splitlines()
+    ) == expected_paths
+    assert run_git(repository, "diff", "--cached", "--name-only").stdout.strip() == (
+        unrelated.relative_to(repository).as_posix()
+    )
+    assert not transaction.reservation_path.exists()
+    assert not (transaction.store / ".pending").exists()
+    assert not (transaction.store / ".staging").exists()
+    assert all(path.is_file() for path in completed.artifact_receipts)
+    assert all(
+        results.read_artifact_receipt(path).value["finalCommit"]
+        == completed.final_commit
+        for path in completed.artifact_receipts
+    )
+    assert all(path.stat().st_mtime_ns == mtime for path, mtime in artifact_mtimes.items())
+    for path in completed.artifact_receipts:
+        selected = results.read_artifact_receipt_chain(
+            repository, artifact_receipt_path=path
+        )
+        assert selected.final_commit == completed.final_commit
+
+
+@pytest.mark.parametrize("interruption", ["after-commit", "after-receipts", "after-tag"])
+def test_versioned_completion_resumes_effects_without_duplicate_commit(
+    tmp_path, monkeypatch, interruption
+) -> None:
+    repository, checkpoint, transaction, prepared, _receipts = (
+        _prepared_versioned_completion(
+            tmp_path,
+            version="1.2.6b1",
+            attempt_id=f"attempt-{interruption}",
+        )
+    )
+    artifact_mtimes = {
+        path: path.stat().st_mtime_ns
+        for target in transaction.required_targets
+        for path in transaction.target_output(target).rglob("*")
+        if path.is_file()
+    }
+    if interruption == "after-commit":
+        name = "_write_version_artifact_receipts"
+    elif interruption == "after-receipts":
+        name = "_create_artifact_tag"
+    else:
+        name = "_remove_versioned_reservation"
+    original = getattr(storage, name)
+
+    def interrupted(*args, **kwargs):
+        raise RuntimeError(interruption)
+
+    monkeypatch.setattr(storage, name, interrupted)
+    with pytest.raises(RuntimeError, match=interruption):
+        runner.complete_versioned_build(transaction, prepared)
+    created = run_git(repository, "rev-parse", "HEAD").stdout.strip()
+    assert created != checkpoint
+    if interruption == "after-commit":
+        transaction.artifact_receipt(transaction.required_targets[0]).write_bytes(b"{")
+        assert not storage._artifact_tag_exists(
+            repository, transaction.release_unit, transaction.version
+        )
+    elif interruption == "after-receipts":
+        assert all(
+            transaction.artifact_receipt(target).is_file()
+            for target in transaction.required_targets
+        )
+        with pytest.raises(results.StepResultError, match="tag"):
+            results.read_artifact_receipt_chain(
+                repository,
+                artifact_receipt_path=transaction.artifact_receipt(
+                    transaction.required_targets[0]
+                ),
+            )
+    else:
+        assert storage._artifact_tag_exists(
+            repository, transaction.release_unit, transaction.version
+        )
+        assert transaction.reservation_path.is_file()
+    monkeypatch.setattr(storage, name, original)
+
+    completed = runner.complete_versioned_build(transaction)
+
+    assert completed.final_commit == created
+    assert run_git(
+        repository, "rev-list", "--count", f"{checkpoint}..{transaction.branch}"
+    ).stdout.strip() == "1"
+    assert not transaction.reservation_path.exists()
+    assert run_git(
+        repository, "rev-parse", f"refs/tags/{completed.tag}^{{commit}}"
+    ).stdout.strip() == created
+    assert all(path.stat().st_mtime_ns == mtime for path, mtime in artifact_mtimes.items())
+
+
+@pytest.mark.parametrize("change", ["unstaged", "staged-only", "new-file"])
+def test_versioned_completion_rejects_changed_declared_inputs(tmp_path, change) -> None:
+    declared = ["generated/new-input.json"] if change == "new-file" else []
+    repository, checkpoint, transaction, prepared, _receipts = (
+        _prepared_versioned_completion(
+            tmp_path,
+            version="1.2.7b1",
+            attempt_id=f"attempt-input-{change}",
+            declared_input_paths=declared,
+        )
+    )
+    source = repository / "src" / "claims.py"
+    if change == "unstaged":
+        source.write_bytes(b"print('changed')\n")
+    elif change == "staged-only":
+        source.write_bytes(b"print('changed')\n")
+        assert run_git(repository, "add", "src/claims.py").returncode == 0
+        source.write_bytes(b"print('claims')\n")
+    else:
+        _write_fixture_bytes(repository, declared[0], b"new declared input\n")
+
+    with pytest.raises(storage.RecoveryRequired, match="inputs changed"):
+        runner.complete_versioned_build(transaction, prepared)
+
+    assert run_git(repository, "rev-parse", "HEAD").stdout.strip() == checkpoint
+    assert not storage._artifact_tag_exists(
+        repository, transaction.release_unit, transaction.version
+    )
+    assert transaction.reservation_path.is_file()
+
+
+def test_versioned_completion_rejects_changed_prepared_result(tmp_path) -> None:
+    repository, checkpoint, transaction, prepared, receipts = (
+        _prepared_versioned_completion(
+            tmp_path,
+            version="1.2.8b1",
+            attempt_id="attempt-result-change",
+        )
+    )
+    evidence = receipts[transaction.required_targets[0]]["supportingFiles"][0]
+    _write_fixture_bytes(repository, evidence["path"], b'{"status":"changed"}\n')
+
+    with pytest.raises(storage.RecoveryRequired, match="result bytes changed"):
+        runner.complete_versioned_build(transaction, prepared)
+
+    assert run_git(repository, "rev-parse", "HEAD").stdout.strip() == checkpoint
+    assert not storage._artifact_tag_exists(
+        repository, transaction.release_unit, transaction.version
+    )
 
 
 def _receipt_chain_fixture(

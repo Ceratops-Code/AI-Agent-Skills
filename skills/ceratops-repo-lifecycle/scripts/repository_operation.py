@@ -41,11 +41,12 @@ from github_pr_workflow.command import failure_excerpt
 from sdlc_results import StepResultError, capture_step_result
 from store_artifacts import (
     BUILD_BUNDLE_RETENTION,
+    ArtifactVersionTransaction,
     BuildProduct,
     CompletedBuild,
     CompletedDependency,
+    CompletedArtifactVersion,
     OperationError,
-    PendingArtifactTransaction,
     PreparedBuildReceipt,
     RecoveryRequired,
     read_completed_build,
@@ -237,8 +238,9 @@ def reserve_versioned_build(
     required_targets: Sequence[str],
     attempt_id: str,
     pre_test_commit: str,
+    declared_input_paths: Sequence[str] = (),
     recovery_confirmed: bool = False,
-) -> PendingArtifactTransaction:
+) -> ArtifactVersionTransaction:
     """Begin the internal post-B versioned storage route.
 
     The operation owner creates checkpoint B and completes build-independent
@@ -255,12 +257,13 @@ def reserve_versioned_build(
         required_targets=required_targets,
         attempt_id=attempt_id,
         pre_test_commit=pre_test_commit,
+        declared_input_paths=declared_input_paths,
         recovery_confirmed=recovery_confirmed,
     )
 
 
 def measure_versioned_artifact(
-    transaction: PendingArtifactTransaction,
+    transaction: ArtifactVersionTransaction,
     target: str,
     descriptor: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -272,14 +275,25 @@ def measure_versioned_artifact(
 
 
 def prepare_versioned_receipt(
-    transaction: PendingArtifactTransaction,
+    transaction: ArtifactVersionTransaction,
     target: str,
     receipt: Mapping[str, Any],
 ) -> PreparedBuildReceipt:
-    """Persist one qualified target receipt for later 1d.3 finalization."""
+    """Write one qualified target receipt to its final worktree path."""
 
     return store_artifacts.prepare_versioned_build_receipt(
         transaction, target, receipt
+    )
+
+
+def complete_versioned_build(
+    transaction: ArtifactVersionTransaction,
+    prepared_receipts: Sequence[PreparedBuildReceipt] | None = None,
+) -> CompletedArtifactVersion:
+    """Create or recover C, bind every target, and create the version tag."""
+
+    return store_artifacts.complete_versioned_artifacts(
+        transaction, prepared_receipts
     )
 
 
