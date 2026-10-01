@@ -45,6 +45,9 @@ from store_artifacts import (
     CompletedBuild,
     CompletedDependency,
     OperationError,
+    PendingArtifactTransaction,
+    PreparedBuildReceipt,
+    RecoveryRequired,
     read_completed_build,
 )
 
@@ -223,6 +226,61 @@ def build_bundle(
                     tests,
                 )
                 raise
+
+
+def reserve_versioned_build(
+    repo_root: pathlib.Path,
+    *,
+    repository: str,
+    release_unit: str,
+    version: str,
+    required_targets: Sequence[str],
+    attempt_id: str,
+    pre_test_commit: str,
+    recovery_confirmed: bool = False,
+) -> PendingArtifactTransaction:
+    """Begin the internal post-B versioned storage route.
+
+    The operation owner creates checkpoint B and completes build-independent
+    checks before calling this boundary. The returned output/work paths belong
+    exclusively to the recorded attempt; source remains in the existing
+    worktree. Public Build routing remains intentionally disconnected until 2A.
+    """
+
+    return store_artifacts.reserve_versioned_artifacts(
+        repo_root,
+        repository=repository,
+        release_unit=release_unit,
+        version=version,
+        required_targets=required_targets,
+        attempt_id=attempt_id,
+        pre_test_commit=pre_test_commit,
+        recovery_confirmed=recovery_confirmed,
+    )
+
+
+def measure_versioned_artifact(
+    transaction: PendingArtifactTransaction,
+    target: str,
+    descriptor: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Measure an owned output before the operation starts artifact tests."""
+
+    return store_artifacts.measure_versioned_artifact(
+        transaction, target, descriptor
+    )
+
+
+def prepare_versioned_receipt(
+    transaction: PendingArtifactTransaction,
+    target: str,
+    receipt: Mapping[str, Any],
+) -> PreparedBuildReceipt:
+    """Persist one qualified target receipt for later 1d.3 finalization."""
+
+    return store_artifacts.prepare_versioned_build_receipt(
+        transaction, target, receipt
+    )
 
 
 def execute_handoff(

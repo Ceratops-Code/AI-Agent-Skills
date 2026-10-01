@@ -1179,6 +1179,330 @@ def _write_fixture_bytes(
     return path
 
 
+def _versioned_repository(tmp_path: pathlib.Path) -> tuple[pathlib.Path, str]:
+    repository = tmp_path / "versioned-repository"
+    repository.mkdir()
+    for relative, content in {
+        "src/claims.py": b"print('claims')\n",
+        "uv.lock": b"version = 1\n",
+        "tests/test_claims.py": b"def test_claims(): pass\n",
+        "pyproject.toml": b"[tool.pytest.ini_options]\n",
+    }.items():
+        _write_fixture_bytes(repository, relative, content)
+    return repository, _repository(repository)
+
+
+def _versioned_build_receipt(
+    tmp_path: pathlib.Path,
+    *,
+    commit: str,
+    version: str,
+    target: str,
+    required_targets: list[str],
+    attempt_id: str,
+) -> dict[str, Any]:
+    fixture = tmp_path / f"receipt-{version}-{target}"
+    fixture.mkdir()
+    _path, receipt, _raw, _artifact_path, _artifact, _artifact_raw = (
+        _new_receipt_fixtures(
+            fixture,
+            version=version,
+            target=target,
+            required_targets=required_targets,
+        )
+    )
+    receipt["preTestCommit"] = commit
+    receipt["identity"]["attemptId"] = attempt_id
+    return receipt
+
+
+def _stage_versioned_receipt(
+    repository: pathlib.Path,
+    transaction: Any,
+    receipt: Mapping[str, Any],
+) -> None:
+    version = receipt["identity"]["version"]
+    target = receipt["identity"]["target"]
+    contents = {
+        f"artifacts/claims-{version}-py3-none-any.whl": (
+            f"claims-{version}-py3-none-any.whl".encode()
+        ),
+        "dependencies/converter-0.4.0.whl": b"converter-0.4.0.whl",
+        "evidence/installed-artifact.json": b'{"installed":true,"status":"passed"}\n',
+        "evidence/install.log": b"sanitized fixture log\n",
+    }
+    output = transaction.target_output(target)
+    for relative, content in contents.items():
+        _write_fixture_bytes(output, relative, content)
+    for item in receipt["supportingFiles"]:
+        if item["root"] == "git":
+            _write_fixture_bytes(
+                repository, item["path"], b'{"status":"passed"}\n'
+            )
+
+
+def test_versioned_reservations_preserve_owners_and_coordinate_targets(
+    tmp_path,
+) -> None:
+    repository, commit = _versioned_repository(tmp_path)
+    targets = ["python-3.14-windows", "python-3.14-linux"]
+    transaction = runner.reserve_versioned_build(
+        repository,
+        repository="example/project",
+        release_unit="claims",
+        version="1.2.3a1",
+        required_targets=targets,
+        attempt_id="attempt-alpha-001",
+        pre_test_commit=commit,
+    )
+    sentinel = transaction.target_output(targets[0]) / "owned.bin"
+    sentinel.write_bytes(b"preserve this attempt")
+    assert all(transaction.target_output(target).is_dir() for target in targets)
+    assert all(transaction.target_work(target).is_dir() for target in targets)
+
+    with pytest.raises(runner.OperationError, match="reserved by another attempt"):
+        runner.reserve_versioned_build(
+            repository,
+            repository="example/project",
+            release_unit="claims",
+            version="1.2.3a1",
+            required_targets=targets,
+            attempt_id="attempt-alpha-002",
+            pre_test_commit=commit,
+        )
+    with pytest.raises(storage.RecoveryRequired) as interrupted:
+        runner.reserve_versioned_build(
+            repository,
+            repository="example/project",
+            release_unit="claims",
+            version="1.2.3a1",
+            required_targets=targets,
+            attempt_id="attempt-alpha-001",
+            pre_test_commit=commit,
+        )
+    assert interrupted.value.status == "recovery_required"
+    resumed = runner.reserve_versioned_build(
+        repository,
+        repository="example/project",
+        release_unit="claims",
+        version="1.2.3a1",
+        required_targets=targets,
+        attempt_id="attempt-alpha-001",
+        pre_test_commit=commit,
+        recovery_confirmed=True,
+    )
+    assert resumed.reservation_path == transaction.reservation_path
+    assert sentinel.read_bytes() == b"preserve this attempt"
+
+    with pytest.raises(storage.RecoveryRequired, match="unfinished attempt"):
+        runner.reserve_versioned_build(
+            repository,
+            repository="example/project",
+            release_unit="claims",
+            version="1.2.3a2",
+            required_targets=[targets[0]],
+            attempt_id="attempt-alpha-003",
+            pre_test_commit=commit,
+        )
+
+    second_worktree = tmp_path / "parallel-worktree"
+    added = run_git(
+        repository,
+        "worktree",
+        "add",
+        "-b",
+        "parallel-versioned-test",
+        str(second_worktree),
+        commit,
+    )
+    assert added.returncode == 0, added.stderr
+    independent = runner.reserve_versioned_build(
+        second_worktree,
+        repository="example/project",
+        release_unit="claims",
+        version="1.2.3a2",
+        required_targets=[targets[0]],
+        attempt_id="attempt-alpha-004",
+        pre_test_commit=commit,
+    )
+    assert independent.staging_root != transaction.staging_root
+    assert sentinel.read_bytes() == b"preserve this attempt"
+
+    diagnostic = storage.write_versioned_failure_diagnostic(
+        transaction, targets[0], "first failure"
+    )
+    storage.write_versioned_failure_diagnostic(
+        transaction, targets[0], "replacement failure"
+    )
+    assert json.loads(diagnostic.read_text(encoding="utf-8"))["error"] == (
+        "replacement failure"
+    )
+    assert not diagnostic.with_name(f"{diagnostic.name}.tmp").exists()
+    transaction.journal_path.with_name("journal.json.tmp").write_bytes(
+        b"interrupted write"
+    )
+    with pytest.raises(storage.RecoveryRequired, match="Interrupted journal write"):
+        runner.reserve_versioned_build(
+            repository,
+            repository="example/project",
+            release_unit="claims",
+            version="1.2.3a1",
+            required_targets=targets,
+            attempt_id="attempt-alpha-001",
+            pre_test_commit=commit,
+            recovery_confirmed=True,
+        )
+    assert sentinel.read_bytes() == b"preserve this attempt"
+
+
+def test_versioned_receipts_persist_exact_multi_target_pending_state(tmp_path) -> None:
+    repository, commit = _versioned_repository(tmp_path)
+    targets = ["python-3.14-windows", "python-3.14-linux"]
+    attempt_id = "attempt-beta-001"
+    transaction = runner.reserve_versioned_build(
+        repository,
+        repository="example/project",
+        release_unit="claims",
+        version="1.2.3b1",
+        required_targets=targets,
+        attempt_id=attempt_id,
+        pre_test_commit=commit,
+    )
+    prepared = []
+    receipts = {}
+    for target in targets:
+        receipt = _versioned_build_receipt(
+            tmp_path,
+            commit=commit,
+            version="1.2.3b1",
+            target=target,
+            required_targets=targets,
+            attempt_id=attempt_id,
+        )
+        _stage_versioned_receipt(repository, transaction, receipt)
+        measured = runner.measure_versioned_artifact(
+            transaction,
+            target,
+            {"type": "python-wheel", "path": receipt["artifacts"][0]["path"]},
+        )
+        assert measured == receipt["artifacts"][0]
+        result = runner.prepare_versioned_receipt(
+            transaction, target, receipt
+        )
+        assert result.raw == results.encode_new_receipt(receipt)
+        assert result.sha256 == hashlib.sha256(result.raw).hexdigest()
+        assert result.pending_receipt_path.read_bytes() == result.raw
+        assert result.receipt_path.endswith(f"/{target}/receipt.json")
+        prepared.append(result)
+        receipts[target] = receipt
+
+    journal = json.loads(transaction.journal_path.read_text(encoding="utf-8"))
+    assert journal["phase"] == "receipts_prepared"
+    assert set(journal["preparedReceipts"]) == set(targets)
+    assert all(item.store_files and item.git_files for item in prepared)
+    assert not (repository / prepared[0].receipt_path).exists()
+    assert not list(transaction.store.glob("claims/1.2.3b1/**/artifact-receipt.json"))
+    assert not (transaction.store / "claims" / "1.2.3b1").exists()
+    saved_mtime = prepared[0].pending_receipt_path.stat().st_mtime_ns
+    repeated = runner.prepare_versioned_receipt(
+        transaction, targets[0], receipts[targets[0]]
+    )
+    assert repeated.raw == prepared[0].raw
+    assert repeated.pending_receipt_path.stat().st_mtime_ns == saved_mtime
+
+
+def test_versioned_receipt_rejects_changed_tested_artifact(tmp_path) -> None:
+    repository, commit = _versioned_repository(tmp_path)
+    target = "python-3.14-windows"
+    transaction = runner.reserve_versioned_build(
+        repository,
+        repository="example/project",
+        release_unit="claims",
+        version="1.2.4b1",
+        required_targets=[target],
+        attempt_id="attempt-beta-002",
+        pre_test_commit=commit,
+    )
+    receipt = _versioned_build_receipt(
+        tmp_path,
+        commit=commit,
+        version="1.2.4b1",
+        target=target,
+        required_targets=[target],
+        attempt_id="attempt-beta-002",
+    )
+    assert receipt["receiptPath"] == ".build/claims/1.2.4b1/receipt.json"
+    _stage_versioned_receipt(repository, transaction, receipt)
+    measured = runner.measure_versioned_artifact(
+        transaction,
+        target,
+        {"type": "python-wheel", "path": receipt["artifacts"][0]["path"]},
+    )
+    assert measured["sha256"] == receipt["artifacts"][0]["sha256"]
+    artifact = transaction.target_output(target).joinpath(
+        *pathlib.PurePosixPath(receipt["artifacts"][0]["path"]).parts
+    )
+    artifact.write_bytes(b"changed after artifact tests")
+    with pytest.raises(results.StepResultError, match="(size|SHA-256) mismatch"):
+        runner.prepare_versioned_receipt(transaction, target, receipt)
+    assert not transaction.pending_receipt(target).exists()
+    journal = json.loads(transaction.journal_path.read_text(encoding="utf-8"))
+    assert journal["phase"] == "reserved"
+
+
+def test_versioned_retention_keeps_three_and_tag_blocks_pruned_reuse(
+    tmp_path,
+) -> None:
+    repository, commit = _versioned_repository(tmp_path)
+    store = repository / ".git" / "ceratops" / "artifacts"
+    target = "python-3.14-windows"
+    versions = [f"1.2.3a{number}" for number in range(1, 5)]
+    for position, version in enumerate(versions, start=1):
+        fixture = tmp_path / f"completed-{version}"
+        fixture.mkdir()
+        _build_path, _build, _build_raw, _path, _artifact, artifact_raw = (
+            _new_receipt_fixtures(
+                fixture,
+                version=version,
+                target=target,
+                required_targets=[target],
+            )
+        )
+        completed = store / "claims" / version
+        completed.mkdir(parents=True)
+        (completed / "artifact-receipt.json").write_bytes(artifact_raw)
+        os.utime(completed, ns=(position, position))
+        tagged = run_git(repository, "tag", f"claims/{version}", commit)
+        assert tagged.returncode == 0, tagged.stderr
+
+    transaction = runner.reserve_versioned_build(
+        repository,
+        repository="example/project",
+        release_unit="claims",
+        version="1.2.3a5",
+        required_targets=[target],
+        attempt_id="attempt-alpha-005",
+        pre_test_commit=commit,
+    )
+    assert not (store / "claims" / versions[0]).exists()
+    assert all((store / "claims" / version).is_dir() for version in versions[1:])
+    assert len(list((store / "claims").glob("*/artifact-receipt.json"))) == 3
+    sentinel = transaction.target_output(target) / "pending.bin"
+    sentinel.write_bytes(b"pending output stays protected")
+
+    with pytest.raises(runner.OperationError, match="version tag already exists"):
+        runner.reserve_versioned_build(
+            repository,
+            repository="example/project",
+            release_unit="claims",
+            version=versions[0],
+            required_targets=[target],
+            attempt_id="attempt-alpha-reuse",
+            pre_test_commit=commit,
+        )
+    assert sentinel.read_bytes() == b"pending output stays protected"
+
+
 def _receipt_chain_fixture(
     tmp_path: pathlib.Path,
     *,
