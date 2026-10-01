@@ -258,15 +258,54 @@ generation and this repository's live declaration remain v4. Automatic
 release-unit Build, Promote, Ship, and Deploy are not connected yet; exact
 artifact-output declarations and their consumers remain step 3 work.
 
-Build receipts use `ceratops-build-result.v2` in the existing
+Existing bundle receipts continue to use `ceratops-build-result.v2` in
 `operation-result.v1.schema.json`. The repository-owned `sdlc_results.py`
 verifier checks a caller-selected identity, artifact and dependency files,
 supporting files, and artifact-bound test references. It reads only regular
 bundle files through safe relative paths and compares their sizes and SHA-256
 values. Verification does not establish test success, authenticity,
 immutability, or deployment permission. The separate
-`ceratops-build-result.v1` action-result format is unchanged; Build and
-installer integration remain later work.
+`ceratops-build-result.v1` action-result format is also unchanged.
+
+The same schema now defines the internal `ceratops-build-result.v3` committed
+build receipt and `ceratops-artifact-receipt.v1` stored-artifact receipt.
+`sdlc_results.py` exposes their schema constants, `encode_new_receipt`, byte
+parsers, and `read_committed_build_receipt` / `read_artifact_receipt`. New
+receipts have one canonical representation: sorted compact JSON, encoded as
+UTF-8 with one LF terminator. A reader validates that representation and the
+closed schema, then returns the exact stored bytes and their directly computed
+SHA-256 alongside the parsed object; it never derives a hash from reserialized
+data.
+
+The v3 build receipt owns the attempt, pre-test commit B, full version, target
+and required-target set; artifact-producing inputs remain separate from
+check-only inputs. It records dependency identities, artifact filenames,
+sizes and hashes, the installation artifact, portable runtime/tool identities,
+the originally required source checks and artifact tests, their versions and
+completed results, and explicit evidence references. It contains neither its
+own hash nor final commit C. The artifact receipt owns C, the producing
+acceptance identity, the repository-relative committed-receipt location and
+exact byte hash, and store-relative artifact locations; it does not duplicate
+the authoritative check inventory.
+
+Committed receipts use `.build/<unit>/<version>/receipt.json`, adding
+`<target>` below the version for separately qualified targets. Artifact
+receipts live beside retained output under
+`<shared-git-directory>/ceratops/artifacts/<unit>/<version>/artifact-receipt.json`,
+adding the same optional target component before the filename. Versions such as
+`1.2.3a1` and `1.2.3b1` identify separate builds rather than channel aliases.
+Record fields allow only logical repository, tool and runtime identities plus
+`git`- or `store`-rooted safe relative file references; they do not accept
+credentials, raw logs, temporary paths, mutable installation paths or
+machine-specific absolute paths.
+
+These new definitions and readers are internal only. Receipt production,
+stored-file chain verification and public Build/Promote/Deploy/Ship integration
+remain pending. A future producer may retain a sanitized supporting log only
+when a recorded result needs it: completed logs belong inside that version's
+artifact directory and use its bounded artifact-store lifetime; temporary or
+orphaned logs remain owned by the attempt and are removed at startup and after
+completion. The readers create, rotate and clean up nothing.
 
 Call `sdlc_results.py verify-release-unit-build` with `--receipt`,
 `--bundle-root`, and the expected `--repository`, `--source-commit`,
@@ -299,9 +338,11 @@ The implemented foundation has five separate responsibilities:
 
 - **1a — declarations:** SDLC v5 describes release-unit members and their
   dependencies; loading it validates metadata without building anything.
-- **1b — verification:** the receipt verifier establishes which files and bytes
-  a record identifies. `RECEIPT_VERIFIED` does not convert failed or absent tests
-  into passed tests.
+- **1b — verification:** the v2 verifier establishes which files and bytes its
+  bundle record identifies. The new committed-build and artifact-receipt
+  definitions/readers validate their recorded identities and exact bytes, but
+  their stored receipt chain is not connected yet. `RECEIPT_VERIFIED` does not
+  convert failed or absent tests into passed tests.
 - **1R — completed-build consumption:** production qualifies and publishes a
   new identity once; the internal reader consumes its recorded acceptance and
   exact stored files without applying current tests or build inputs.
@@ -318,7 +359,8 @@ The implemented foundation has five separate responsibilities:
 The later public Build operation will supply the resolved selection, locked
 inputs, adapters, and required artifact tests. This foundation does not yet
 build real packages, alter existing deployment, or connect Promote/Ship.
-There is no extra store module, schema, index, or artifact-search command.
+There is no extra store module, separate schema file, index, or artifact-search
+command.
 Dependency locking remains separate from first-party artifact identity.
 
 For skill maintenance, prepare one update record before edits. Keep its explicit
@@ -345,7 +387,7 @@ Later delivery consumes the selected version's recorded acceptance and bytes.
 | Area | Current status | Next boundary |
 | --- | --- | --- |
 | 1a release declarations | Implemented | Keep current v4/v5 readers; connect exact-output producers later |
-| 1b receipt verification | Implemented v2 | Planned separate committed build receipt and artifact receipt |
+| 1b receipt verification | Implemented v2 verifier plus internal v3 committed-build and v1 artifact-receipt definitions/readers | Verify the saved receipt chain in 1b.2; producers remain later work |
 | 1c correction continuity | Implemented; finalization consumes recorded success without rechecking the checkout | Connect the new acceptance records later |
 | 1d build/test/store | Implemented internal v2 transaction | Planned store extraction and recoverable final-commit binding |
 | Completed-build consumption | Implemented internal v2 reader; recorded acceptance and exact stored paths survive current test/input changes | Connect public receipt-based Deploy in later steps |

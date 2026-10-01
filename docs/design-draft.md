@@ -129,6 +129,11 @@ path boundaries, byte sizes, and SHA-256 values without building, installing,
 or changing test statuses. Verification is a point-in-time integrity check, not
 proof of test success, provenance, immutability, or permission to deploy.
 Capture remains free of artifact reads, and installer integration is deferred.
+The same schema now also defines `ceratops-build-result.v3` and
+`ceratops-artifact-receipt.v1`. Their internal readers validate closed portable
+records and canonical UTF-8/LF bytes, retaining the exact bytes and a hash of
+those bytes. They do not yet follow the link through Git and the artifact store;
+that chain reader remains the next receipt boundary.
 
 The final direction removes generated repository `sdlc.py`, a local copy of the
 operation engine, and `scripts/runtime`. Those proposed extra layers were
@@ -393,11 +398,31 @@ non-tampering.
 | Artifact receipt | Final C, repository-relative build-receipt path, hash of its exact committed bytes, store-relative artifact locations and completed acceptance reference | Stored alongside immutable artifacts in the Git common directory after closure passes |
 | Promotion/deployment record | Selected artifact receipts, integrated release commit, version/target, expected old and resulting refs, completed effects | Existing owning lifecycle checkpoint/result; it does not duplicate test acceptance |
 
-The final schema names/versions must be explicit new record definitions in the
-existing operation-result schema; never reinterpret saved v2 bytes. Proposed
-names are `ceratops-build-result.v3` and `ceratops-artifact-receipt.v1`.
-The artifact receipt links the authoritative build receipt; it does not copy
-its inventory and test results into a second editable authority.
+`ceratops-build-result.v3` and `ceratops-artifact-receipt.v1` are implemented as
+explicit definitions in the existing operation-result schema. Existing v2
+bytes retain their native definition and reader; no implicit conversion or
+current-test interpretation is introduced. The artifact receipt links the
+authoritative build receipt; it does not copy its inventory and test results
+into a second editable authority.
+
+The committed build receipt owns repository/unit/full-version/target/attempt,
+required targets, B, its future repository-relative receipt path, the producing
+acceptance identity, artifact-producing inputs, separate check-only inputs,
+dependency identities, artifact inventory, the installation artifact, portable
+runtime/tool context, the exact required-check set and completed source-check
+and artifact-test results. Each result records its check version and applicable
+inputs or exact tested artifact hashes. The receipt also declares its exact
+Git result paths. It cannot contain its own hash or C. The artifact receipt owns
+C, the shared record identity and acceptance identity, the committed receipt's
+Git path/size/exact-byte hash, and only the retained artifact locations.
+
+Both formats use sorted compact JSON encoded as UTF-8 followed by one LF.
+`encode_new_receipt` is the deterministic representation boundary.
+`read_committed_build_receipt`, `read_artifact_receipt` and their byte parsers
+validate that representation and return the original bytes plus their direct
+SHA-256; readers never parse and reserialize data to establish the stored hash.
+The definitions and readers are implemented internally, while production,
+Git-C/store-chain verification and public lifecycle integration remain pending.
 
 Each artifact-test result identifies the exact artifact paths/hashes it tested;
 source-check results identify their applicable inputs and check versions.
@@ -406,6 +431,14 @@ paths, byte sizes, hashes and a `git` or `store` root. Git references are read
 from C; store references are read within the selected version/target directory.
 Retain required dependency artifacts in that stored output set rather than
 depending on the producing worktree or temporary environments remaining present.
+Portable context is closed to logical OS, architecture, runtime and tool
+identities; secrets, credentials, raw logs, temporary paths, installation paths
+and machine-specific absolute paths are not receipt fields. A supporting log is
+retained only when a result needs it and only after sanitization. Completed logs
+use a `store` reference inside the version directory and inherit its bounded
+artifact-store retention; temporary, orphaned or expired logs remain owned by
+the attempt and are removed at startup and after completion. The current readers
+perform no creation, cleanup or retention mutation.
 
 Select the full version before B, independently of the not-yet-created C.
 Standalone Build produces alpha versions such as `1.2.3a1`; Promote invokes the

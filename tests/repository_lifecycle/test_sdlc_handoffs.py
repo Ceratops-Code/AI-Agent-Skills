@@ -939,6 +939,389 @@ def _save_build_receipt(path: pathlib.Path, receipt: dict[str, Any]) -> None:
     path.write_text(json.dumps(receipt), encoding="utf-8")
 
 
+def _new_receipt_fixtures(
+    tmp_path: pathlib.Path,
+    *,
+    version: str = "1.2.3b1",
+    target: str = "python-3.14-windows",
+    required_targets: list[str] | None = None,
+):
+    required_targets = required_targets or [target, "python-3.14-linux"]
+    target_suffix = f"/{target}" if len(required_targets) > 1 else ""
+    receipt_path = f".build/claims/{version}{target_suffix}/receipt.json"
+
+    def digest(content: bytes) -> str:
+        return hashlib.sha256(content).hexdigest()
+
+    source = b"print('claims')\n"
+    lock = b"version = 1\n"
+    tests = b"def test_claims(): pass\n"
+    config = b"[tool.pytest.ini_options]\n"
+    wheel = f"claims-{version}-py3-none-any.whl".encode()
+    dependency = b"converter-0.4.0.whl"
+    validation = b'{"status":"passed"}\n'
+    installed = b'{"installed":true,"status":"passed"}\n'
+    supporting_log = b"sanitized fixture log\n"
+    artifact_path = f"artifacts/claims-{version}-py3-none-any.whl"
+    identity = {
+        "repository": "example/project",
+        "releaseUnit": "claims",
+        "version": version,
+        "target": target,
+        "attemptId": "attempt-001",
+    }
+    acceptance = {
+        "operation": "deliverables.packages.claims.actions.build",
+        "id": "acceptance-001",
+    }
+    build_receipt = {
+        "schema": results.COMMITTED_BUILD_RECEIPT_SCHEMA,
+        "status": "passed",
+        "identity": identity,
+        "requiredTargets": required_targets,
+        "preTestCommit": "b" * 40,
+        "acceptance": acceptance,
+        "receiptPath": receipt_path,
+        "artifactInputs": [
+            {
+                "id": "source",
+                "root": "git",
+                "path": "src/claims.py",
+                "size": len(source),
+                "sha256": digest(source),
+            },
+            {
+                "id": "dependency-lock",
+                "root": "git",
+                "path": "uv.lock",
+                "size": len(lock),
+                "sha256": digest(lock),
+            },
+        ],
+        "checkInputs": [
+            {
+                "id": "tests",
+                "root": "git",
+                "path": "tests/test_claims.py",
+                "size": len(tests),
+                "sha256": digest(tests),
+            },
+            {
+                "id": "test-config",
+                "root": "git",
+                "path": "pyproject.toml",
+                "size": len(config),
+                "sha256": digest(config),
+            },
+        ],
+        "dependencies": [
+            {
+                "repository": "example/project",
+                "releaseUnit": "converter",
+                "version": "0.4.0",
+                "target": target,
+                "acceptanceId": "converter-acceptance-004",
+                "artifacts": [
+                    {
+                        "type": "python-wheel",
+                        "root": "store",
+                        "path": "dependencies/converter-0.4.0.whl",
+                        "size": len(dependency),
+                        "sha256": digest(dependency),
+                    }
+                ],
+            }
+        ],
+        "artifacts": [
+            {
+                "type": "python-wheel",
+                "root": "store",
+                "path": artifact_path,
+                "size": len(wheel),
+                "sha256": digest(wheel),
+            }
+        ],
+        "installationArtifact": {
+            "root": "store",
+            "path": artifact_path,
+            "sha256": digest(wheel),
+        },
+        "portableContext": {
+            "os": "windows",
+            "architecture": "x86_64",
+            "runtimes": [{"id": "python", "version": "3.14.0"}],
+            "tools": [{"id": "uv", "version": "0.8.15"}],
+        },
+        "requiredChecks": [
+            {
+                "kind": "source-check",
+                "id": "repository-validation",
+                "version": "validate-repository.v5",
+            },
+            {
+                "kind": "artifact-test",
+                "id": "installed-artifact",
+                "version": "pytest-8.4.2+fixture-v1",
+            },
+        ],
+        "sourceChecks": [
+            {
+                "id": "repository-validation",
+                "version": "validate-repository.v5",
+                "status": "passed",
+                "inputs": ["source", "dependency-lock", "tests", "test-config"],
+                "evidence": [
+                    {
+                        "root": "git",
+                        "path": f".build/claims/{version}{target_suffix}/evidence/validation.json",
+                        "size": len(validation),
+                        "sha256": digest(validation),
+                    }
+                ],
+            }
+        ],
+        "artifactTests": [
+            {
+                "id": "installed-artifact",
+                "version": "pytest-8.4.2+fixture-v1",
+                "status": "passed",
+                "artifacts": [
+                    {
+                        "root": "store",
+                        "path": artifact_path,
+                        "sha256": digest(wheel),
+                    }
+                ],
+                "evidence": [
+                    {
+                        "root": "store",
+                        "path": "evidence/installed-artifact.json",
+                        "size": len(installed),
+                        "sha256": digest(installed),
+                    },
+                    {
+                        "root": "store",
+                        "path": "evidence/install.log",
+                        "size": len(supporting_log),
+                        "sha256": digest(supporting_log),
+                    },
+                ],
+            }
+        ],
+        "supportingFiles": [
+            {
+                "type": "source-check-evidence",
+                "root": "git",
+                "path": f".build/claims/{version}{target_suffix}/evidence/validation.json",
+                "size": len(validation),
+                "sha256": digest(validation),
+            },
+            {
+                "type": "artifact-test-evidence",
+                "root": "store",
+                "path": "evidence/installed-artifact.json",
+                "size": len(installed),
+                "sha256": digest(installed),
+            },
+            {
+                "type": "supporting-log",
+                "root": "store",
+                "path": "evidence/install.log",
+                "size": len(supporting_log),
+                "sha256": digest(supporting_log),
+            },
+        ],
+        "committedResultPaths": [
+            receipt_path,
+            f".build/claims/{version}{target_suffix}/evidence/validation.json",
+        ],
+    }
+    build_bytes = results.encode_new_receipt(build_receipt)
+    build_path = tmp_path / "committed-build-receipt.json"
+    build_path.write_bytes(build_bytes)
+    artifact_receipt = {
+        "schema": results.ARTIFACT_RECEIPT_SCHEMA,
+        "status": "passed",
+        "identity": dict(identity),
+        "finalCommit": "c" * 40,
+        "acceptance": dict(acceptance),
+        "buildReceipt": {
+            "root": "git",
+            "path": receipt_path,
+            "size": len(build_bytes),
+            "sha256": digest(build_bytes),
+        },
+        "artifactPaths": [artifact_path],
+    }
+    artifact_bytes = results.encode_new_receipt(artifact_receipt)
+    artifact_pathname = tmp_path / "artifact-receipt.json"
+    artifact_pathname.write_bytes(artifact_bytes)
+    return (
+        build_path,
+        build_receipt,
+        build_bytes,
+        artifact_pathname,
+        artifact_receipt,
+        artifact_bytes,
+    )
+
+
+@pytest.mark.parametrize(
+    ("version", "target", "required_targets"),
+    [
+        ("1.2.3a1", "python-any", ["python-any"]),
+        (
+            "1.2.3b1",
+            "python-3.14-windows",
+            ["python-3.14-windows", "python-3.14-linux"],
+        ),
+    ],
+)
+def test_new_receipt_readers_preserve_exact_bytes_full_versions_and_targets(
+    tmp_path, version, target, required_targets
+) -> None:
+    paths = _new_receipt_fixtures(
+        tmp_path,
+        version=version,
+        target=target,
+        required_targets=required_targets,
+    )
+    build_path, build, build_bytes, artifact_path, artifact, artifact_bytes = paths
+    loaded_build = results.read_committed_build_receipt(build_path)
+    loaded_artifact = results.read_artifact_receipt(artifact_path)
+    assert loaded_build.value == build
+    assert loaded_build.raw == build_bytes == results.encode_new_receipt(build)
+    assert loaded_build.sha256 == hashlib.sha256(build_bytes).hexdigest()
+    assert results.parse_committed_build_receipt(build_bytes) == loaded_build
+    assert loaded_artifact.value == artifact
+    assert loaded_artifact.raw == artifact_bytes == results.encode_new_receipt(artifact)
+    assert loaded_artifact.sha256 == hashlib.sha256(artifact_bytes).hexdigest()
+    assert results.parse_artifact_receipt(artifact_bytes) == loaded_artifact
+    assert build["identity"]["version"] == version
+    assert build["identity"]["target"] == target
+    assert build["requiredTargets"] == required_targets
+    assert build["artifactInputs"] and build["checkInputs"]
+    assert build["portableContext"] == {
+        "os": "windows",
+        "architecture": "x86_64",
+        "runtimes": [{"id": "python", "version": "3.14.0"}],
+        "tools": [{"id": "uv", "version": "0.8.15"}],
+    }
+    assert any(
+        item["type"] == "supporting-log" and item["root"] == "store"
+        for item in build["supportingFiles"]
+    )
+    assert build_bytes.endswith(b"\n") and b"\r" not in build_bytes
+    assert "finalCommit" not in build and "sha256" not in build
+
+
+@pytest.mark.parametrize(
+    "problem",
+    [
+        "missing-field",
+        "unknown-field",
+        "unsafe-path",
+        "unknown-input",
+        "required-result-mismatch",
+        "unknown-evidence",
+        "unexpected-result-path",
+        "installation-hash",
+        "machine-path",
+        "log-in-git",
+    ],
+)
+def test_committed_build_receipt_reader_rejects_malformed_records(
+    tmp_path, problem
+) -> None:
+    path, receipt, _, _, _, _ = _new_receipt_fixtures(tmp_path)
+    if problem == "missing-field":
+        receipt.pop("preTestCommit")
+    elif problem == "unknown-field":
+        receipt["finalCommit"] = "c" * 40
+    elif problem == "unsafe-path":
+        receipt["artifactInputs"][0]["path"] = "../outside.py"
+    elif problem == "unknown-input":
+        receipt["sourceChecks"][0]["inputs"].append("ambient-input")
+    elif problem == "required-result-mismatch":
+        receipt["requiredChecks"].pop()
+    elif problem == "unknown-evidence":
+        receipt["artifactTests"][0]["evidence"][0]["sha256"] = "d" * 64
+    elif problem == "unexpected-result-path":
+        receipt["committedResultPaths"].append("tests/test_claims.py")
+    elif problem == "installation-hash":
+        receipt["installationArtifact"]["sha256"] = "d" * 64
+    elif problem == "machine-path":
+        receipt["portableContext"]["runtimes"][0]["version"] = (
+            "C:\\Python314\\python.exe"
+        )
+    else:
+        receipt["supportingFiles"][-1]["root"] = "git"
+    path.write_bytes(
+        (json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    )
+    with pytest.raises(results.StepResultError):
+        results.read_committed_build_receipt(path)
+
+
+@pytest.mark.parametrize(
+    "problem",
+    ["wrong-root", "wrong-build-path", "unsafe-artifact", "self-artifact", "status"],
+)
+def test_artifact_receipt_reader_rejects_malformed_records(tmp_path, problem) -> None:
+    _, _, _, path, receipt, _ = _new_receipt_fixtures(tmp_path)
+    if problem == "wrong-root":
+        receipt["buildReceipt"]["root"] = "store"
+    elif problem == "wrong-build-path":
+        receipt["buildReceipt"]["path"] = ".build/other/1.2.3b1/receipt.json"
+    elif problem == "unsafe-artifact":
+        receipt["artifactPaths"][0] = "../claims.whl"
+    elif problem == "self-artifact":
+        receipt["artifactPaths"][0] = "artifact-receipt.json"
+    else:
+        receipt["status"] = "failed"
+    path.write_bytes(
+        (json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    )
+    with pytest.raises(results.StepResultError):
+        results.read_artifact_receipt(path)
+
+
+@pytest.mark.parametrize("formatting", ["pretty", "crlf", "duplicate-key"])
+def test_new_receipt_readers_require_canonical_utf8_lf_bytes(
+    tmp_path, formatting
+) -> None:
+    path, receipt, raw, _, _, _ = _new_receipt_fixtures(tmp_path)
+    if formatting == "pretty":
+        raw = (json.dumps(receipt, ensure_ascii=False, indent=2) + "\n").encode()
+    elif formatting == "crlf":
+        raw = raw[:-1] + b"\r\n"
+    else:
+        raw = raw.replace(
+            b'{"acceptance":',
+            b'{"schema":"ceratops-build-result.v3","acceptance":',
+            1,
+        )
+    path.write_bytes(raw)
+    with pytest.raises(results.StepResultError):
+        results.read_committed_build_receipt(path)
+
+
+def test_new_receipt_reader_reports_missing_and_unreadable_data(tmp_path) -> None:
+    missing = tmp_path / "missing.json"
+    with pytest.raises(results.StepResultError, match="Cannot read committed build receipt"):
+        results.read_committed_build_receipt(missing)
+    unreadable = tmp_path / "unreadable.json"
+    unreadable.write_bytes(b"\xff")
+    with pytest.raises(results.StepResultError, match="valid UTF-8 JSON"):
+        results.read_committed_build_receipt(unreadable)
+
+
+def test_new_receipt_definitions_preserve_native_v2_reading(tmp_path) -> None:
+    path, bundle, receipt, expected = _build_receipt_fixture(tmp_path)
+    assert results.BUILD_RECEIPT_SCHEMA == "ceratops-build-result.v2"
+    assert results.verify_release_unit_build(path, bundle, expected=expected) == receipt
+
+
 def test_build_receipt_verifies_complete_bundle_without_mutation(
     tmp_path, monkeypatch
 ) -> None:
