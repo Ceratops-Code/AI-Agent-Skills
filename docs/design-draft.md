@@ -191,8 +191,11 @@ methodology below.
 Steps 1a and 1b provide metadata and verification; 1R separates production from
 completed-build consumption; 1c makes skill-update corrections resumable; 1d
 supplies internal artifact storage. `repository_operation.build_bundle`
-coordinates adapters, tests and publication. `repository_operation.read_completed_build`
-selects an existing completed v2 build for consumption.
+continues to coordinate adapters and required tests, while `store_artifacts.py`
+owns shared-store resolution, staging, measurement, receipt persistence, atomic
+publication, locking, retention, diagnostics and cleanup. The
+`repository_operation.read_completed_build` entry point is backed by that storage
+module and selects an existing completed v2 build for consumption.
 `sdlc_results.verify_release_unit_build` remains the read-only byte-integrity
 owner; it neither stores bundles nor decides which tests are required today.
 
@@ -202,6 +205,9 @@ callbacks. Selection is validated before output creation. Its canonical JSON
 SHA-256 is the build key. Git's absolute common directory identifies the shared
 store, so different worktrees use the same key and location. No separate index,
 caller-selected diagnostic path or wildcard selection is involved.
+The storage module sits in the owning skill's `scripts/` directory and is copied
+by the existing runtime packager without a new payload mapping. This extraction
+does not change the v2 store paths or receipt format.
 
 The transaction uses the following sequence:
 
@@ -251,12 +257,12 @@ The store does not discover missing dependencies or infer test coverage from sou
 Real package/skill adapters and installed-artifact tests arrive in later steps.
 The existing SDLC commands and installers are unchanged.
 
-The README's generated-output table is the retention policy. Completed bundles
-are grouped by repository, release unit, channel and target. Transaction startup
-and successful publication retain the newest three per group, ordered by
-completion-directory modification time and then build key, and remove older
-helper-owned directories. Failed work creates no completed receipt. Its error,
-required tests and bounded evidence excerpts atomically replace the one
+The README's generated-output table is the retention policy. `store_artifacts.py`
+groups completed bundles by repository, release unit, channel and target.
+Transaction startup and successful publication retain the newest three per
+group, ordered by completion-directory modification time and then build key, and
+remove older helper-owned directories. Failed work creates no completed receipt.
+Its error, required tests and bounded evidence excerpts atomically replace the one
 `.diagnostics/<group-key>.json` report; success removes that report. Read-only
 scratch files are cleaned without changing linked or unrecognized targets.
 Cleanup errors remain failures with diagnostics. On a killed process, the kernel
@@ -562,10 +568,11 @@ occurs during production. Any necessary activation health check must have an
 explicit, separate target-specific purpose; it must not repeat the artifact's
 acceptance tests under another name.
 
-The operation runner owns qualification and finalization; the planned
-`store_artifacts.py` owns reservations, persistence, publication and retention.
-Extract storage without changing the current v2 transaction lock, then introduce
-short store-lock sections only with durable, owner-aware version reservations.
+The operation runner owns qualification and later finalization. The implemented
+`store_artifacts.py` owns current v2 persistence, publication and retention while
+preserving the existing full-transaction lock. The planned reservation route
+will extend that module with durable ownership and only then introduce short
+store-lock sections.
 One attempt owns a unit/version and its required targets. Preserve active or
 unresolved staging; never use the old delete-all-staging recovery on that route.
 An available lock or missing PID does not authorize taking over a reservation.

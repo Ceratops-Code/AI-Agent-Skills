@@ -338,10 +338,12 @@ build and test statuses unchanged. Neither interface writes bundle files.
 
 The internal v2 lifecycle now separates production from consumption.
 `repository_operation.build_bundle` accepts the selected source, dependency and
-build inputs plus the required tests; it records those inputs, the original test
-IDs, successful results, tested hashes and evidence, and publishes only after
-qualification succeeds. A completed identity is immutable: another production
-request must use a new identity instead of returning or replacing the old one.
+build inputs plus the required tests and retains build/test sequencing.
+`store_artifacts.py` resolves the shared store, creates staging, measures files,
+writes receipts, publishes completed directories, and owns locking, retention,
+diagnostics and cleanup. Publication still occurs only after qualification
+succeeds. A completed identity is immutable: another production request must use
+a new identity instead of returning or replacing the old one.
 
 `repository_operation.read_completed_build` instead accepts either the selected
 six-field identity or an absolute saved `receipt.json`. It requires a completed,
@@ -374,15 +376,17 @@ The implemented foundation has five separate responsibilities:
   checkout. It does not derive ownership from Git or select tests; shared
   admission arrives in 2A and acceptance-record cleanup integration in step 7.
 - **1d — production and storage:** the internal `build_bundle` function in
-  `skills/ceratops-repo-lifecycle/scripts/repository_operation.py` owns a
-  reserved build/test/store transaction. It creates a final receipt only after
-  every required artifact test passes, then publishes the complete directory.
+  `skills/ceratops-repo-lifecycle/scripts/repository_operation.py` orchestrates
+  adapters and required artifact tests. Its sibling `store_artifacts.py` owns
+  the unchanged v2 store transaction, including the full-lifetime lock,
+  measurement, receipt persistence, atomic publication, retention and cleanup.
 
 The later public Build operation will supply the resolved selection, locked
 inputs, adapters, and required artifact tests. This foundation does not yet
 build real packages, alter existing deployment, or connect Promote/Ship.
-There is no extra store module, separate schema file, index, or artifact-search
-command.
+The storage module is packaged automatically with the owning skill's scripts;
+no runtime-payload mapping, new schema, index or artifact-search command is
+introduced.
 Dependency locking remains separate from first-party artifact identity.
 
 For skill maintenance, prepare one update record before edits. Keep its explicit
@@ -439,10 +443,10 @@ policy. These are the runtime paths used by the foundation and update workflow:
 
 | Runtime path | Class and owner | Rewrite, retention, or cleanup trigger |
 | --- | --- | --- |
-| `<shared-git-directory>/ceratops/builds/<build-key>/`, including receipt, artifacts and supporting files | Persistent immutable output; `build_bundle` produces and `read_completed_build` consumes | Grouped by repository, release unit, channel and target. At production startup and after publication, keep the newest completed bundle plus two predecessors by completion time and key; remove older directories without modifying retained bundles. Reading performs no retention or cleanup mutation. |
-| `builds/`, `.staging/`, `.locks/`, `.diagnostics/` and `.locks/store.lock` | Persistent bounded infrastructure; `build_bundle` and `filelock` | One repository lock serializes transaction and cleanup ownership. The file remains reusable; the OS releases the held lock on normal exit or process death. No per-build lock history accumulates. |
-| `.staging/<build-key>/work/` and `bundle/` | Temporary private work; `build_bundle` | Removed on success or failure. At every transaction startup, while holding the repository lock, remove every recognizable staging directory left by an earlier instance. Preserve unrecognized entries and report cleanup failure. |
-| `.diagnostics/<release-group-key>.json` and its `.tmp` write file | Persistent latest-failure report and temporary write; `build_bundle` | Atomically overwrite the group's report on failure and remove it after successful new publication. At production startup remove interrupted `.tmp` writes. The completed-build reader does not rewrite diagnostics. Reports contain bounded excerpts and are never artifact-test evidence. |
+| `<shared-git-directory>/ceratops/builds/<build-key>/`, including receipt, artifacts and supporting files | Persistent immutable output; `store_artifacts.py` publishes and reads on behalf of `repository_operation` | Grouped by repository, release unit, channel and target. At production startup and after publication, keep the newest completed bundle plus two predecessors by completion time and key; remove older directories without modifying retained bundles. Reading performs no retention or cleanup mutation. |
+| `builds/`, `.staging/`, `.locks/`, `.diagnostics/` and `.locks/store.lock` | Persistent bounded infrastructure; `store_artifacts.py` and `filelock` | One repository lock serializes the complete build/test/store transaction and cleanup ownership. The file remains reusable; the OS releases the held lock on normal exit or process death. No per-build lock history accumulates. |
+| `.staging/<build-key>/work/` and `bundle/` | Temporary private work; `store_artifacts.py` | Removed on success or failure. At every transaction startup, while holding the repository lock, remove every recognizable staging directory left by an earlier instance. Preserve unrecognized entries and report cleanup failure. |
+| `.diagnostics/<release-group-key>.json` and its `.tmp` write file | Persistent latest-failure report and temporary write; `store_artifacts.py` | Atomically overwrite the group's report on failure and remove it after successful new publication. At production startup remove interrupted `.tmp` writes. The completed-build reader does not rewrite diagnostics. Reports contain bounded excerpts and are never artifact-test evidence. |
 | Update request, state, evidence and active-update marker under the task temp root | Temporary resumable records; `skill-update-workflow.py` | Retained across corrections/interruption; state and evidence are rewritten by verification. Explicit `finalize` consumes recorded success without rechecking the checkout, checks cleanup ownership and file integrity, removes only recorded owned files, and removes the task root only if empty. |
 | Update check scratch directories and cleanup records | Temporary check work; `skill_update_scratch.py` | Removed when each check scope exits; recorded unfinished cleanup is retried before another check. Explicit check-output paths remain caller-owned. |
 | Existing test-runner scratch and `.build/test-diagnostics/pytest-failure.json` | Temporary execution scratch and persistent latest-failure report; repository test runner | Scratch is removed when the subprocess exits; failure evidence is rewritten on failure and removed by a successful run at that selected path. The existing runner remains its owner. |

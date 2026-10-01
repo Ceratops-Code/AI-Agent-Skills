@@ -30,6 +30,7 @@ from tests.support.processes import run_compatibility_engine
 from tests.support.repositories import ROOT, run_ci_action, run_git
 
 runner = importlib.import_module("repository_operation")
+storage = importlib.import_module("store_artifacts")
 contracts = importlib.import_module(
     "ceratops_repo_compatibility_engine.sdlc_contract_validation"
 )
@@ -93,7 +94,7 @@ def _bundle_transaction(tmp_path):
 
 def _bundle_diagnostic(repo: pathlib.Path, selection: dict[str, str]) -> pathlib.Path:
     store = repo / ".git" / "ceratops" / "builds"
-    return runner._build_diagnostic_path(store / ".diagnostics", selection)
+    return storage._build_diagnostic_path(store / ".diagnostics", selection)
 
 
 def test_completed_build_reader_preserves_recorded_acceptance_and_paths(tmp_path) -> None:
@@ -350,7 +351,7 @@ def test_bundle_transaction_retains_current_and_two_predecessors_per_group(tmp_p
     store = repo / ".git" / "ceratops" / "builds"
     assert not receipts[0].exists()
     assert all(path.is_file() for path in receipts[1:])
-    assert len(list(store.glob("*/receipt.json"))) == runner.BUILD_BUNDLE_RETENTION
+    assert len(list(store.glob("*/receipt.json"))) == storage.BUILD_BUNDLE_RETENTION
     assert calls == ["build", "test"] * 4
 
 
@@ -385,18 +386,18 @@ def test_bundle_transaction_recovers_all_killed_owner_staging(tmp_path) -> None:
 
 def test_bundle_transaction_cleanup_failure_retains_diagnostic_and_recovers(tmp_path, monkeypatch) -> None:
     repo, kwargs, calls = _bundle_transaction(tmp_path)
-    original = runner.shutil.rmtree
+    original = storage.shutil.rmtree
 
     def fail_cleanup(path, *args, **kw):
         raise PermissionError("fixture cleanup refusal")
 
     with monkeypatch.context() as patch:
-        patch.setattr(runner.shutil, "rmtree", fail_cleanup)
+        patch.setattr(storage.shutil, "rmtree", fail_cleanup)
         with pytest.raises(PermissionError, match="cleanup refusal"):
             runner.build_bundle(repo, **kwargs)
     diagnostic = _bundle_diagnostic(repo, kwargs["selection"])
     assert "Staging cleanup failed" in diagnostic.read_text()
-    assert runner.shutil.rmtree is original
+    assert storage.shutil.rmtree is original
     assert runner.read_completed_build(
         repo, selection=kwargs["selection"],
     ).receipt_path.is_file()
