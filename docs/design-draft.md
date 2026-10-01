@@ -546,9 +546,11 @@ selection, not an endless moving target or an in-place mutation of a release.
 ### Integrity-only consumption and recovery
 
 Accept either an explicitly selected artifact receipt or a version/tag/completed
-operation selection. For the latter, resolve the expected identity independently
-and require the artifact receipt to match it. An explicit receipt selection does
-not require an additional tag lookup. Read the build receipt from C, compare its
+operation selection. Every selection reads the receipt only to derive immutable
+tag `<unit>/<version>`, resolves that tag to C, and requires the receipt's
+`finalCommit` to equal C. The tag is the completion barrier even when the caller
+selected an absolute receipt path. Independently supplied identity, tag, C and
+acceptance fields must also match. Read the build receipt from C, compare its
 hash, and compare recorded artifact/dependency/evidence sizes and hashes using
 their declared Git/store roots. Do not read replacements from the current
 worktree. Perform integrity comparisons once at the consumption boundary and
@@ -557,13 +559,14 @@ remain ordinary parsing and safe file access; no source validator, test run or
 new acceptance decision occurs during consumption.
 
 The implemented internal `read_artifact_receipt_chain` function follows this
-boundary. A version/tag selection names repository, unit, full version and target
-and resolves the tag to C; a completed-operation selection additionally supplies
-its saved C and acceptance identity. Neither mode discovers a latest receipt.
-The function reads the committed receipt and every `git`-rooted input/evidence
-as Git objects at C, reads `store`-rooted files only under the selected receipt's
-version/target directory, and returns the identity, C, exact artifact paths and
-the original recorded checks/results. It does not change the checkout.
+boundary. It resolves the receipt-derived tag for explicit-path, version/tag and
+completed-operation selections alike. A supplied tag must equal the derived
+name; a completed-operation selection additionally supplies its saved C and
+acceptance identity. No mode discovers a latest receipt. The function reads the
+committed receipt and every `git`-rooted input/evidence as Git objects at C,
+reads `store`-rooted files only under the selected receipt's version/target
+directory, and returns the identity, C, exact artifact paths and the original
+recorded checks/results. It does not change the checkout.
 
 Malformed or mismatched records, wrong selected identity or C, unsafe or linked
 paths, missing blobs/files, and size or hash mismatches fail closed. Loss or

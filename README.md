@@ -301,11 +301,13 @@ machine-specific absolute paths.
 
 The internal `read_artifact_receipt_chain` reader accepts either an explicitly
 selected absolute artifact-receipt path or an independently supplied
-repository/unit/version/target plus an immutable tag or saved completed-operation
-identity. It never selects a latest version. Explicit selection reads C directly
-from the receipt and needs no tag lookup; tag selection resolves C in Git, while
-completed-operation selection supplies its saved C and acceptance identity.
-Every supplied field must match the receipt.
+repository/unit/version/target, optional tag name, or saved completed-operation
+identity. It never selects a latest version. Every selection reads the receipt,
+derives immutable tag `<unit>/<version>`, resolves that tag to C in Git, and
+requires the receipt's `finalCommit` to equal C. An explicitly supplied tag name
+must equal the derived name; completed-operation selection additionally requires
+its saved C and acceptance identity to match. Every supplied field must match the
+receipt.
 
 The verified chain is artifact receipt -> Git commit C -> exact committed build
 receipt bytes -> recorded hashes -> retained files. The reader obtains the build
