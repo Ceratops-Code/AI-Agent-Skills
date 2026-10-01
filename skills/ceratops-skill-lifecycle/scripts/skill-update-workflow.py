@@ -24,6 +24,8 @@ recorded workflow-owned request, state, evidence, and retention-marker files,
 then removes the verified task-temp root only when empty.
 Supersede validates a revised request after failure, preserves the original
 source baseline, and transfers cleanup ownership without deleting failed records.
+The 1c preservation boundary keeps these command and state semantics unchanged;
+later shared admission and acceptance cleanup integrate around them.
 Stdout is only ``OK`` and failures are one compact stderr line.
 """
 

@@ -667,6 +667,13 @@ so later source advancement does not repeat completed finalization checks. Share
 worktree admission remains 2A work; new acceptance-record cleanup handoffs remain
 step 7 work.
 
+The 1c preservation checkpoint is verification and documentation only. The
+existing workflow and state helpers, schemas and test-selection boundary remain
+unchanged. Existing behavior tests cover amendment before and after verification,
+failed-run correction continuity, repeated generations, retention of the
+original baseline and unrelated work, and finalization after staged, committed
+or later source advancement without replaying successful checks.
+
 `supersede` remains a subcommand of `skill-update-workflow.py` for an explicitly
 revised update request after failed verification. It creates a successor
 request/state while retaining the original source baseline and failed records.

@@ -396,6 +396,13 @@ admission and affected-check reuse are planned in 2A; new acceptance-record
 cleanup handoffs remain step 7, with general ownership derivation and an optional
 Nx trial later.
 
+The 1c preservation checkpoint reverified the unchanged `prepare`, `amend`,
+`verify`, `supersede` and `finalize` contracts against their existing behavior
+tests. It adds no helper implementation, state-schema revision or test-selection
+path: the active record, original baseline, approved monotonic scope additions,
+repeated correction generations and recorded-success finalizer remain the
+implemented behavior.
+
 ### Working-folder lifecycle refactor status
 
 The agreed target methodology is documented in
@@ -410,7 +417,7 @@ Later delivery consumes the selected version's recorded acceptance and bytes.
 | --- | --- | --- |
 | 1a release declarations | Implemented | Keep current v4/v5 readers; connect exact-output producers later |
 | 1b receipt verification | Implemented v2 verifier plus internal v3/v1 receipt definitions and saved-chain reader | Connect producers and public lifecycle callers in later steps |
-| 1c correction continuity | Implemented; finalization consumes recorded success without rechecking the checkout | Connect the new acceptance records later |
+| 1c correction continuity | Implemented and preservation-verified; finalization consumes recorded success without rechecking the checkout | Connect shared admission in 2A and new acceptance-record cleanup in step 7 |
 | 1d build/test/store | Implemented internal v2 transaction | Planned store extraction and recoverable final-commit binding |
 | Completed-build consumption | Implemented internal v2 reader; recorded acceptance and exact stored paths survive current test/input changes | Connect public receipt-based Deploy in later steps |
 | Worktree leases and working-folder attempts | Planned | Add native locks, durable unfinished-attempt admission and platform-specific child ownership, then affected-check reuse |
