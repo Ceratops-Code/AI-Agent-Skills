@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 import threading
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from types import SimpleNamespace
@@ -1166,6 +1167,147 @@ def _new_receipt_fixtures(
     )
 
 
+def _write_fixture_bytes(
+    root: pathlib.Path,
+    relative: str,
+    content: bytes,
+) -> pathlib.Path:
+    path = root.joinpath(*pathlib.PurePosixPath(relative).parts)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    return path
+
+
+def _receipt_chain_fixture(
+    tmp_path: pathlib.Path,
+    *,
+    remove_producer: bool = False,
+) -> dict[str, Any]:
+    """Create B and C in separate worktrees plus one retained artifact store."""
+
+    repository = tmp_path / "chain-repository"
+    repository.mkdir()
+    git_contents = {
+        "src/claims.py": b"print('claims')\n",
+        "uv.lock": b"version = 1\n",
+        "tests/test_claims.py": b"def test_claims(): pass\n",
+        "pyproject.toml": b"[tool.pytest.ini_options]\n",
+    }
+    for relative, content in git_contents.items():
+        _write_fixture_bytes(repository, relative, content)
+    pre_test_commit = _repository(repository)
+
+    producer = tmp_path / "receipt-producer"
+    added = run_git(
+        repository,
+        "worktree",
+        "add",
+        "-b",
+        "receipt-producer",
+        str(producer),
+        pre_test_commit,
+    )
+    assert added.returncode == 0, added.stderr
+
+    source = tmp_path / "receipt-source"
+    source.mkdir()
+    _, build, _, _, artifact, _ = _new_receipt_fixtures(source)
+    build["preTestCommit"] = pre_test_commit
+    build_bytes = results.encode_new_receipt(build)
+    validation = b'{"status":"passed"}\n'
+    build_path = _write_fixture_bytes(producer, build["receiptPath"], build_bytes)
+    validation_path = build["supportingFiles"][0]["path"]
+    _write_fixture_bytes(producer, validation_path, validation)
+    assert run_git(producer, "add", ".").returncode == 0
+    committed = run_git(producer, "commit", "-m", "record accepted build")
+    assert committed.returncode == 0, committed.stderr
+    final_commit = run_git(producer, "rev-parse", "HEAD").stdout.strip()
+
+    artifact["finalCommit"] = final_commit
+    artifact["buildReceipt"]["size"] = len(build_bytes)
+    artifact["buildReceipt"]["sha256"] = hashlib.sha256(build_bytes).hexdigest()
+    identity = artifact["identity"]
+    store = (
+        repository
+        / ".git"
+        / "ceratops"
+        / "artifacts"
+        / identity["releaseUnit"]
+        / identity["version"]
+        / identity["target"]
+    )
+    store.mkdir(parents=True)
+    store_contents = {
+        build["artifacts"][0]["path"]: (
+            f"claims-{identity['version']}-py3-none-any.whl".encode()
+        ),
+        build["dependencies"][0]["artifacts"][0]["path"]: (
+            b"converter-0.4.0.whl"
+        ),
+        build["supportingFiles"][1]["path"]: (
+            b'{"installed":true,"status":"passed"}\n'
+        ),
+        build["supportingFiles"][2]["path"]: b"sanitized fixture log\n",
+    }
+    for relative, content in store_contents.items():
+        _write_fixture_bytes(store, relative, content)
+    artifact_path = store / "artifact-receipt.json"
+    artifact_path.write_bytes(results.encode_new_receipt(artifact))
+    tag = f"{identity['releaseUnit']}/{identity['version']}"
+    tagged = run_git(repository, "tag", tag, final_commit)
+    assert tagged.returncode == 0, tagged.stderr
+
+    fixture = {
+        "repository": repository,
+        "producer": producer,
+        "pre_test_commit": pre_test_commit,
+        "final_commit": final_commit,
+        "tag": tag,
+        "store": store,
+        "artifact_path": artifact_path,
+        "artifact": artifact,
+        "build": build,
+        "build_path": build_path,
+        "validation_path": validation_path,
+        "git_contents": git_contents,
+        "store_contents": store_contents,
+    }
+    if remove_producer:
+        removed = run_git(repository, "worktree", "remove", str(producer))
+        assert removed.returncode == 0, removed.stderr
+        assert not producer.exists()
+    return fixture
+
+
+def _artifact_identity_selection(fixture: Mapping[str, Any]) -> dict[str, str]:
+    identity = fixture["artifact"]["identity"]
+    return {
+        field: identity[field]
+        for field in ("repository", "releaseUnit", "version", "target")
+    }
+
+
+def _finish_receipt_chain_commit(
+    fixture: dict[str, Any],
+    message: str,
+) -> str:
+    committed = run_git(fixture["producer"], "commit", "-m", message)
+    assert committed.returncode == 0, committed.stderr
+    final_commit = run_git(fixture["producer"], "rev-parse", "HEAD").stdout.strip()
+    fixture["final_commit"] = final_commit
+    fixture["artifact"]["finalCommit"] = final_commit
+    fixture["artifact_path"].write_bytes(
+        results.encode_new_receipt(fixture["artifact"])
+    )
+    return final_commit
+
+
+def _corrupt_bytes(path: pathlib.Path) -> None:
+    content = path.read_bytes()
+    assert content
+    path.write_bytes(bytes([content[0] ^ 1]) + content[1:])
+
+
 @pytest.mark.parametrize(
     ("version", "target", "required_targets"),
     [
@@ -1320,6 +1462,253 @@ def test_new_receipt_definitions_preserve_native_v2_reading(tmp_path) -> None:
     path, bundle, receipt, expected = _build_receipt_fixture(tmp_path)
     assert results.BUILD_RECEIPT_SCHEMA == "ceratops-build-result.v2"
     assert results.verify_release_unit_build(path, bundle, expected=expected) == receipt
+
+
+def test_receipt_chain_reads_git_and_store_after_producer_removal(
+    tmp_path,
+) -> None:
+    fixture = _receipt_chain_fixture(tmp_path, remove_producer=True)
+    repository = fixture["repository"]
+    build = fixture["build"]
+    artifact = fixture["artifact"]
+
+    # These current-checkout replacements must never satisfy the saved records.
+    _write_fixture_bytes(repository, "src/claims.py", b"replacement source\n")
+    _write_fixture_bytes(
+        repository,
+        "tests/test_claims.py",
+        b"def test_replacement_requirement(): assert False\n",
+    )
+    _write_fixture_bytes(
+        repository,
+        build["receiptPath"],
+        b"replacement checkout receipt\n",
+    )
+    _write_fixture_bytes(
+        repository,
+        fixture["validation_path"],
+        b"replacement checkout evidence\n",
+    )
+    status_before = run_git(repository, "status", "--porcelain").stdout
+
+    direct = results.read_artifact_receipt_chain(
+        repository,
+        artifact_receipt_path=fixture["artifact_path"],
+    )
+    tagged = results.read_artifact_receipt_chain(
+        repository,
+        expected=_artifact_identity_selection(fixture),
+        tag=fixture["tag"],
+    )
+    completed_operation = results.read_artifact_receipt_chain(
+        repository,
+        expected={
+            **artifact["identity"],
+            "finalCommit": fixture["final_commit"],
+            "acceptance": artifact["acceptance"],
+        },
+    )
+
+    assert direct == tagged == completed_operation
+    assert direct.identity == artifact["identity"]
+    assert direct.final_commit == fixture["final_commit"]
+    assert direct.artifacts == (
+        fixture["store"].joinpath(*pathlib.PurePosixPath(
+            build["artifacts"][0]["path"]
+        ).parts),
+    )
+    assert direct.dependencies == (
+        fixture["store"].joinpath(*pathlib.PurePosixPath(
+            build["dependencies"][0]["artifacts"][0]["path"]
+        ).parts),
+    )
+    assert set(direct.git_files) == {
+        "src/claims.py",
+        "uv.lock",
+        "tests/test_claims.py",
+        "pyproject.toml",
+        fixture["validation_path"],
+    }
+    assert direct.recorded_acceptance == {
+        "identity": build["acceptance"],
+        "requiredChecks": build["requiredChecks"],
+        "sourceChecks": build["sourceChecks"],
+        "artifactTests": build["artifactTests"],
+    }
+    assert direct.build_receipt.raw == results.encode_new_receipt(build)
+    assert run_git(repository, "rev-parse", "HEAD").stdout.strip() == fixture[
+        "pre_test_commit"
+    ]
+    assert run_git(repository, "status", "--porcelain").stdout == status_before
+
+
+def test_receipt_chain_requires_the_callers_exact_selection(tmp_path) -> None:
+    fixture = _receipt_chain_fixture(tmp_path)
+    repository = fixture["repository"]
+    receipt = fixture["artifact_path"]
+    expected = _artifact_identity_selection(fixture)
+
+    with pytest.raises(results.StepResultError, match="identity mismatch: version"):
+        results.read_artifact_receipt_chain(
+            repository,
+            artifact_receipt_path=receipt,
+            expected={"version": "9.9.9"},
+        )
+    with pytest.raises(results.StepResultError, match="final commit mismatch"):
+        results.read_artifact_receipt_chain(
+            repository,
+            artifact_receipt_path=receipt,
+            expected={"finalCommit": "0" * 40},
+        )
+    with pytest.raises(results.StepResultError, match="does not exist"):
+        results.read_artifact_receipt_chain(
+            repository,
+            expected={**expected, "version": "9.9.9"},
+            tag=fixture["tag"],
+        )
+    wrong_tag = "claims/wrong-commit"
+    assert run_git(
+        repository,
+        "tag",
+        wrong_tag,
+        fixture["pre_test_commit"],
+    ).returncode == 0
+    with pytest.raises(results.StepResultError, match="selected tag"):
+        results.read_artifact_receipt_chain(
+            repository,
+            expected=expected,
+            tag=wrong_tag,
+        )
+    with pytest.raises(results.StepResultError, match="accepted-operation"):
+        results.read_artifact_receipt_chain(repository, expected=expected)
+
+
+@pytest.mark.parametrize(
+    "problem",
+    [
+        "committed-receipt",
+        "artifact",
+        "dependency",
+        "git-evidence",
+        "store-evidence",
+    ],
+)
+def test_receipt_chain_rejects_modified_retained_bytes(tmp_path, problem) -> None:
+    fixture = _receipt_chain_fixture(tmp_path)
+    build = fixture["build"]
+    if problem == "committed-receipt":
+        path = fixture["producer"].joinpath(
+            *pathlib.PurePosixPath(build["receiptPath"]).parts
+        )
+        original = path.read_bytes()
+        changed = original.replace(b'"status":"passed"', b'"status":"failed"', 1)
+        assert changed != original
+        path.write_bytes(changed)
+        assert run_git(
+            fixture["producer"], "add", "--", build["receiptPath"]
+        ).returncode == 0
+        _finish_receipt_chain_commit(fixture, "modify committed receipt")
+    elif problem == "git-evidence":
+        relative = fixture["validation_path"]
+        path = fixture["producer"].joinpath(*pathlib.PurePosixPath(relative).parts)
+        _corrupt_bytes(path)
+        assert run_git(fixture["producer"], "add", "--", relative).returncode == 0
+        _finish_receipt_chain_commit(fixture, "modify committed evidence")
+    else:
+        relative = {
+            "artifact": build["artifacts"][0]["path"],
+            "dependency": build["dependencies"][0]["artifacts"][0]["path"],
+            "store-evidence": build["supportingFiles"][1]["path"],
+        }[problem]
+        _corrupt_bytes(
+            fixture["store"].joinpath(*pathlib.PurePosixPath(relative).parts)
+        )
+
+    with pytest.raises(results.StepResultError, match="mismatch"):
+        results.read_artifact_receipt_chain(
+            fixture["repository"],
+            artifact_receipt_path=fixture["artifact_path"],
+        )
+
+
+@pytest.mark.parametrize(
+    "problem",
+    [
+        "missing-artifact",
+        "missing-git-input",
+        "missing-build-receipt",
+        "malformed-artifact-receipt",
+        "malformed-build-receipt",
+        "unsafe-path",
+        "git-link",
+        "store-hardlink",
+    ],
+)
+def test_receipt_chain_rejects_missing_malformed_or_unsafe_data(
+    tmp_path,
+    problem,
+) -> None:
+    fixture = _receipt_chain_fixture(tmp_path)
+    build = fixture["build"]
+    artifact = fixture["artifact"]
+    if problem == "missing-artifact":
+        relative = build["artifacts"][0]["path"]
+        fixture["store"].joinpath(*pathlib.PurePosixPath(relative).parts).unlink()
+    elif problem == "missing-git-input":
+        relative = build["artifactInputs"][0]["path"]
+        removed = run_git(fixture["producer"], "rm", "--", relative)
+        assert removed.returncode == 0, removed.stderr
+        _finish_receipt_chain_commit(fixture, "remove recorded input")
+    elif problem == "missing-build-receipt":
+        relative = build["receiptPath"]
+        removed = run_git(fixture["producer"], "rm", "--", relative)
+        assert removed.returncode == 0, removed.stderr
+        _finish_receipt_chain_commit(fixture, "remove committed receipt")
+    elif problem == "malformed-artifact-receipt":
+        fixture["artifact_path"].write_bytes(b"{}\n")
+    elif problem == "malformed-build-receipt":
+        relative = build["receiptPath"]
+        malformed = b"{}\n"
+        path = fixture["producer"].joinpath(*pathlib.PurePosixPath(relative).parts)
+        path.write_bytes(malformed)
+        assert run_git(fixture["producer"], "add", "--", relative).returncode == 0
+        _finish_receipt_chain_commit(fixture, "malform committed receipt")
+        artifact["buildReceipt"]["size"] = len(malformed)
+        artifact["buildReceipt"]["sha256"] = hashlib.sha256(malformed).hexdigest()
+        fixture["artifact_path"].write_bytes(results.encode_new_receipt(artifact))
+    elif problem == "unsafe-path":
+        artifact["artifactPaths"][0] = "../outside.whl"
+        fixture["artifact_path"].write_bytes(
+            (json.dumps(artifact, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        )
+    elif problem == "git-link":
+        relative = fixture["validation_path"]
+        blob = run_git(
+            fixture["producer"],
+            "hash-object",
+            "-w",
+            relative,
+        )
+        assert blob.returncode == 0, blob.stderr
+        linked = run_git(
+            fixture["producer"],
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            f"120000,{blob.stdout.strip()},{relative}",
+        )
+        assert linked.returncode == 0, linked.stderr
+        _finish_receipt_chain_commit(fixture, "record unsupported git link")
+    else:
+        relative = build["artifacts"][0]["path"]
+        path = fixture["store"].joinpath(*pathlib.PurePosixPath(relative).parts)
+        os.link(path, fixture["store"] / "second-artifact-link")
+
+    with pytest.raises(results.StepResultError):
+        results.read_artifact_receipt_chain(
+            fixture["repository"],
+            artifact_receipt_path=fixture["artifact_path"],
+        )
 
 
 def test_build_receipt_verifies_complete_bundle_without_mutation(

@@ -541,6 +541,22 @@ pass the selected record through nested helpers. Structural/path safety checks
 remain ordinary parsing and safe file access; no source validator, test run or
 new acceptance decision occurs during consumption.
 
+The implemented internal `read_artifact_receipt_chain` function follows this
+boundary. A version/tag selection names repository, unit, full version and target
+and resolves the tag to C; a completed-operation selection additionally supplies
+its saved C and acceptance identity. Neither mode discovers a latest receipt.
+The function reads the committed receipt and every `git`-rooted input/evidence
+as Git objects at C, reads `store`-rooted files only under the selected receipt's
+version/target directory, and returns the identity, C, exact artifact paths and
+the original recorded checks/results. It does not change the checkout.
+
+Malformed or mismatched records, wrong selected identity or C, unsafe or linked
+paths, missing blobs/files, and size or hash mismatches fail closed. Loss or
+modification of a retained file changes present delivery availability, not the
+historical acceptance saved by production. The reader neither rebuilds nor
+substitutes another version, and remains disconnected from public lifecycle
+commands until their later implementation steps.
+
 Installation unpacks/installs the selected bytes. Artifact behavior qualification
 occurs during production. Any necessary activation health check must have an
 explicit, separate target-specific purpose; it must not repeat the artifact's

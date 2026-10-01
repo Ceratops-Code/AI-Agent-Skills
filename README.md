@@ -299,13 +299,34 @@ Record fields allow only logical repository, tool and runtime identities plus
 credentials, raw logs, temporary paths, mutable installation paths or
 machine-specific absolute paths.
 
-These new definitions and readers are internal only. Receipt production,
-stored-file chain verification and public Build/Promote/Deploy/Ship integration
-remain pending. A future producer may retain a sanitized supporting log only
-when a recorded result needs it: completed logs belong inside that version's
-artifact directory and use its bounded artifact-store lifetime; temporary or
-orphaned logs remain owned by the attempt and are removed at startup and after
-completion. The readers create, rotate and clean up nothing.
+The internal `read_artifact_receipt_chain` reader accepts either an explicitly
+selected absolute artifact-receipt path or an independently supplied
+repository/unit/version/target plus an immutable tag or saved completed-operation
+identity. It never selects a latest version. Explicit selection reads C directly
+from the receipt and needs no tag lookup; tag selection resolves C in Git, while
+completed-operation selection supplies its saved C and acceptance identity.
+Every supplied field must match the receipt.
+
+The verified chain is artifact receipt -> Git commit C -> exact committed build
+receipt bytes -> recorded hashes -> retained files. The reader obtains the build
+receipt, source and check inputs, locks and Git evidence as blobs at C, never from
+the current checkout. It reads artifacts, dependency artifacts and retained
+store evidence only below the selected version/target directory, comparing every
+recorded size and SHA-256. It returns the selected identity, C, exact retained
+paths and the original required checks/results without consulting today's check
+definitions. Missing or modified retained bytes make that local delivery
+unavailable; they do not rewrite its historical acceptance.
+
+Malformed records, unsafe or linked paths, missing files, wrong identities or
+commits, and size/hash mismatches fail closed. This reader runs no validators,
+source checks, artifact tests, coverage, builds or repairs. The definitions and
+chain reader remain internal: receipt production and public
+Build/Promote/Deploy/Ship integration are still pending. A future producer may
+retain a sanitized supporting log only when a recorded result needs it:
+completed logs belong inside that version's artifact directory and use its
+bounded artifact-store lifetime; temporary or orphaned logs remain owned by the
+attempt and are removed at startup and after completion. The readers create,
+rotate and clean up nothing.
 
 Call `sdlc_results.py verify-release-unit-build` with `--receipt`,
 `--bundle-root`, and the expected `--repository`, `--source-commit`,
@@ -340,9 +361,10 @@ The implemented foundation has five separate responsibilities:
   dependencies; loading it validates metadata without building anything.
 - **1b — verification:** the v2 verifier establishes which files and bytes its
   bundle record identifies. The new committed-build and artifact-receipt
-  definitions/readers validate their recorded identities and exact bytes, but
-  their stored receipt chain is not connected yet. `RECEIPT_VERIFIED` does not
-  convert failed or absent tests into passed tests.
+  definitions/readers validate their recorded identities and exact bytes; the
+  internal chain reader follows C through Git and the selected artifact store
+  without recalculating acceptance. `RECEIPT_VERIFIED` remains the native v2
+  CLI and does not convert failed or absent tests into passed tests.
 - **1R — completed-build consumption:** production qualifies and publishes a
   new identity once; the internal reader consumes its recorded acceptance and
   exact stored files without applying current tests or build inputs.
@@ -387,7 +409,7 @@ Later delivery consumes the selected version's recorded acceptance and bytes.
 | Area | Current status | Next boundary |
 | --- | --- | --- |
 | 1a release declarations | Implemented | Keep current v4/v5 readers; connect exact-output producers later |
-| 1b receipt verification | Implemented v2 verifier plus internal v3 committed-build and v1 artifact-receipt definitions/readers | Verify the saved receipt chain in 1b.2; producers remain later work |
+| 1b receipt verification | Implemented v2 verifier plus internal v3/v1 receipt definitions and saved-chain reader | Connect producers and public lifecycle callers in later steps |
 | 1c correction continuity | Implemented; finalization consumes recorded success without rechecking the checkout | Connect the new acceptance records later |
 | 1d build/test/store | Implemented internal v2 transaction | Planned store extraction and recoverable final-commit binding |
 | Completed-build consumption | Implemented internal v2 reader; recorded acceptance and exact stored paths survive current test/input changes | Connect public receipt-based Deploy in later steps |
@@ -395,11 +417,12 @@ Later delivery consumes the selected version's recorded acceptance and bytes.
 | Merge-back and beta qualification | Planned | Activate promotion through the shared Build operation with actual beta versions |
 | Public Build, receipt Deploy and GitHub release integration | Planned | Connect producers/consumers before repository adoption |
 
-The 1R reader remains an internal capability; it does not activate public Build
-or receipt-based Deploy. Each subsequent implementation step must update this
-table, actual command guidance and affected output-lifecycle rows in the same
-working revision. Unused internal additions stay labeled internal/planned until
-their consumers are connected. Existing supported commands remain usable.
+The completed-build readers remain internal capabilities; they do not activate
+public Build or receipt-based Deploy. Each subsequent implementation step must
+update this table, actual command guidance and affected output-lifecycle rows in
+the same working revision. Unused internal additions stay labeled
+internal/planned until their consumers are connected. Existing supported
+commands remain usable.
 
 ### Generated-output lifecycle
 

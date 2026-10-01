@@ -15,8 +15,10 @@ import ntpath
 import os
 import pathlib
 import stat
+import subprocess
 import sys
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
@@ -34,6 +36,12 @@ NEW_RECEIPT_SCHEMAS = frozenset(
 )
 BUILD_SELECTION_FIELDS = (
     "repository", "sourceCommit", "releaseUnit", "channel", "version", "target",
+)
+ARTIFACT_IDENTITY_FIELDS = (
+    "repository", "releaseUnit", "version", "target", "attemptId",
+)
+ARTIFACT_SELECTION_FIELDS = frozenset(
+    {*ARTIFACT_IDENTITY_FIELDS, "finalCommit", "acceptance"}
 )
 OPERATION_RESULT_SCHEMA = (
     pathlib.Path(__file__).resolve().parents[1]
@@ -54,6 +62,22 @@ class LoadedReceipt:
     value: dict[str, Any]
     raw: bytes
     sha256: str
+
+
+@dataclass(frozen=True)
+class CompletedArtifactSelection:
+    """A verified saved receipt chain and the retained paths it selected."""
+
+    receipt_path: pathlib.Path
+    identity: dict[str, Any]
+    final_commit: str
+    artifacts: tuple[pathlib.Path, ...]
+    dependencies: tuple[pathlib.Path, ...]
+    supporting_files: tuple[pathlib.Path, ...]
+    git_files: tuple[str, ...]
+    recorded_acceptance: dict[str, Any]
+    artifact_receipt: LoadedReceipt
+    build_receipt: LoadedReceipt
 
 
 def _unique_result_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -667,7 +691,10 @@ def _build_files(receipt: Mapping[str, Any]) -> list[dict[str, Any]]:
     return list(files.values())
 
 
-def _verify_bundle_file(root: pathlib.Path, record: Mapping[str, Any]) -> None:
+def _verify_bundle_file(
+    root: pathlib.Path,
+    record: Mapping[str, Any],
+) -> pathlib.Path:
     """Hash a bounded regular file, detecting replacement or modification on read."""
 
     path, before = _plain_path(root.joinpath(*_bundle_relative_path(record["path"]).parts))
@@ -693,6 +720,439 @@ def _verify_bundle_file(root: pathlib.Path, record: Mapping[str, Any]) -> None:
         raise StepResultError(f"Build receipt size mismatch: {record['path']}")
     if digest.hexdigest() != record["sha256"]:
         raise StepResultError(f"Build receipt SHA-256 mismatch: {record['path']}")
+    return path
+
+
+def _validated_artifact_selection(
+    expected: Mapping[str, Any] | None,
+    *,
+    direct_receipt: bool,
+    tag: str | None,
+) -> dict[str, Any]:
+    """Validate independent caller identity without deriving it from a receipt."""
+
+    if expected is None:
+        selection: dict[str, Any] = {}
+    elif isinstance(expected, Mapping):
+        selection = dict(expected)
+    else:
+        raise StepResultError("Expected artifact selection must be an object.")
+    unknown = sorted(set(selection) - ARTIFACT_SELECTION_FIELDS)
+    if unknown:
+        raise StepResultError(f"Unknown artifact selection field: {unknown[0]}")
+    for field in ARTIFACT_IDENTITY_FIELDS:
+        if field in selection and (
+            not isinstance(selection[field], str) or not selection[field].strip()
+        ):
+            raise StepResultError(f"Artifact selection field must be text: {field}")
+    if "finalCommit" in selection and not _is_git_commit(selection["finalCommit"]):
+        raise StepResultError("Artifact selection finalCommit must be a lowercase SHA-1.")
+    if "acceptance" in selection:
+        acceptance = selection["acceptance"]
+        if (
+            not isinstance(acceptance, Mapping)
+            or set(acceptance) != {"operation", "id"}
+            or not all(
+                isinstance(acceptance[field], str) and acceptance[field].strip()
+                for field in ("operation", "id")
+            )
+        ):
+            raise StepResultError(
+                "Artifact selection acceptance must supply operation and id."
+            )
+        selection["acceptance"] = dict(acceptance)
+    if tag is not None and (not isinstance(tag, str) or not tag.strip()):
+        raise StepResultError("Artifact selection tag must be nonempty text.")
+    if not direct_receipt:
+        required = {"repository", "releaseUnit", "version", "target"}
+        missing = sorted(required - set(selection))
+        if missing:
+            raise StepResultError(
+                f"Selected artifact identity is missing: {missing[0]}"
+            )
+        if tag is None and not {"finalCommit", "acceptance"}.issubset(selection):
+            raise StepResultError(
+                "An accepted-operation selection requires finalCommit and acceptance."
+            )
+    return selection
+
+
+def _is_git_commit(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 40
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _git_output(
+    repository: pathlib.Path,
+    arguments: Sequence[str],
+    *,
+    label: str,
+    limit: int = 4096,
+) -> bytes:
+    """Run one bounded read-only Git query without involving the checkout files."""
+
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repository), *arguments],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError as exc:
+        raise StepResultError(f"Cannot run Git for {label}: {exc}"[:1024]) from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        suffix = f": {detail}" if detail else ""
+        raise StepResultError(f"Git could not read {label}{suffix}"[:1024])
+    if len(completed.stdout) > limit:
+        raise StepResultError(f"Git returned oversized data for {label}.")
+    return completed.stdout
+
+
+def _git_common_directory(repository: pathlib.Path) -> pathlib.Path:
+    raw = _git_output(
+        repository,
+        ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        label="the common directory",
+    )
+    try:
+        value = raw.decode("utf-8").strip()
+    except UnicodeError as exc:
+        raise StepResultError("Git common directory is not UTF-8.") from exc
+    if not value or "\n" in value or "\r" in value:
+        raise StepResultError("Git common directory is invalid.")
+    path = pathlib.Path(value)
+    if not path.is_absolute():
+        path = repository / path
+    return _plain_path(path, directory=True, label="Git common directory")[0]
+
+
+def _resolve_git_tag(repository: pathlib.Path, tag: str) -> str:
+    ref = f"refs/tags/{tag}"
+    _git_output(
+        repository,
+        ["check-ref-format", ref],
+        label=f"tag name {tag!r}",
+    )
+    raw = _git_output(
+        repository,
+        ["rev-parse", "--verify", "--end-of-options", f"{ref}^{{commit}}"],
+        label=f"tag {tag!r}",
+    )
+    try:
+        commit = raw.decode("ascii").strip()
+    except UnicodeError as exc:
+        raise StepResultError(f"Git tag {tag!r} did not resolve to a commit.") from exc
+    if not _is_git_commit(commit):
+        raise StepResultError(f"Git tag {tag!r} did not resolve to a SHA-1 commit.")
+    return commit
+
+
+def _git_blob_oid(
+    repository: pathlib.Path,
+    commit: str,
+    path: str,
+) -> str:
+    """Resolve one literal regular-file path in a commit and reject links."""
+
+    raw = _git_output(
+        repository,
+        [
+            "ls-tree",
+            "-z",
+            "--full-name",
+            commit,
+            "--",
+            f":(literal){path}",
+        ],
+        label=f"{path!r} at {commit}",
+        limit=NEW_RECEIPT_BYTES + 256,
+    )
+    if not raw or not raw.endswith(b"\0") or b"\0" in raw[:-1]:
+        raise StepResultError(f"Git path is missing or ambiguous at {commit}: {path}")
+    try:
+        metadata, returned_path = raw[:-1].split(b"\t", 1)
+        mode, object_type, oid = metadata.split(b" ")
+    except ValueError as exc:
+        raise StepResultError(f"Git returned an invalid tree entry for: {path}") from exc
+    if returned_path != path.encode("utf-8"):
+        raise StepResultError(f"Git returned a different path for: {path}")
+    if object_type != b"blob" or mode not in {b"100644", b"100755"}:
+        raise StepResultError(f"Git path is not a supported regular file: {path}")
+    try:
+        value = oid.decode("ascii")
+    except UnicodeError as exc:
+        raise StepResultError(f"Git returned an invalid object ID for: {path}") from exc
+    if not _is_git_commit(value):
+        raise StepResultError(f"Git returned an invalid object ID for: {path}")
+    return value
+
+
+def _read_git_record(
+    repository: pathlib.Path,
+    commit: str,
+    record: Mapping[str, Any],
+    *,
+    capture: bool = False,
+) -> bytes | None:
+    """Hash one exact Git blob at C; capture only bounded receipt bytes."""
+
+    path = str(record["path"])
+    _bundle_relative_path(path, label="Git receipt")
+    oid = _git_blob_oid(repository, commit, path)
+    raw_size = _git_output(
+        repository,
+        ["cat-file", "-s", oid],
+        label=f"the size of {path!r}",
+    )
+    try:
+        object_size = int(raw_size.decode("ascii").strip())
+    except (UnicodeError, ValueError) as exc:
+        raise StepResultError(f"Git returned an invalid size for: {path}") from exc
+    if object_size != record["size"]:
+        raise StepResultError(f"Git receipt size mismatch: {path}")
+    if capture and object_size > NEW_RECEIPT_BYTES:
+        raise StepResultError("Committed build receipt exceeds the JSON size limit.")
+
+    try:
+        process = subprocess.Popen(
+            ["git", "-C", str(repository), "cat-file", "blob", oid],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        raise StepResultError(f"Cannot read Git blob for {path}: {exc}"[:1024]) from exc
+    digest = hashlib.sha256()
+    size = 0
+    chunks: list[bytes] = []
+    try:
+        if process.stdout is None:
+            raise StepResultError(f"Cannot read Git blob for: {path}")
+        while chunk := process.stdout.read(1024 * 1024):
+            size += len(chunk)
+            if size > object_size:
+                process.kill()
+                raise StepResultError(f"Git blob exceeded its recorded size: {path}")
+            digest.update(chunk)
+            if capture:
+                chunks.append(chunk)
+        process.stdout.close()
+        returncode = process.wait()
+    except BaseException:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        raise
+    if returncode != 0:
+        raise StepResultError(f"Git could not stream the recorded file: {path}")
+    if size != record["size"]:
+        raise StepResultError(f"Git receipt size mismatch: {path}")
+    if digest.hexdigest() != record["sha256"]:
+        raise StepResultError(f"Git receipt SHA-256 mismatch: {path}")
+    return b"".join(chunks) if capture else None
+
+
+def _artifact_receipt_locations(
+    store_root: pathlib.Path,
+    identity: Mapping[str, Any],
+) -> tuple[pathlib.Path, pathlib.Path]:
+    base = f"{identity['releaseUnit']}/{identity['version']}"
+    direct = _bundle_relative_path(
+        f"{base}/artifact-receipt.json", label="artifact selection"
+    )
+    targeted = _bundle_relative_path(
+        f"{base}/{identity['target']}/artifact-receipt.json",
+        label="artifact selection",
+    )
+    return (
+        store_root.joinpath(*direct.parts),
+        store_root.joinpath(*targeted.parts),
+    )
+
+
+def _selected_artifact_receipt_path(
+    store_root: pathlib.Path,
+    expected: Mapping[str, Any],
+) -> pathlib.Path:
+    candidates = _artifact_receipt_locations(store_root, expected)
+    existing = [path for path in candidates if os.path.lexists(path)]
+    if not existing:
+        raise StepResultError("Selected artifact receipt does not exist.")
+    if len(existing) != 1:
+        raise StepResultError("Selected artifact receipt location is ambiguous.")
+    return existing[0]
+
+
+def _verify_receipt_inventory(
+    repository: pathlib.Path,
+    store_root: pathlib.Path,
+    commit: str,
+    receipt: Mapping[str, Any],
+) -> tuple[
+    tuple[pathlib.Path, ...],
+    tuple[pathlib.Path, ...],
+    tuple[pathlib.Path, ...],
+    tuple[str, ...],
+]:
+    artifacts = list(receipt["artifacts"])
+    dependencies = [
+        artifact
+        for dependency in receipt["dependencies"]
+        for artifact in dependency["artifacts"]
+    ]
+    supporting = list(receipt["supportingFiles"])
+    records = [
+        *receipt["artifactInputs"],
+        *receipt["checkInputs"],
+        *dependencies,
+        *artifacts,
+        *supporting,
+    ]
+    store_paths: dict[tuple[str, str], pathlib.Path] = {}
+    git_paths: list[str] = []
+    for record in records:
+        key = _receipt_file_key(record)
+        if record["root"] == "git":
+            _read_git_record(repository, commit, record)
+            git_paths.append(str(record["path"]))
+        else:
+            store_paths[key] = _verify_bundle_file(store_root, record)
+    return (
+        tuple(store_paths[_receipt_file_key(item)] for item in artifacts),
+        tuple(store_paths[_receipt_file_key(item)] for item in dependencies),
+        tuple(
+            store_paths[_receipt_file_key(item)]
+            for item in supporting
+            if item["root"] == "store"
+        ),
+        tuple(git_paths),
+    )
+
+
+def read_artifact_receipt_chain(
+    repository: pathlib.Path,
+    *,
+    artifact_receipt_path: pathlib.Path | None = None,
+    expected: Mapping[str, Any] | None = None,
+    tag: str | None = None,
+) -> CompletedArtifactSelection:
+    """Verify a saved artifact -> Git C -> build receipt -> retained-file chain.
+
+    A direct receipt reads its recorded identity without requiring a tag. A
+    version/tag or completed-operation selection supplies identity independently;
+    no mode searches for a latest version. Git-rooted files are read as blobs at
+    final commit C, while store-rooted files are read below that receipt's exact
+    version/target directory. Recorded results are returned without running or
+    recalculating checks, tests, builds, validators, or coverage.
+    """
+
+    direct = artifact_receipt_path is not None
+    selection = _validated_artifact_selection(
+        expected,
+        direct_receipt=direct,
+        tag=tag,
+    )
+    try:
+        repo, _ = _plain_path(
+            pathlib.Path(repository), directory=True, label="Repository"
+        )
+        common = _git_common_directory(repo)
+        store_root, _ = _plain_path(
+            common / "ceratops" / "artifacts",
+            directory=True,
+            label="Artifact store",
+        )
+        tag_commit = _resolve_git_tag(repo, tag) if tag is not None else None
+        if (
+            tag_commit is not None
+            and "finalCommit" in selection
+            and tag_commit != selection["finalCommit"]
+        ):
+            raise StepResultError("Selected tag and completed operation disagree.")
+
+        if artifact_receipt_path is not None:
+            selected_path = pathlib.Path(artifact_receipt_path)
+            if not selected_path.is_absolute():
+                raise StepResultError("Explicit artifact receipt path must be absolute.")
+        else:
+            selected_path = _selected_artifact_receipt_path(store_root, selection)
+        checked_path, _ = _plain_path(selected_path, label="Artifact receipt")
+        if not checked_path.is_relative_to(store_root):
+            raise StepResultError("Artifact receipt path escapes the artifact store.")
+        loaded_artifact = read_artifact_receipt(checked_path)
+        artifact = loaded_artifact.value
+        if checked_path not in _artifact_receipt_locations(store_root, artifact["identity"]):
+            raise StepResultError(
+                "Artifact receipt location does not match its recorded identity."
+            )
+
+        for field in ARTIFACT_IDENTITY_FIELDS:
+            if field in selection and artifact["identity"][field] != selection[field]:
+                raise StepResultError(f"Artifact receipt identity mismatch: {field}")
+        if (
+            "finalCommit" in selection
+            and artifact["finalCommit"] != selection["finalCommit"]
+        ):
+            raise StepResultError("Artifact receipt final commit mismatch.")
+        if "acceptance" in selection and artifact["acceptance"] != selection["acceptance"]:
+            raise StepResultError("Artifact receipt acceptance mismatch.")
+        if tag_commit is not None and artifact["finalCommit"] != tag_commit:
+            raise StepResultError("Artifact receipt does not match the selected tag.")
+
+        link = artifact["buildReceipt"]
+        raw_build = _read_git_record(
+            repo,
+            artifact["finalCommit"],
+            link,
+            capture=True,
+        )
+        if raw_build is None:
+            raise StepResultError("Committed build receipt bytes were not captured.")
+        loaded_build = parse_committed_build_receipt(raw_build)
+        build = loaded_build.value
+        if build["receiptPath"] != link["path"]:
+            raise StepResultError("Committed build receipt path link is inconsistent.")
+        if build["identity"] != artifact["identity"]:
+            raise StepResultError("Saved receipt identities do not match.")
+        if build["acceptance"] != artifact["acceptance"]:
+            raise StepResultError("Saved receipt acceptance identities do not match.")
+        recorded_artifacts = {str(item["path"]) for item in build["artifacts"]}
+        if recorded_artifacts != set(artifact["artifactPaths"]):
+            raise StepResultError("Artifact receipt paths do not match the build receipt.")
+
+        artifacts, dependencies, supporting, git_files = _verify_receipt_inventory(
+            repo,
+            checked_path.parent,
+            artifact["finalCommit"],
+            build,
+        )
+        recorded_acceptance = {
+            "identity": deepcopy(build["acceptance"]),
+            "requiredChecks": deepcopy(build["requiredChecks"]),
+            "sourceChecks": deepcopy(build["sourceChecks"]),
+            "artifactTests": deepcopy(build["artifactTests"]),
+        }
+        return CompletedArtifactSelection(
+            receipt_path=checked_path,
+            identity=deepcopy(artifact["identity"]),
+            final_commit=str(artifact["finalCommit"]),
+            artifacts=artifacts,
+            dependencies=dependencies,
+            supporting_files=supporting,
+            git_files=git_files,
+            recorded_acceptance=recorded_acceptance,
+            artifact_receipt=loaded_artifact,
+            build_receipt=loaded_build,
+        )
+    except StepResultError:
+        raise
+    except (OSError, UnicodeError, ValueError, RecursionError) as exc:
+        raise StepResultError(f"Cannot consume artifact receipt chain: {exc}"[:1024]) from exc
 
 
 def verify_release_unit_build(
