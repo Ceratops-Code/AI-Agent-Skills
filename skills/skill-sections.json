@@ -50,6 +50,10 @@
       {
         "source": "skills/sections/multi-action-skill.md",
         "target": "references/templates/sections/multi-action-skill.md"
+      },
+      {
+        "source": "skills/sections/scripts/manage_checkpoints.py",
+        "target": "scripts/manage_checkpoints.py"
       }
     ],
     "*": []

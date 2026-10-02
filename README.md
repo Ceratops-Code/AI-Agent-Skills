@@ -425,8 +425,9 @@ inputs, adapters, and required artifact tests. This foundation does not yet
 build real packages, alter existing deployment, or connect Promote/Ship.
 The storage module is packaged automatically with the owning skill's scripts.
 The manifest maps the shared checkpoint source from `skills/sections/scripts/`
-to the repository-lifecycle skill's `scripts/manage_checkpoints.py`. No receipt
-schema, index or artifact-search command is introduced.
+to `scripts/manage_checkpoints.py` in both repository and skill lifecycle. Only
+repository lifecycle adopts it in 1e.1; skill lifecycle adopts it in 1e.2. No
+receipt schema, index or artifact-search command is introduced.
 Dependency locking remains separate from first-party artifact identity.
 
 For skill maintenance, prepare one update record before edits. Keep its explicit

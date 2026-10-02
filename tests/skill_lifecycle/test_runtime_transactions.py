@@ -123,6 +123,12 @@ def test_installed_repo_lifecycle_helpers_use_regular_runtime(
     )
     assert isolated.returncode == 0, isolated.stderr
 
+    result = run_builder(ROOT, install_root, "--skill", "ceratops-skill-lifecycle")
+    assert result.returncode == 0, result.stderr
+    assert (
+        install_root / "ceratops-skill-lifecycle" / "scripts" / "manage_checkpoints.py"
+    ).is_file()
+
 
 def test_full_install_removes_only_same_source_stale_skills(tmp_path: pathlib.Path) -> None:
     repo_a = tmp_path / "repo-a"

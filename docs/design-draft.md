@@ -653,9 +653,11 @@ tests. The working-folder caller delegates this sequence to the shared finalizer
 
 `skills/sections/scripts/manage_checkpoints.py` owns disposable essential records,
 not domain recovery or a general workflow engine. The live section manifest maps
-it to `scripts/manage_checkpoints.py` in the installed repository-lifecycle skill.
-It uses the already pinned native `filelock` dependency without soft-lock fallback.
-No new dependency, operation UUID, phase journal or process supervisor is added.
+it to `scripts/manage_checkpoints.py` in the installed repository- and
+skill-lifecycle skills. Repository lifecycle adopts it now; skill lifecycle
+adopts it in 1e.2. It uses the already pinned native `filelock` dependency
+without soft-lock fallback. No new dependency, operation UUID, phase journal or
+process supervisor is added.
 
 Both paths below are relative to the Git common directory:
 
