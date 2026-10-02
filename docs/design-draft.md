@@ -8,10 +8,10 @@ and update-correction sections additionally describe their scoped implementation
 and behavior tests. Other sections remain discussion-derived, not a complete
 implementation audit or a new governing contract. This draft owns the lifecycle
 methodology and design detail. README records implemented capabilities and current
-output lifetimes; the refactor plan records delivery order. The planned working-folder
-methodology below labels its implemented reservation/receipt-preparation portion
-and keeps later worktree-admission, finalization and public-routing behavior
-separate.
+output lifetimes; the refactor plan records delivery order. The working-folder
+methodology below distinguishes implemented versioned storage, receipt preparation,
+final-commit binding, completion tags and effect-derived recovery from planned
+shared worktree admission and public lifecycle routing.
 
 The intended users are agents and CI working on Ceratops-compatible
 repositories, including repositories other than Ceratops-AI-Agents-Kit and
@@ -188,9 +188,10 @@ result-only commit stability.
 ## Exact-artifact bundle transaction
 
 This is the supported v2 baseline after the 1R production/consumption split.
-The internal versioned successor has implemented reservation and prepared build
-receipts; its remaining two-record finalization is described in the
-working-folder methodology below.
+The separate internal versioned route implements reservations, direct output,
+prepared build receipts, final-commit binding and immutable completion tags.
+Its two-record finalization and recovery are described in the working-folder
+methodology below; public lifecycle integration remains planned.
 
 Steps 1a and 1b provide metadata and verification; 1R separates production from
 completed-build consumption; 1c makes skill-update corrections resumable; 1d
@@ -433,8 +434,9 @@ Both formats use sorted compact JSON encoded as UTF-8 followed by one LF.
 `read_committed_build_receipt`, `read_artifact_receipt` and their byte parsers
 validate that representation and return the original bytes plus their direct
 SHA-256; readers never parse and reserialize data to establish the stored hash.
-The definitions and readers are implemented internally, while full production
-and public lifecycle integration remain pending. The internal producer can
+The definitions, readers and versioned storage/finalization producer are
+implemented internally. Shared worktree execution and public lifecycle
+integration remain pending. The internal producer can
 reserve, prepare and commit exact build-receipt bytes, bind direct stored output
 through artifact receipts and create the completion tag; the chain reader
 verifies that completed C/store record without rerunning acceptance.
@@ -775,10 +777,11 @@ deterministic phases should finish in helpers with progress reporting, leaving
 model intervention for decisions and skill work that actually require it.
 
 The document does not settle a complete architecture, security model, performance
-targets or every public interface. The planned methodology supplies worktree-lease,
-receipt-binding and recovery boundaries that still need implementation and behavior
-tests. It is not a system-wide audit. The proposed health-audit rename remains
-unresolved.
+targets or every public interface. Shared worktree admission, affected-check
+orchestration and public lifecycle integration still need implementation and
+behavior tests. The internal receipt binding and effect-derived recovery described
+above are implemented. This is not a system-wide audit. The proposed health-audit
+rename remains unresolved.
 
 This draft has no individually assigned design owner. A later full design
 would need an owner and implementation review. Changes to the recorded contract

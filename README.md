@@ -445,7 +445,7 @@ Later delivery consumes the selected version's recorded acceptance and bytes.
 | Area | Current status | Next boundary |
 | --- | --- | --- |
 | 1a release declarations | Implemented | Keep current v4/v5 readers; connect exact-output producers later |
-| 1b receipt verification | Implemented v2 verifier plus internal v3/v1 receipt definitions and saved-chain reader | Connect producers and public lifecycle callers in later steps |
+| 1b receipt verification | Implemented v2 verifier plus internal v3/v1 receipt definitions and saved-chain reader | Connect public lifecycle callers in later steps |
 | 1c correction continuity | Implemented and preservation-verified; finalization consumes recorded success without rechecking the checkout | Connect shared admission in 2A and new acceptance-record cleanup in step 7 |
 | 1d build/test/store | Implemented current v2 transaction plus an internal direct-write versioned route: reservations, final artifact paths, committed v3 build receipts, B-to-C result binding, artifact receipts, immutable tag and effect-derived recovery | Connect shared worktree admission and execution in 2A; public Build and Promote remain pending |
 | Completed-build consumption | Implemented internal v2 reader; recorded acceptance and exact stored paths survive current test/input changes | Connect public receipt-based Deploy in later steps |
