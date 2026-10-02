@@ -605,8 +605,9 @@ One attempt owns a unit/version and its complete required-target set. Its
 reservation records repository/worktree, branch, B, declared inputs and targets.
 A worktree has one unfinished artifact request, identified by repository, branch
 and B, with at most one unfinished attempt per unit. Multiple units of that
-request and independent worktrees may proceed. Preserve unresolved reservations and direct
-version output, and never apply the v2 delete-all-staging recovery to this route.
+request and independent worktrees may proceed. Preserve unresolved reservations
+and direct version output, and never apply the v2 delete-all-staging recovery to
+this route.
 An available lock, elapsed time or missing PID does not authorize taking over a
 reservation. Explicit recovery discovers the saved attempt ID when omitted;
 supplying another ID is a conflict. Only the exact recorded request may resume;

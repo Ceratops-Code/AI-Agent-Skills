@@ -379,9 +379,9 @@ partial, unreadable or mismatched ownership state reports `recovery_required`;
 an available lock, missing process or elapsed time never adopts or deletes it.
 One worktree has one unfinished artifact request, grouped by repository, branch
 and B. It may reserve multiple units, with one unfinished version per unit.
-Another worktree may own an independent version. The legacy v2 producer keeps its supported
-full-transaction lock and delete-recognizable-staging behavior; that cleanup is
-never applied to direct versioned output.
+Another worktree may own an independent version. The legacy v2 producer keeps
+its supported full-transaction lock and delete-recognizable-staging behavior;
+that cleanup is never applied to direct versioned output.
 
 The versioned runner uses `manage_checkpoints.py` for its parent-writer lock and
 success cleanup. Reservations remain the recovery authority, so this route does
