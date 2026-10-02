@@ -1241,6 +1241,258 @@ def _write_versioned_outputs(
             )
 
 
+def _checkpoint_child(repository: pathlib.Path, body: str, *arguments: str):
+    """Exercise discovery and native locks in a genuinely fresh interpreter."""
+    return subprocess.run(
+        [sys.executable, "-c",
+         "import pathlib,sys,json; sys.path.insert(0,sys.argv[1]); "
+         "import store_artifacts,repository_operation; "
+         "cp=store_artifacts._checkpoint_storage(); repo=pathlib.Path(sys.argv[2]);\n" + body,
+         str(REPOSITORY_LIFECYCLE_SCRIPTS), str(repository), *arguments],
+        capture_output=True, text=True, check=False,
+    )
+
+
+def _checkpoint_worktree(repository: pathlib.Path, path: pathlib.Path) -> pathlib.Path:
+    added = run_git(repository, "worktree", "add", "-b", path.name, str(path), "HEAD")
+    assert added.returncode == 0, added.stderr
+    return path
+
+
+def test_checkpoints_discover_direct_records_nest_and_refuse_competing_writers(tmp_path, monkeypatch) -> None:
+    repository, _commit = _versioned_repository(tmp_path)
+    cp = storage._checkpoint_storage()
+
+    def no_replace(*args, **kwargs):
+        pytest.fail("Checkpoint writes must not publish a temporary copy.")
+
+    monkeypatch.setattr(cp.os, "replace", no_replace)
+    with cp.open_checkpoints(repository, "artifact-versions") as context:
+        cp.write_checkpoint(context, "request.json", {"request": "first"})
+        cp.write_checkpoint(context, "states/1.json", {"essential": [1, 2]})
+        raw = (context.directory / "request.json").read_bytes()
+        mtime = (context.directory / "request.json").stat().st_mtime_ns
+        cp.write_checkpoint(context, "request.json", {"request": "first"})
+        assert (context.directory / "request.json").stat().st_mtime_ns == mtime
+        assert sorted(path.relative_to(context.directory).as_posix() for path in context.directory.rglob("*") if path.is_file()) == ["request.json", "states/1.json"]
+        with cp.open_checkpoints(repository, "artifact-versions") as nested:
+            assert nested is context
+            with pytest.raises(cp.CheckpointError, match="outermost"):
+                cp.finish_checkpoints(nested)
+        assert context.outermost
+        with pytest.raises(cp.CheckpointError, match="another unfinished request"):
+            cp.write_checkpoint(context, "request.json", {"request": "second"})
+        cp.write_checkpoint(context, "typed.json", {"value": True})
+        with pytest.raises(cp.CheckpointError, match="another unfinished request"):
+            cp.write_checkpoint(context, "typed.json", {"value": 1})
+        competing = _checkpoint_child(repository, "with cp.open_checkpoints(repo, 'artifact-versions'): pass")
+        assert competing.returncode != 0 and "producer is busy" in competing.stderr
+        assert (context.directory / "request.json").read_bytes() == raw
+    with pytest.raises(cp.CheckpointError, match="active producer context"):
+        cp.read_checkpoint(context, "request.json")
+    fresh = _checkpoint_child(repository,
+        "with cp.open_checkpoints(repo, 'artifact-versions') as c:\n"
+        " assert cp.read_checkpoint(c,'request.json') == {'request':'first'}\n"
+        " print(c.worktree_id)\n"
+        " cp.finish_checkpoints(c)\n")
+    assert fresh.returncode == 0, fresh.stderr
+    assert fresh.stdout.strip() == context.worktree_id
+    assert not context.directory.exists()
+    assert pathlib.Path(context.lock.lock_file).is_file()
+
+
+@pytest.mark.parametrize("raw", [b"{", b"null", b'{"a":1,"a":2}', b'{"a":NaN}', b'{"a":1e999}', b"\xff"])
+def test_checkpoints_never_treat_unreadable_records_as_absent(tmp_path, raw) -> None:
+    repository, _commit = _versioned_repository(tmp_path)
+    cp = storage._checkpoint_storage()
+    with cp.open_checkpoints(repository, "artifact-versions") as context:
+        assert cp.read_checkpoint(context, "request.json") is None
+        path = context.directory / "request.json"
+        path.write_bytes(raw)
+        with pytest.raises(cp.CheckpointError, match="Unreadable"):
+            cp.read_checkpoint(context, "request.json")
+        with pytest.raises(cp.CheckpointError, match="Unreadable"):
+            cp.write_checkpoint(context, "request.json", {"request": "new"})
+        assert path.read_bytes() == raw
+
+
+def test_checkpoints_cleanup_is_success_only_same_owner_and_preserves_durable_data(tmp_path, monkeypatch) -> None:
+    repository, _commit = _versioned_repository(tmp_path)
+    cp = storage._checkpoint_storage()
+    removed = _checkpoint_worktree(repository, tmp_path / "removed")
+    live = _checkpoint_worktree(repository, tmp_path / "live")
+    contexts = {}
+    for owner, worktree in (("artifact-versions", removed), ("skill-updates", removed), ("artifact-versions", live)):
+        with cp.open_checkpoints(worktree, owner) as context:
+            cp.write_checkpoint(context, "request.json", {"selection": worktree.name})
+            contexts[owner, worktree] = context
+    assert run_git(repository, "worktree", "remove", str(removed)).returncode == 0
+    orphan = contexts["artifact-versions", removed].directory
+    foreign = contexts["skill-updates", removed].directory
+    live_directory = contexts["artifact-versions", live].directory
+    with pytest.raises(RuntimeError, match="failed work"):
+        with cp.open_checkpoints(repository, "artifact-versions") as context:
+            cp.write_checkpoint(context, "request.json", {"selection": "main"})
+            raise RuntimeError("failed work")
+    assert orphan.exists()
+    durable = {}
+    for relative in ("artifacts/unit/1.0.0/accepted.bin", "artifacts/.reservations/unit/1.0.1.json", "installed/current.json"):
+        path = context.common_dir / "ceratops" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"owned by another producer")
+        durable[path] = path.read_bytes()
+    with cp.open_checkpoints(repository, "artifact-versions") as context:
+        assert orphan.exists()  # Opening does not sweep.
+        git = cp._git
+        with monkeypatch.context() as patch:
+            def lookup_fails(*args):
+                if "list" in args:
+                    raise cp.CheckpointError("lookup failed")
+                return git(*args)
+            patch.setattr(cp, "_git", lookup_fails)
+            with pytest.raises(cp.CheckpointError, match="lookup failed"):
+                cp.finish_checkpoints(context)
+        assert context.directory.exists() and orphan.exists()
+        cp.finish_checkpoints(context)
+        assert not context.directory.exists() and not orphan.exists()
+        assert foreign.exists() and live_directory.exists()
+        assert all(path.read_bytes() == raw for path, raw in durable.items())
+        cp.finish_checkpoints(context)  # Cleanup-only retry is harmless.
+    cp.discard_worktree_checkpoints(repository, contexts["skill-updates", removed].worktree_id)
+    assert not foreign.exists() and live_directory.exists()
+    with pytest.raises(cp.CheckpointError, match="still present"):
+        cp.discard_worktree_checkpoints(repository, contexts["artifact-versions", live].worktree_id)
+
+
+def test_checkpoints_removed_worktree_keeps_a_busy_parent_lock(tmp_path) -> None:
+    repository, _commit = _versioned_repository(tmp_path)
+    removed = _checkpoint_worktree(repository, tmp_path / "busy")
+    cp = storage._checkpoint_storage()
+    ready, release = threading.Event(), threading.Event()
+    owned = []
+
+    def parent_writer():
+        with cp.open_checkpoints(removed, "artifact-versions") as context:
+            cp.write_checkpoint(context, "request.json", {"still": "running"})
+            owned.append(context)
+            ready.set()
+            assert release.wait(30)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        producer = executor.submit(parent_writer)
+        try:
+            assert ready.wait(10)
+            assert run_git(repository, "worktree", "remove", str(removed)).returncode == 0
+            with cp.open_checkpoints(repository, "artifact-versions") as context:
+                cp.finish_checkpoints(context)
+            cp.discard_worktree_checkpoints(repository, owned[0].worktree_id)
+            assert owned[0].directory.exists()
+        finally:
+            release.set()
+        producer.result(timeout=10)
+    cp.discard_worktree_checkpoints(repository, owned[0].worktree_id)
+    assert not owned[0].directory.exists()
+    assert pathlib.Path(owned[0].lock.lock_file).is_file()
+
+
+def test_checkpoints_follow_registration_across_worktree_move_and_external_removal(tmp_path) -> None:
+    repository, _commit = _versioned_repository(tmp_path)
+    original = _checkpoint_worktree(repository, tmp_path / "original")
+    cp = storage._checkpoint_storage()
+    with cp.open_checkpoints(original, "artifact-versions") as first:
+        cp.write_checkpoint(first, "request.json", {"intent": "unchanged"})
+    moved = tmp_path / "moved"
+    assert run_git(repository, "worktree", "move", str(original), str(moved)).returncode == 0
+    with cp.open_checkpoints(moved, "artifact-versions") as second:
+        assert second.worktree_id == first.worktree_id
+        assert second.directory == first.directory
+        assert cp.read_checkpoint(second, "request.json") == {"intent": "unchanged"}
+    shutil.rmtree(moved)  # Deliberately leave Git's stale registration.
+    with cp.open_checkpoints(repository, "artifact-versions") as context:
+        cp.finish_checkpoints(context)
+    assert not first.directory.exists()
+
+
+def test_checkpoints_preserve_a_registration_reappearing_before_cleanup_lock(tmp_path, monkeypatch) -> None:
+    repository, _commit = _versioned_repository(tmp_path)
+    worktree = _checkpoint_worktree(repository, tmp_path / "reappearing")
+    cp = storage._checkpoint_storage()
+    with cp.open_checkpoints(worktree, "artifact-versions") as orphan:
+        cp.write_checkpoint(orphan, "request.json", {"keep": True})
+    assert run_git(repository, "worktree", "remove", str(worktree)).returncode == 0
+    with cp.open_checkpoints(repository, "artifact-versions") as context:
+        native_lock = cp._lock
+        def reappearing(common, owner, worktree_id):
+            if worktree_id == orphan.worktree_id:
+                added = run_git(repository, "worktree", "add", str(worktree), worktree.name)
+                assert added.returncode == 0, added.stderr
+            return native_lock(common, owner, worktree_id)
+        monkeypatch.setattr(cp, "_lock", reappearing)
+        cp.finish_checkpoints(context)
+    assert (orphan.directory / "request.json").read_bytes() == b'{"keep":true}\n'
+
+
+@pytest.mark.parametrize("name", ["../outside.json", "/outside.json", "states/../outside.json", "states\\1.json", "a//b.json"])
+def test_checkpoints_reject_redirected_record_paths(tmp_path, name) -> None:
+    repository, _commit = _versioned_repository(tmp_path)
+    cp = storage._checkpoint_storage()
+    with cp.open_checkpoints(repository, "artifact-versions") as context:
+        with pytest.raises(cp.CheckpointError):
+            cp.write_checkpoint(context, name, {"intent": "unsafe"})
+        assert not list(context.directory.iterdir())
+
+
+def test_checkpoints_do_not_traverse_linked_files_during_reads_writes_or_cleanup(tmp_path) -> None:
+    repository, _commit = _versioned_repository(tmp_path)
+    cp = storage._checkpoint_storage()
+    outside = tmp_path / "outside.json"
+    outside.write_bytes(b'{"keep":true}')
+    with cp.open_checkpoints(repository, "artifact-versions") as context:
+        linked = context.directory / "request.json"
+        os.link(outside, linked)
+        for action in (
+            lambda: cp.read_checkpoint(context, "request.json"),
+            lambda: cp.write_checkpoint(context, "request.json", {"replace": True}),
+            lambda: cp.finish_checkpoints(context),
+        ):
+            with pytest.raises(cp.CheckpointError, match="hard-linked"):
+                action()
+        assert outside.read_bytes() == b'{"keep":true}'
+        assert linked.exists()
+
+
+def test_checkpoints_do_not_traverse_directory_links_during_cleanup(tmp_path) -> None:
+    repository, _commit = _versioned_repository(tmp_path)
+    cp = storage._checkpoint_storage()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "keep.json"
+    sentinel.write_bytes(b'{"keep":true}')
+    with cp.open_checkpoints(repository, "artifact-versions") as context:
+        link = context.directory / "linked"
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except OSError:
+            if os.name != "nt":
+                raise
+            made = subprocess.run(
+                ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(outside)],
+                capture_output=True, text=True, check=False,
+            )
+            assert made.returncode == 0, made.stderr
+        try:
+            with pytest.raises(cp.CheckpointError, match="must not follow a link"):
+                cp.read_checkpoint(context, "linked/keep.json")
+            with pytest.raises(cp.CheckpointError, match="must not follow a link"):
+                cp.finish_checkpoints(context)
+            assert sentinel.read_bytes() == b'{"keep":true}'
+        finally:
+            if link.is_symlink():
+                link.unlink()
+            else:
+                link.rmdir()
+
+
 def test_versioned_reservations_preserve_owners_and_coordinate_targets(
     tmp_path,
 ) -> None:
@@ -1603,6 +1855,89 @@ def test_versioned_completion_commits_only_results_and_binds_every_target(
             repository, artifact_receipt_path=path
         )
         assert selected.final_commit == completed.final_commit
+
+
+def test_versioned_fresh_instance_discovers_attempt_and_reuses_prepared_results(tmp_path) -> None:
+    repository, checkpoint, transaction, prepared, _receipts = _prepared_versioned_completion(tmp_path)
+    mtimes = {item.worktree_path: item.worktree_path.stat().st_mtime_ns for item in prepared}
+    reserved_bytes = transaction.reservation_path.read_bytes()
+    fresh = _checkpoint_child(repository,
+        "transaction=repository_operation.reserve_versioned_build(repo,repository='example/project',release_unit='claims',"
+        "version='1.2.5b1',required_targets=['python-3.14-linux','python-3.14-windows'],pre_test_commit=sys.argv[3],recovery_confirmed=True)\n"
+        "print(transaction.attempt_id)\n"
+        "prepared=store_artifacts.load_prepared_versioned_receipts(transaction)\n"
+        "assert len(prepared)==2\n", checkpoint)
+    assert fresh.returncode == 0, fresh.stderr
+    assert fresh.stdout.strip() == transaction.attempt_id
+    assert transaction.reservation_path.read_bytes() == reserved_bytes
+    assert all(path.stat().st_mtime_ns == mtime for path, mtime in mtimes.items())
+    cp = storage._checkpoint_storage()
+    with cp.open_checkpoints(repository, "artifact-versions") as context:
+        assert not list(context.directory.iterdir())  # No second reservation journal.
+    with pytest.raises(storage.RecoveryRequired, match="explicit recovery"):
+        runner.reserve_versioned_build(repository, repository=transaction.repository,
+            release_unit=transaction.release_unit, version=transaction.version,
+            required_targets=transaction.required_targets, pre_test_commit=checkpoint)
+    assert run_git(repository, "commit", "--allow-empty", "-m", "different request").returncode == 0
+    changed = run_git(repository, "rev-parse", "HEAD").stdout.strip()
+    with pytest.raises(storage.RecoveryRequired, match="different unfinished artifact request"):
+        runner.reserve_versioned_build(repository, repository=transaction.repository,
+            release_unit="other-unit", version="1.0.0", required_targets=["any"],
+            pre_test_commit=changed, attempt_id="different-request")
+
+
+def test_versioned_nested_completion_leaves_cleanup_to_outermost_owner(tmp_path) -> None:
+    repository, _checkpoint, transaction, prepared, _receipts = _prepared_versioned_completion(tmp_path)
+    with storage.versioned_artifact_checkpoints(repository) as context:
+        runner.complete_versioned_build(transaction, prepared)
+        assert context.directory.is_dir()
+        storage.finish_versioned_checkpoints(transaction, context)
+        assert not context.directory.exists()
+
+
+def test_versioned_request_may_own_multiple_units_without_premature_cleanup(tmp_path) -> None:
+    repository, checkpoint, transaction, prepared, _receipts = _prepared_versioned_completion(tmp_path)
+    other = runner.reserve_versioned_build(repository, repository=transaction.repository,
+        release_unit="other-unit", version="1.0.0", required_targets=["any"],
+        pre_test_commit=checkpoint, attempt_id="other-unit-attempt")
+    with storage.versioned_artifact_checkpoints(repository) as context:
+        directory = context.directory
+    runner.complete_versioned_build(transaction, prepared)
+    assert directory.is_dir() and other.reservation_path.is_file()
+
+
+def test_versioned_cleanup_failure_retries_without_repeating_completed_effects(tmp_path, monkeypatch) -> None:
+    repository, checkpoint, transaction, prepared, _receipts = _prepared_versioned_completion(tmp_path)
+    cp = storage._checkpoint_storage()
+    with cp.open_checkpoints(repository, "artifact-versions") as context:
+        directory = context.directory
+    with monkeypatch.context() as patch:
+        def failed_cleanup(context):
+            raise cp.CheckpointError("cleanup interrupted")
+        patch.setattr(cp, "finish_checkpoints", failed_cleanup)
+        with pytest.raises(storage.RecoveryRequired, match="cleanup interrupted"):
+            runner.complete_versioned_build(transaction, prepared)
+    final = run_git(repository, "rev-parse", "HEAD").stdout.strip()
+    assert directory.exists()
+    assert not transaction.reservation_path.exists()
+    mtimes = {path: path.stat().st_mtime_ns for path in transaction.version_root.rglob("*") if path.is_file()}
+    # Completed results are Git data; a cleanup retry must not need the mutable
+    # worktree receipt, let alone rewrite it or repeat a build/test/finalization.
+    prepared[0].worktree_path.write_bytes(b"unrelated subsequent work")
+    fresh = _checkpoint_child(repository,
+        "def forbid(*args,**kwargs): raise AssertionError('completed effect repeated')\n"
+        "for name in ('_prepared_receipt_set','_resolve_result_commit','_write_version_artifact_receipts','_create_artifact_tag'):\n"
+        " setattr(store_artifacts,name,forbid)\n"
+        "transaction=repository_operation.reserve_versioned_build(repo,repository='example/project',release_unit='claims',"
+        "version='1.2.5b1',required_targets=['python-3.14-linux','python-3.14-windows'],pre_test_commit=sys.argv[3],recovery_confirmed=True)\n"
+        "result=repository_operation.complete_versioned_build(transaction)\n"
+        "print(result.final_commit)\n", checkpoint)
+    assert fresh.returncode == 0, fresh.stderr
+    assert fresh.stdout.strip() == final
+    assert run_git(repository, "rev-parse", "HEAD").stdout.strip() == final
+    assert prepared[0].worktree_path.read_bytes() == b"unrelated subsequent work"
+    assert all(path.stat().st_mtime_ns == mtime for path, mtime in mtimes.items())
+    assert not directory.exists()
 
 
 @pytest.mark.parametrize("interruption", ["after-commit", "after-receipts", "after-tag"])

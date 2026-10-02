@@ -12,6 +12,7 @@ barrier. It keeps no helper-owned staging, pending, or temporary copy.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import os
 import pathlib
@@ -19,10 +20,12 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 import sdlc_results
@@ -44,6 +47,7 @@ FULL_VERSION_RE = re.compile(
     r"(?:\+[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*)?$"
 )
 ARTIFACT_RESERVATION_SCHEMA = "ceratops-artifact-reservation.v2"
+ARTIFACT_CHECKPOINT_OWNER = "artifact-versions"
 
 
 class OperationError(RuntimeError):
@@ -1277,6 +1281,53 @@ def _prune_completed_artifacts(
                     output.version_root.rmdir()
 
 
+@lru_cache(maxsize=1)
+def _checkpoint_storage() -> Any:
+    """Use the mapped runtime sibling, or the shared source during development.
+
+    Installed skills never reach back into a source checkout. Keep this import
+    lazy so the still-independent v2 route does not acquire checkpoint behavior.
+    """
+    skill = pathlib.Path(__file__).resolve().parent.parent
+    if not (skill / ".runtime-manifest.json").is_file():
+        source = str(skill.parent / "sections" / "scripts")
+        if source not in sys.path:
+            sys.path.insert(0, source)
+    return importlib.import_module("manage_checkpoints")
+
+
+@contextmanager
+def versioned_artifact_checkpoints(repo_root: pathlib.Path) -> Iterator[Any]:
+    """Hold the cooperating parent writer's lock, independently of child work."""
+    checkpoints = _checkpoint_storage()
+    try:
+        with checkpoints.open_checkpoints(repo_root, ARTIFACT_CHECKPOINT_OWNER) as context:
+            yield context
+    except checkpoints.CheckpointError as exc:
+        raise RecoveryRequired(str(exc)) from exc
+
+
+def finish_versioned_checkpoints(
+    transaction: ArtifactVersionTransaction, context: Any,
+) -> None:
+    """Finish only the outermost request after all its reservations are complete.
+
+    Reservations already carry the recovery essentials, so this producer writes
+    no duplicate checkpoint record. Other unit/version members of the same
+    request keep the directory until the last member succeeds.
+    """
+    if not context.outermost:
+        return
+    with _locked_artifact_store(transaction.lock_path):
+        remaining = _scan_transaction_records(transaction.store)
+        if any(
+            os.path.normcase(str(record["worktree"])) == os.path.normcase(str(transaction.repo_root))
+            for record in remaining.values()
+        ):
+            return
+    _checkpoint_storage().finish_checkpoints(context)
+
+
 def reserve_versioned_artifacts(
     repo_root: pathlib.Path,
     *,
@@ -1284,7 +1335,7 @@ def reserve_versioned_artifacts(
     release_unit: str,
     version: str,
     required_targets: Sequence[str],
-    attempt_id: str,
+    attempt_id: str | None = None,
     pre_test_commit: str,
     declared_input_paths: Sequence[str] = (),
     recovery_confirmed: bool = False,
@@ -1294,7 +1345,9 @@ def reserve_versioned_artifacts(
     ``pre_test_commit`` is checkpoint B and must already exist. New production
     starts only after the caller has created B. Artifacts are written directly
     below the final unit/version path; the version is not complete until its tag
-    exists. Explicit recovery resumes only the exact recorded owner.
+    exists. Explicit recovery resumes only the exact recorded owner, discovering
+    its existing attempt ID when omitted. A new attempt still needs its original
+    receipt attempt ID; no checkpoint operation ID is introduced.
     """
 
     root = _validated_worktree(pathlib.Path(repo_root))
@@ -1304,9 +1357,6 @@ def reserve_versioned_artifacts(
     )
     version, version_class = _version_classification(version)
     targets = _validated_targets(required_targets)
-    attempt_id = _require_identifier(
-        attempt_id, label="attempt ID", pattern=LOGICAL_ID_RE
-    )
     pre_test_commit = _validated_commit(root, pre_test_commit)
     branch = _git_text(
         root,
@@ -1323,31 +1373,61 @@ def reserve_versioned_artifacts(
     )
     store, lock_path = _artifact_infrastructure(root)
     version_root = store / release_unit / version
-    transaction = ArtifactVersionTransaction(
-        repo_root=root,
-        repository=repository,
-        branch=branch,
-        release_unit=release_unit,
-        version=version,
-        version_class=version_class,
-        attempt_id=attempt_id,
-        pre_test_commit=pre_test_commit,
-        required_targets=targets,
-        declared_input_paths=input_paths,
-        store=store,
-        reservation_path=store / ".reservations" / release_unit / f"{version}.json",
-        version_root=version_root,
-        diagnostic_root=store / ".diagnostics" / release_unit,
-        lock_path=lock_path,
-    )
     resumed = False
     with _locked_artifact_store(lock_path):
         reservations = _scan_transaction_records(store)
         key = (release_unit, version)
         existing = reservations.get(key)
         tagged = _artifact_tag_exists(root, release_unit, version)
-        if tagged and existing is None:
+        if tagged and existing is None and not recovery_confirmed:
             raise OperationError("Immutable artifact version tag already exists.")
+        completed_raw = None
+        if existing is not None and attempt_id is None:
+            attempt_id = str(existing["attemptId"])
+        elif existing is None and tagged:
+            # A crash during checkpoint cleanup can leave no reservation. The
+            # committed receipt, not a new recovery journal, identifies that run.
+            receipt_path = f".build/{release_unit}/{version}/"
+            if len(targets) > 1:
+                receipt_path += f"{targets[0]}/"
+            completed_raw = _git_bytes(
+                root, ["show", f"refs/tags/{release_unit}/{version}:{receipt_path}receipt.json"],
+                label="read completed attempt",
+            )
+            completed_receipt = sdlc_results.parse_committed_build_receipt(completed_raw).value
+            if attempt_id is None:
+                attempt_id = str(completed_receipt["identity"]["attemptId"])
+        if attempt_id is None:
+            raise OperationError("A new artifact reservation requires its receipt attempt ID.")
+        attempt_id = _require_identifier(attempt_id, label="attempt ID", pattern=LOGICAL_ID_RE)
+        transaction = ArtifactVersionTransaction(
+            repo_root=root,
+            repository=repository,
+            branch=branch,
+            release_unit=release_unit,
+            version=version,
+            version_class=version_class,
+            attempt_id=attempt_id,
+            pre_test_commit=pre_test_commit,
+            required_targets=targets,
+            declared_input_paths=input_paths,
+            store=store,
+            reservation_path=store / ".reservations" / release_unit / f"{version}.json",
+            version_root=version_root,
+            diagnostic_root=store / ".diagnostics" / release_unit,
+            lock_path=lock_path,
+        )
+        for record in reservations.values():
+            if os.path.normcase(str(record["worktree"])) == os.path.normcase(str(root)) and any(
+                record[field] != expected
+                for field, expected in (
+                    ("repository", repository), ("branch", branch), ("preTestCommit", pre_test_commit),
+                )
+            ):
+                raise RecoveryRequired("Worktree already has a different unfinished artifact request.")
+        if completed_raw is not None:
+            _validate_prepared_receipt(transaction, targets[0], completed_raw)
+            return transaction
         if existing is not None:
             if existing["attemptId"] != attempt_id:
                 raise OperationError("Artifact version is reserved by another attempt.")
@@ -2166,6 +2246,16 @@ def complete_versioned_artifacts(
     tag. The tag is written only after every target artifact receipt exists.
     """
 
+    completed = _completed_versioned_result(transaction)
+    if completed is not None:
+        # Durable success precedes cleanup. Do not recreate receipts, commits or
+        # tags, or even depend on mutable worktree result files on a cleanup retry.
+        with _locked_artifact_store(transaction.lock_path):
+            _remove_versioned_reservation(transaction)
+            _clear_versioned_diagnostics(transaction)
+            _prune_completed_artifacts(transaction.store, _scan_transaction_records(transaction.store))
+        return completed
+
     prepared = _prepared_receipt_set(transaction, prepared_receipts)
     records = _completion_records(prepared)
     with _locked_artifact_store(transaction.lock_path):
@@ -2203,4 +2293,26 @@ def complete_versioned_artifacts(
             for target in transaction.required_targets
         ),
         artifact_receipts=artifact_receipts,
+    )
+
+
+def _completed_versioned_result(
+    transaction: ArtifactVersionTransaction,
+) -> CompletedArtifactVersion | None:
+    """Recognize durable success by the existing tag/receipt chain, not a journal."""
+    final_commit = _artifact_tag_commit(transaction)
+    if final_commit is None:
+        return None
+    for target in transaction.required_targets:
+        selected = sdlc_results.read_artifact_receipt_chain(
+            transaction.repo_root, artifact_receipt_path=transaction.artifact_receipt(target),
+        )
+        _validate_prepared_receipt(transaction, target, selected.build_receipt.raw)
+        if selected.final_commit != final_commit:
+            raise RecoveryRequired("Completed artifact targets disagree on their final commit.")
+    return CompletedArtifactVersion(
+        final_commit=final_commit,
+        tag=f"{transaction.release_unit}/{transaction.version}",
+        build_receipts=tuple(transaction.repo_root / transaction.receipt_path(target) for target in transaction.required_targets),
+        artifact_receipts=tuple(transaction.artifact_receipt(target) for target in transaction.required_targets),
     )

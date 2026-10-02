@@ -93,6 +93,7 @@ def test_installed_repo_lifecycle_helpers_use_regular_runtime(
     skill = install_root / "ceratops-repo-lifecycle"
     assert (skill / "scripts" / "pending-work-cleanup.py").is_file()
     assert (skill / "scripts" / "store_artifacts.py").is_file()
+    assert (skill / "scripts" / "manage_checkpoints.py").is_file()
     runtime = json.loads((skill / RUNTIME_MANIFEST).read_text(encoding="utf-8"))
     interpreter = pathlib.Path(runtime["python_runtime"])
     assert interpreter.is_file() and not interpreter.is_symlink()
@@ -104,6 +105,23 @@ def test_installed_repo_lifecycle_helpers_use_regular_runtime(
             check=False,
         )
         assert command.returncode == 0, command.stderr
+
+    repo = tmp_path / "checkpoint-repository"
+    repo.mkdir()
+    assert run_git(repo, "init", "-b", "main").returncode == 0
+    isolated = subprocess.run(
+        [str(interpreter), "-I", "-c",
+         "import pathlib,sys; sys.path.insert(0,sys.argv[1]); import store_artifacts; "
+         "cp=store_artifacts._checkpoint_storage(); "
+         "assert pathlib.Path(cp.__file__).parent==pathlib.Path(sys.argv[1]);\n"
+         "with cp.open_checkpoints(pathlib.Path(sys.argv[2]),'artifact-versions') as context:\n"
+         " cp.write_checkpoint(context,'request.json',{'request':'installed'})\n"
+         " assert cp.read_checkpoint(context,'request.json')=={'request':'installed'}\n"
+         " cp.finish_checkpoints(context)\n",
+         str(skill / "scripts"), str(repo)],
+        cwd=tmp_path, capture_output=True, text=True, check=False,
+    )
+    assert isolated.returncode == 0, isolated.stderr
 
 
 def test_full_install_removes_only_same_source_stale_skills(tmp_path: pathlib.Path) -> None:

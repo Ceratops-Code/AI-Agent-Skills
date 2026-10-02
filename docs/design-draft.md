@@ -10,8 +10,8 @@ implementation audit or a new governing contract. This draft owns the lifecycle
 methodology and design detail. README records implemented capabilities and current
 output lifetimes; the refactor plan records delivery order. The working-folder
 methodology below distinguishes implemented versioned storage, receipt preparation,
-final-commit binding, completion tags and effect-derived recovery from planned
-shared worktree admission and public lifecycle routing.
+final-commit binding, completion tags, effect-derived recovery and shared
+checkpoint storage from planned worktree admission and public lifecycle routing.
 
 The intended users are agents and CI working on Ceratops-compatible
 repositories, including repositories other than Ceratops-AI-Agents-Kit and
@@ -603,11 +603,13 @@ The exact internal paths are:
 
 One attempt owns a unit/version and its complete required-target set. Its
 reservation records repository/worktree, branch, B, declared inputs and targets.
-A worktree may have only one unfinished attempt per unit; independent worktrees
-and units may proceed. Preserve active or unresolved reservations and direct
+A worktree has one unfinished artifact request, identified by repository, branch
+and B, with at most one unfinished attempt per unit. Multiple units of that
+request and independent worktrees may proceed. Preserve unresolved reservations and direct
 version output, and never apply the v2 delete-all-staging recovery to this route.
 An available lock, elapsed time or missing PID does not authorize taking over a
-reservation. Only explicit recovery of the exact recorded attempt may resume it;
+reservation. Explicit recovery discovers the saved attempt ID when omitted;
+supplying another ID is a conflict. Only the exact recorded request may resume;
 inconsistent, partial or conflicting ownership returns `recovery_required`.
 
 This route owns no `.pending`, `.staging` or `.tmp` path. When a final-path record
@@ -646,6 +648,72 @@ valid identities are not overwritten. Completion-only retries derive completed
 effects from final files, Git and the tag without duplicate commits, builds or
 tests. The working-folder caller delegates this sequence to the shared finalizer.
 
+### Shared checkpoint storage (implemented)
+
+`skills/sections/scripts/manage_checkpoints.py` owns disposable essential records,
+not domain recovery or a general workflow engine. The live section manifest maps
+it to `scripts/manage_checkpoints.py` in the installed repository-lifecycle skill.
+It uses the already pinned native `filelock` dependency without soft-lock fallback.
+No new dependency, operation UUID, phase journal or process supervisor is added.
+
+Both paths below are relative to the Git common directory:
+
+```text
+ceratops/operations/<owner>/<worktree-id>/
+ceratops/locks/<owner>/<worktree-id>.lock
+```
+
+The producer fixes its owner name in code (`artifact-versions` for the current
+adopter). The primary checkout's ID is `main`; a linked worktree uses `linked-`
+plus SHA-256 of its platform-normalized Git registration name. Git keeps that
+name when a worktree moves. This is a directory identity, not a new operation
+identity, and a fresh process derives it without caller-supplied recovery IDs.
+
+| Interface | Behavior |
+| --- | --- |
+| `open_checkpoints(repo_root, owner)` | Resolve a registered worktree's directory and acquire its native lock without waiting; a busy writer reports `CheckpointError`. Hold until context exit on success or failure. Same-thread nested calls reuse the context; no orphan sweep runs here. |
+| `read_checkpoint(context, name)` | Read a relative JSON-object record, or return `None` only when missing. Invalid JSON, duplicate keys, non-finite numbers and oversized records are unreadable, never silently absent. |
+| `write_checkpoint(context, name, data)` | Write directly to the final relative JSON path and flush to disk. Records are immutable, bounded to 2 MiB: an identical write is a no-op; a different or unreadable record blocks. Producers bind their request before saving further essentials, using distinct names for later immutable records. |
+| `finish_checkpoints(context)` | Only the outermost caller, after durable success, removes its records and performs one same-owner orphan sweep. It can be retried as cleanup only. |
+| `discard_worktree_checkpoints(repo_root, worktree_id)` | After confirmed removal, remove that worktree's records across owners whose native locks are free. Step 7 will connect the controlled-removal caller. |
+
+The context carries directory and lock information, not a recovery plan. The
+parent helper alone writes checkpoints; child commands return results. Opening
+or a failed invocation retains records. Cleanup derives destinations from the
+common directory, owner and worktree ID, never from saved JSON. It rejects links,
+junctions and hard-linked files rather than traversing them. A failed Git or
+registration lookup preserves the potentially live records. Existing worktrees
+are retained; for a removed worktree, a busy native lock skips deletion because
+the parent may still be running. Lock files remain reusable outside deleted
+trees. No scheduled cleaner or every-command orphan sweep exists. Abandoned
+records may remain until another same-owner operation succeeds.
+
+`repository_operation.py` wraps versioned reserve, prepare and completion calls
+in this producer context. Lock order is producer first, short artifact-store
+lock second. Unit/version reservations already contain its recovery essentials,
+so the artifact route needs no additional checkpoint JSON. Different unfinished
+repository/branch/B requests are refused; a request with another pending unit
+does not finish its checkpoints prematurely. New attempts still receive their
+existing receipt attempt ID. Confirmed retries discover it in the reservation,
+or in the committed build receipt if durable completion already removed the
+reservation. Once the tag and receipt chain prove completion, a retry performs
+only remaining cleanup: no prepared-worktree dependency, repeated build/test,
+new commit, rewritten receipt or moved tag.
+
+Successful acceptance stays in its existing receipts, Git and artifact storage.
+Generic checkpoint cleanup cannot delete those, reservations or installations.
+The producer lock does not prove an earlier artifact-writing child has stopped;
+explicit recovery remains required until 2A adds execution protection. The v2
+producer is unchanged, and skill-update adoption belongs to 1e.2.
+
+The existing handoff/storage tests cover fresh-process discovery, direct writes,
+conflicting and unreadable records, nesting, native lock contention, worktree
+move/removal, failed lookup, same-owner cleanup, foreign-owner/live-worktree and
+durable-output preservation, and cleanup-only artifact retries. The installed
+runtime test exercises the mapped helper in an isolated interpreter without a
+source-checkout import. These checks establish this boundary, not public Build
+or whole-system recovery.
+
 ### Output ownership and lifetime
 
 The artifact reservation and direct final paths below are implemented internally.
@@ -653,6 +721,8 @@ Shared worktree admission remains a later boundary:
 
 | Path/group | Owner and lifetime |
 | --- | --- |
+| `ceratops/operations/<owner>/<worktree-id>/` | Shared checkpoint helper; immutable essential records for one unfinished request; retain on open/failure, delete after outermost durable success, then sweep free same-owner removed-worktree entries. No acceptance or copied reservation journal lives here. |
+| `ceratops/locks/<owner>/<worktree-id>.lock` | Shared checkpoint helper; reusable native producer lock held through parent invocation and checkpoint deletion, outside the worktree and record tree; never delete during checkpoint cleanup. |
 | `ceratops/locks/worktrees/<worktree-id>.lock` | Shared lease helper; one reusable lock per registered worktree, never removed while held; prune only removed-worktree entries under registry serialization |
 | `ceratops/operations/worktrees/<worktree-id>.json` | Shared lock helper; one current admission record per registered worktree; unfinished/unreadable records block admission until explicit recovery; never clear by age alone |
 | Committed build receipt/evidence | Producer; current record plus at most two predecessors per unit/check group in the checkout; Git commit history supplies historical retrieval without an extra record database |
@@ -806,6 +876,7 @@ means the thread's decision is recorded, not that the whole system was audited.
     {"path": "skills/ceratops-repo-lifecycle/references/contracts/ceratops-compatibility-nondeterministic-contract.json", "role": "Internal compatibility review"},
     {"path": "docs/result_records.py.tmpl", "role": "Reference implementation for portable validation, test, and build records"},
     {"path": "skills/skill-sections.json", "role": "Live shared section and payload assignments"},
+    {"path": "skills/sections/scripts/manage_checkpoints.py", "role": "Shared essential checkpoint storage, native producer locks and cleanup"},
     {"path": "skills/ceratops-repo-lifecycle/scripts/repository_operation.py", "role": "Operation execution and internal build transaction"},
     {"path": "skills/ceratops-repo-lifecycle/scripts/sdlc_results.py", "role": "Read-only build receipt verification"},
     {"path": "skills/ceratops-skill-lifecycle/scripts/skill-update-workflow.py", "role": "Skill update baseline, corrections and finalization"}
