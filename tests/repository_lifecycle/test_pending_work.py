@@ -1247,7 +1247,7 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
         **kwargs: Any,
     ) -> None:
         if pathlib.Path(path) == sharing_worktree:
-            error = PermissionError("simulated Windows sharing violation")
+            error: Any = PermissionError("simulated Windows sharing violation")
             error.winerror = 32
             raise error
         original_rmtree(path, *args, **kwargs)
