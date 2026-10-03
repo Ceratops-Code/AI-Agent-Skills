@@ -19,6 +19,7 @@ import pprint
 import re
 import shutil
 import subprocess
+import tempfile
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -32,13 +33,16 @@ from .compatibility_contract import (
     surface_path,
     template_path,
 )
-from .python_tests import discover_python_tests, test_operation
+from .generate_test_script import (
+    discover_python_tests,
+    generated_test_runner,
+    record_generated_runner,
+    test_operation,
+)
 from .python_tool_configuration import project_text, repository_configured
 from .repository_validation_contract import load_validation_contract
 from .sdlc_contract_validation import (
     load_contract,
-    operation_category,
-    operation_entries,
     validation_errors,
 )
 from .validate_ceratops_compatibility import (
@@ -1210,19 +1214,8 @@ def plan_ceratops_compatibility(
     python_tests = discover_python_tests(
         repo_root, compatibility_contract["python_test_detection"]
     )
-    sdlc_version = sdlc_contract["version"]
-    if not isinstance(sdlc_version, int):
-        raise RuntimeError("validated SDLC version must be an integer")
-    test_runner = repo_root / surface_path("python_test_runner")
-    test_runner_relative = surface_path("python_test_runner").as_posix()
-    test_runner_selected = any(
-        test_runner_relative in step.get("run", [])
-        for name, operation in operation_entries(sdlc_contract).items()
-        if operation_category(name, version=sdlc_version) == "tests"
-        for step in operation.get("steps", [])
-    )
-    generate_python_test_runner = (
-        bool(python_tests) and test_runner_selected and not test_runner.is_file()
+    test_script = generated_test_runner(
+        repo_root, compatibility_contract, sdlc_contract, python_tests,
     )
     generated_runtime = runtime_files(
         repo_root,
@@ -1238,7 +1231,7 @@ def plan_ceratops_compatibility(
         ),
         planned_files=markdown_files,
         has_python_skills=bool(python_skills),
-        generate_python_test_runner=generate_python_test_runner,
+        generate_python_test_runner=test_script is not None,
     )
     markdown_files.pop(".gitignore", None)
     require_skill_runtime_project(
@@ -1246,12 +1239,8 @@ def plan_ceratops_compatibility(
         compatibility_contract,
         has_python_skills=bool(python_skills),
     )
-    if generate_python_test_runner:
-        generated_runtime[test_runner] = (
-            template_path("python_test_runner")
-            .read_text(encoding="utf-8")
-            .replace("__TEST_TARGETS__", repr(python_tests))
-        )
+    if test_script is not None:
+        record_generated_runner(repo_root, compatibility_contract, test_script, generated_runtime)
     return CompatibilityPlan(
         manifest=manifest,
         skill_updates=skill_updates,
@@ -1465,7 +1454,19 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeError("validator environment must not be a directory link")
         setup_runtime(repo_root, runtime)
         phase = "compatibility_validation"
-        compatibility = validate_ceratops_compatibility(repo_root)
+        test_runner = repo_root / surface_path("python_test_runner")
+        if test_runner in plan.runtime_files:
+            # Check only the generated script's result protocol, never its tests.
+            # This caller owns the probe directory; both scopes remove scratch.
+            with tempfile.TemporaryDirectory(prefix="ceratops-test-results-") as probe:
+                compatibility = validate_ceratops_compatibility(
+                    repo_root, result_directory=pathlib.Path(probe),
+                    runner_command=test_operation(
+                        repo_root, surface_path("python_test_runner").as_posix(),
+                    )["steps"][0]["run"],
+                )
+        else:
+            compatibility = validate_ceratops_compatibility(repo_root)
         if (
             not compatibility["applicable"]
             or compatibility["valid"] is not True

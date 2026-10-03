@@ -137,6 +137,7 @@ without repository deduplication.
 | `scripts/run-actionlint.py` | Provisions the pinned, checksum-verified actionlint release inside the scripts environment and validates every GitHub Actions workflow. |
 | `scripts/validate-repository.py` | Local validation coordinator; checks the running Python against `scripts/pyproject.toml`, runs workflow, repository lint and type checks, and captures first-failure evidence. Tests run separately through `scripts/testing/run-tests.py`. |
 | `skills/ceratops-repo-lifecycle/references/templates/deploy-skills.py.tmpl` | Authoritative standalone installer copied into compatible skill repositories as `scripts/deploy-skills.py`; invoke it through uv using the scripts project. |
+| `skills/ceratops-repo-lifecycle/references/templates/run-tests.py.tmpl` | Standard Python runner with a caller-selected immutable test-result interface, exact successful-result reuse and direct final writes. Its compatibility probe uses the same result lifecycle without executing the repository's tests. |
 | `skills/ceratops-repo-lifecycle/references/contracts/repository-validation-contract.json` | Schema-validated repository checks used by compatibility generation and included in repository contract review and validator discovery. |
 | `skills/ceratops-repo-lifecycle/references/contracts/ceratops-compatibility-*-contract.json` | Internal structural contract consumed by compatibility generation/checking, plus a behavioral review rubric for environment setup, tests, and lifecycle orchestration; no external source registry. |
 | `skills/ceratops-repo-lifecycle/references/templates/validate-repository.py.tmpl`, `validate.yml.tmpl`, and `run-actionlint.py.tmpl` | Repository-neutral validation templates created only when their target files are absent; new validation setups receive a pinned, checksum-verified actionlint runner, and setups without JavaScript package-manager files also receive locked Markdown dependencies and default rules. Existing tooling, Markdown settings, and exclusive validators are preserved. |
@@ -907,8 +908,13 @@ runs both stages before deployment. `--return-handoffs` exposes unresolved
 routes to a skill caller.
 New repository validators never select test runners. Conventional Python tests
 or pytest configuration generate `scripts/run-tests.py` from its template when
-absent. That runner uses the scripts project, owns its temporary pytest
-directories, streams pytest's failure details directly, and can be customized.
+absent, using `generate_test_script.py`. Setup records
+`[tool.ceratops.test-runner] managed = true` in `scripts/pyproject.toml`, refreshes
+only such explicitly managed scripts, and probes their result protocol after
+environment setup. Remove that declaration or set `managed = false` before
+customizing. Unmarked existing scripts remain untouched. The generated script
+uses the scripts project, owns its disposable pytest directories, and streams
+pytest's failure details directly.
 Invoke Python entrypoints with
 `uv run --locked <path-to-script.py>`; uv discovers their project from the
 script location and prepares its environment before execution. Use an
@@ -924,12 +930,52 @@ exit code means its complete requested scope passed, either through execution
 or through applicable saved results verified by that script.
 
 The validator owns validation checks and reporting. The test runner owns test
-execution, result storage and reuse. Repository runners can overwrite the latest
-result per test or group in `.test-results/`, with supporting screenshots and
-logs in its ignored `evidence/` subdirectory. A targeted rerun replaces its own
-results, including failures, and preserves other results only when their inputs
-and execution context still match. An interrupted attempt cannot leave an older
-pass reusable. Package/build metadata and approval belong in `.build/`.
+execution and result recording. The 1e.3 standard runner accepts:
+
+```text
+uv run --locked scripts/run-tests.py [TEST_TARGET ...] --result-file RESULT --result-id RESULT_ID --candidate-id CANDIDATE_ID --check-id CHECK_ID --check-version CHECK_VERSION
+```
+
+The caller chooses the final `RESULT` path and binds the four nonempty identities
+to exact work and the check definition it selected. All five options are supplied
+together. Without them, the runner executes tests without retained acceptance.
+It writes canonical UTF-8 JSON directly to the final file, flushes/fsyncs and
+reads it back. The fields are `schema`, `result_id`, `candidate_id`, `check_id`,
+`check_version`, `invocation`, `status` and `exit_code`.
+
+An exact canonical passed result returns success without executing tests or
+rewriting the file. A different identity, invocation or valid record blocks.
+Failed/interrupted results remain unchanged; another execution needs a new result
+ID and path. A `running` record left by a terminated process is also not acceptance.
+Only the invocation that wrote that record can complete it. The caller may add
+`--repair-unaccepted-result` to recreate malformed bytes it owns and knows were
+never accepted; corruption of previously accepted evidence must not authorize a
+rerun. There are no sibling result files or publication moves.
+
+Before treating a custom runner's records as reusable, invoke the lifecycle
+bundle's observable contract probe from its `scripts/` directory and managed
+Python environment:
+
+```text
+python -m ceratops_repo_compatibility_engine check-test-results --repo-root WORKTREE --runner-command RUNNER_ARGV_JSON --result-directory PROBE_DIRECTORY
+```
+
+`RUNNER_ARGV_JSON` is the caller's JSON argument array for the runner in its
+declared environment. `PROBE_DIRECTORY` is an existing caller-owned directory.
+The probe uses an isolated child and removes it afterward, preserving other
+files. It checks the `--describe-test-results` declaration and executes a tiny
+`--probe-command` through the real result writer to test direct output, reuse,
+malformed recovery, conflicts, failed/interrupted identity preservation and
+absence of leftover siblings. It does not run repository tests or prove that a
+custom implementation never briefly created an internal file. Structural-only
+compatibility success is not proof that results are reusable.
+
+Result paths stay outside disposable operation checkpoints. 1e.3 defines this
+runner protocol; 2A.2 connects production selection, ownership and bounded
+retention under `<git-common-dir>/ceratops/results/repository-checks/`.
+Until then, callers own their selected result files and lifetime. Disposable
+pytest caches and basetemp directories remain scratch, not acceptance. Cheap
+diagnostics/collection snapshots may be regenerated at their own final paths.
 
 Repository scripts own their output paths and Git ignore rules. Saved results
 are local working data and do not authorize deployment. Deployment retains its

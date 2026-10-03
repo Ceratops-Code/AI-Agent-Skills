@@ -164,6 +164,10 @@ copied compatibility file. A repository adopts it by copying and adapting it
 as `scripts/result_records.py` when that repository owns persistent result
 records.
 
+This reference describes existing repository-specific records. New reusable
+test-runner acceptance follows the 1e.3 protocol below, not this reference's
+mutable latest-test-result layout.
+
 The template keeps current validation and test JSON under tracked
 `.test-results/`, raw screenshots and logs under ignored
 `.test-results/evidence/`, tracked build metadata and approvals under
@@ -184,6 +188,85 @@ template must not be copied blindly over a working implementation.
 `tests/repository_lifecycle/test_compatibility.py` exercises the template's
 source and artifact binding, bounded evidence, compact failure output, and
 result-only commit stability.
+
+## Reusable repository test results (1e.3)
+
+`run-tests.py.tmpl` defines the standard runner's executable result contract.
+`generate_test_script.py` owns Python test discovery and script generation; the
+compatibility validator owns the observable probe for standard and custom scripts.
+Setup marks newly generated scripts with
+`[tool.ceratops.test-runner] managed = true` in `scripts/pyproject.toml`.
+It refreshes only explicitly managed scripts and runs
+their protocol probe after environment setup. Before customizing a generated
+script, remove that declaration or set `managed = false`. Unmarked existing
+scripts remain repository-owned and are never inferred to be generated from
+their filename or source text. No new compatibility
+or SDLC schema field is added without a runtime consumer. Existing exit-code
+invocations still run disposable tests; they do not create reusable acceptance.
+
+The retained-result invocation is:
+
+```text
+uv run --locked scripts/run-tests.py [TEST_TARGET ...] --result-file RESULT --result-id RESULT_ID --candidate-id CANDIDATE_ID --check-id CHECK_ID --check-version CHECK_VERSION
+```
+
+The caller supplies all identities and the final path together, serializes its
+producer and never reuses an execution ID for different work. `candidate_id`
+names exact work; `check_id` and `check_version` name the selected check definition.
+The runner does not infer acceptance from current test source or replace a passed
+record just because validators changed. A different invocation at the same path
+is a conflict, not an instruction to replace that record.
+
+| JSON field | Meaning |
+| --- | --- |
+| `schema` | `ceratops-repository-check-result.v1` |
+| `result_id`, `candidate_id`, `check_id`, `check_version` | Caller-supplied stable identities; all are nonempty strings. |
+| `invocation` | Exact `targets`, effective `pytest_args`, effective inherited `pytest_addopts`, and `probe_command` (null for real tests). Disposable basetemp overrides are removed. |
+| `status` | `running` while the owning invocation executes; then `passed`, `failed` or `interrupted`. A surviving `running` file is not acceptance and is not resumed by replay. |
+| `exit_code` | Null only while running; otherwise an integer, zero only for `passed`. |
+
+The owner writes sorted-key compact UTF-8 JSON with one LF directly to `RESULT`,
+flushes/fsyncs, rereads and compares it. A new file is exclusively created before
+execution; only that invocation may finish its unchanged running record. A later
+invocation reuses an exact canonical pass without execution or writing. A valid
+failed/interrupted/running record requires a new result ID and path. Valid
+conflicts and I/O failures preserve bytes and block. Malformed files are repaired
+only with `--repair-unaccepted-result`, the caller's assertion that it owns this
+output and it was never accepted. Accepted corruption is not repaired by retesting.
+No result checkpoint, sibling temporary file or final-path rename is introduced.
+
+The runner exposes `--describe-test-results`, returning the contract schema
+`ceratops-test-result-contract.v1` and its `result_schema`. For observable testing,
+`--probe-command` accepts a JSON argv instead of pytest, but uses exactly the same
+result lifecycle and requires the full result identity. Custom implementations
+must expose the same interface and pass the same probe before their results can
+be treated as reusable. Declaration alone and a zero exit code are insufficient.
+
+From the lifecycle bundle's `scripts/` directory in its managed Python runtime:
+
+```text
+python -m ceratops_repo_compatibility_engine check-test-results --repo-root WORKTREE --runner-command RUNNER_ARGV_JSON --result-directory PROBE_DIRECTORY
+```
+
+The caller selects the runner argv/environment and an existing owned directory.
+Compatibility setup is that caller for scripts it generates; standalone probing
+supplies the same gate for a preserved custom script without replacing it.
+The probe creates only its isolated child, drives a counted controlled command,
+checks direct final output while that command runs, canonical completion, exact
+reuse, malformed recovery, valid conflicts, failed/interrupted refusal and absence
+of siblings, then removes the child. It neither runs the repository's tests nor
+claims to detect every transient internal file in a custom runner. The structural
+validator can receive `runner_command` and `result_directory` to include this
+gate; without them its structural status says nothing about result reuse.
+
+Persistent result files are outside disposable skill-update or operation
+checkpoints. 2A.2 will bind production identities, affected-check selection and
+bounded result retention to
+`<git-common-dir>/ceratops/results/repository-checks/<result-id>.json`.
+For 1e.3 the invoking caller owns result grouping and lifetime; probe records are
+always discarded after the probe. Pytest basetemp/cache directories are disposable
+execution scratch and never copied or moved into results. Collection snapshots
+and failure diagnostics remain regenerable reports, not acceptance records.
 
 ## Exact-artifact bundle transaction
 

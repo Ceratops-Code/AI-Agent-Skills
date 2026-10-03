@@ -1792,6 +1792,222 @@ def test_generated_python_runner_cleans_owned_temp_even_with_overrides(
     assert not outside.exists()
 
 
+def _result_runner(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
+    root = tmp_path / "result-repository"
+    (root / "scripts").mkdir(parents=True)
+    runner = root / "scripts/run-tests.py"
+    template = (REPOSITORY_LIFECYCLE_SOURCE / "references/templates/run-tests.py.tmpl").read_text()
+    runner.write_text(template.replace("__TEST_TARGETS__", "['test_probe.py']"), encoding="utf-8")
+    output = tmp_path / "results"
+    output.mkdir()
+    return root, runner, output
+
+
+def _result_arguments(path: pathlib.Path, identity: str = "result-1") -> list[str]:
+    return [
+        "--result-file", str(path), "--result-id", identity, "--candidate-id", "candidate-1",
+        "--check-id", "unit-tests", "--check-version", "checks-1",
+    ]
+
+
+def _run_result_runner(root: pathlib.Path, runner: pathlib.Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run([sys.executable, str(runner), *args], cwd=root, capture_output=True, text=True, check=False)
+
+
+def test_generated_runner_records_real_pytest_and_reuses_exact_acceptance(tmp_path: pathlib.Path) -> None:
+    root, runner, output = _result_runner(tmp_path)
+    count = tmp_path / "test-executions"
+    test = root / "test_probe.py"
+    test.write_text(
+        "from pathlib import Path\n"
+        "def test_once():\n"
+        f"    p = Path({str(count)!r})\n"
+        "    p.write_text(p.read_text() + 'x' if p.exists() else 'x')\n",
+        encoding="utf-8",
+    )
+    result = output / "result-1.json"
+    args = _result_arguments(result)
+    first = _run_result_runner(root, runner, args)
+    assert first.returncode == 0, first.stdout + first.stderr
+    accepted = result.read_bytes()
+    payload = json.loads(accepted)
+    assert payload["schema"] == "ceratops-repository-check-result.v1"
+    assert payload["status"] == "passed" and payload["exit_code"] == 0
+    assert accepted == (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    assert count.read_text() == "x"
+    # The caller chooses immutable candidate/check identities. Merely changing
+    # current tests cannot revoke acceptance of a previously recorded candidate.
+    test.write_text("def test_changed():\n    assert False\n", encoding="utf-8")
+    assert _run_result_runner(root, runner, args).returncode == 0
+    assert count.read_text() == "x" and result.read_bytes() == accepted
+    mismatch = args.copy()
+    mismatch[mismatch.index("--check-version") + 1] = "different-checks"
+    assert _run_result_runner(root, runner, mismatch).returncode == 2
+    assert result.read_bytes() == accepted
+    assert list(output.iterdir()) == [result]
+
+
+def test_generated_runner_failed_result_needs_a_new_identity(tmp_path: pathlib.Path) -> None:
+    root, runner, output = _result_runner(tmp_path)
+    test = root / "test_probe.py"
+    test.write_text("def test_failure():\n    assert False\n", encoding="utf-8")
+    result = output / "failure.json"
+    args = _result_arguments(result, "failure")
+    assert _run_result_runner(root, runner, args).returncode == 1
+    rejected = result.read_bytes()
+    assert json.loads(rejected)["status"] == "failed"
+    test.write_text("def test_fixed():\n    assert True\n", encoding="utf-8")
+    assert _run_result_runner(root, runner, args).returncode == 2
+    assert result.read_bytes() == rejected
+    successor = output / "successor.json"
+    assert _run_result_runner(root, runner, _result_arguments(successor, "successor")).returncode == 0
+    assert result.read_bytes() == rejected
+    assert json.loads(successor.read_text())["status"] == "passed"
+
+
+def test_result_io_error_preserves_bytes_and_never_runs_the_check(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, runner, output = _result_runner(tmp_path)
+    path = output / "inaccessible.json"
+    path.write_text("{", encoding="utf-8")
+    main = runpy.run_path(str(runner))["main"]
+    read = pathlib.Path.read_bytes
+
+    def denied(target: pathlib.Path) -> bytes:
+        if target == path:
+            raise PermissionError("result is inaccessible")
+        return read(target)
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", denied)
+    monkeypatch.setitem(main.__globals__, "execute_check", lambda *args: pytest.fail("ran after I/O failure"))
+    assert main([*_result_arguments(path), "--repair-unaccepted-result"]) == 2
+    assert path.read_text() == "{"
+
+
+def test_generated_runner_records_interrupt_and_preserves_saved_attempt(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root, runner, output = _result_runner(tmp_path)
+    loaded = runpy.run_path(str(runner))
+    main = loaded["main"]
+
+    def interrupt(*args: object) -> int:
+        raise KeyboardInterrupt
+
+    monkeypatch.setitem(main.__globals__, "execute_check", interrupt)
+    result = output / "interrupt.json"
+    args = _result_arguments(result)
+    assert main(args) == 130
+    interrupted = result.read_bytes()
+    assert json.loads(interrupted)["status"] == "interrupted"
+    monkeypatch.setitem(main.__globals__, "execute_check", lambda *args: pytest.fail("replayed interrupted attempt"))
+    assert main(args) == 2
+    assert result.read_bytes() == interrupted
+
+
+@pytest.mark.parametrize("fault", ["identity", "valid_foreign_json", "noncanonical", "bool_exit", "running"])
+def test_generated_runner_preserves_conflicting_and_unfinished_records(tmp_path: pathlib.Path, fault: str) -> None:
+    root, runner, output = _result_runner(tmp_path)
+    path = output / "accepted.json"
+    args = [*_result_arguments(path), "--probe-command", json.dumps([sys.executable, "-c", "pass"])]
+    assert _run_result_runner(root, runner, args).returncode == 0
+    record = json.loads(path.read_text())
+    if fault == "identity":
+        record["candidate_id"] = "other"
+    elif fault == "valid_foreign_json":
+        record = {"owner": "unrelated"}
+    elif fault == "bool_exit":
+        record["exit_code"] = False
+    elif fault == "running":
+        record.update(status="running", exit_code=None)
+    raw = json.dumps(record, indent=2) if fault == "noncanonical" else json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+    path.write_text(raw, encoding="utf-8")
+    before = path.read_bytes()
+    assert _run_result_runner(root, runner, args).returncode == 2
+    assert path.read_bytes() == before
+
+
+def test_test_result_probe_accepts_generated_and_custom_compliant_runners(tmp_path: pathlib.Path) -> None:
+    root, runner, output = _result_runner(tmp_path)
+    module = importlib.import_module("ceratops_repo_compatibility_engine.validate_ceratops_compatibility")
+    caller_file = output / "caller-owned.txt"
+    caller_file.write_text("keep", encoding="utf-8")
+    assert module.probe_test_results(root, [sys.executable, str(runner)], output) == []
+    custom = root / "scripts/custom_tests.py"
+    custom.write_text(
+        "import runpy\n"
+        f"runner = runpy.run_path({str(runner)!r})\n"
+        "raise SystemExit(runner['main']())\n", encoding="utf-8",
+    )
+    assert module.probe_test_results(root, [sys.executable, str(custom)], output) == []
+    assert list(output.iterdir()) == [caller_file]
+    cli = run_compatibility_engine(
+        REPOSITORY_LIFECYCLE_SCRIPTS, "check-test-results", "--repo-root", str(root),
+        "--runner-command", json.dumps([sys.executable, str(custom)]), "--result-directory", str(output),
+    )
+    assert cli.returncode == 0 and cli.stdout.strip() == "OK", cli.stdout + cli.stderr
+    assert list(output.iterdir()) == [caller_file]
+
+
+@pytest.mark.parametrize("fault", ["declaration_only", "leftover", "no_reuse"])
+def test_test_result_probe_rejects_observable_custom_runner_violations(tmp_path: pathlib.Path, fault: str) -> None:
+    root, runner, output = _result_runner(tmp_path)
+    custom = root / "scripts/custom_tests.py"
+    if fault == "declaration_only":
+        program = 'print(\'{"schema":"ceratops-test-result-contract.v1","result_schema":"ceratops-repository-check-result.v1"}\')\n'
+    else:
+        program = (
+            "import pathlib, runpy\n"
+            f"ns = runpy.run_path({str(runner)!r})\n"
+            "main = ns['main']\n"
+        )
+        if fault == "leftover":
+            program += (
+                "write = ns['write_result']\n"
+                "def broken(path, value, *, exclusive):\n"
+                "    write(path, value, exclusive=exclusive)\n"
+                "    path.with_suffix('.tmp').write_text('left behind')\n"
+                "main.__globals__['write_result'] = broken\n"
+            )
+        else:
+            program += (
+                "prepare = ns['prepare_result']\n"
+                "def broken(path, expected, *, repair_unaccepted):\n"
+                "    if path.exists():\n"
+                "        path.unlink()\n"
+                "    return prepare(path, expected, repair_unaccepted=repair_unaccepted)\n"
+                "main.__globals__['prepare_result'] = broken\n"
+            )
+        program += "raise SystemExit(main())\n"
+    custom.write_text(program, encoding="utf-8")
+    module = importlib.import_module("ceratops_repo_compatibility_engine.validate_ceratops_compatibility")
+    errors = module.probe_test_results(root, [sys.executable, str(custom)], output)
+    assert len(errors) == 1 and "probe failed" in errors[0]
+    assert not list(output.iterdir())
+
+
+def test_runner_ownership_is_explicit_and_custom_sources_are_preserved(tmp_path: pathlib.Path) -> None:
+    root, runner, _ = _result_runner(tmp_path)
+    module = importlib.import_module("ceratops_repo_compatibility_engine.generate_test_script")
+    contract = importlib.import_module("ceratops_repo_compatibility_engine.compatibility_contract").load_compatibility_contract()
+    sdlc = {"version": 4, "repository": {"actions": {"test": {"steps": [{"run": ["uv", "run", "--locked", "scripts/run-tests.py"]}]}}}}
+    original = runner.read_bytes()
+    assert module.generated_test_runner(root, contract, sdlc, ["test_probe.py"]) is None
+    assert runner.read_bytes() == original
+    project = root / "scripts/pyproject.toml"
+    project.write_text("[tool.ceratops.test-runner]\nmanaged = false\n", encoding="utf-8")
+    assert module.generated_test_runner(root, contract, sdlc, ["test_probe.py"]) is None
+    project.write_text("[tool.ceratops.test-runner]\nmanaged = true\n", encoding="utf-8")
+    runner.write_text("raise SystemExit(8)\n", encoding="utf-8")
+    rendered = module.generated_test_runner(root, contract, sdlc, ["test_probe.py"])
+    assert rendered is not None
+    planned: dict[pathlib.Path, str] = {}
+    module.record_generated_runner(root, contract, rendered, planned)
+    # Execute rendered output; source text is not behavior evidence.
+    runner.write_text(planned[runner], encoding="utf-8")
+    declared = _run_result_runner(root, runner, ["--describe-test-results"])
+    assert declared.returncode == 0
+    assert json.loads(declared.stdout)["result_schema"] == "ceratops-repository-check-result.v1"
+
+
+
 def test_missing_uv_rolls_back_generated_files_before_compatibility_claim(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     generator = importlib.import_module("ceratops_repo_compatibility_engine.apply_ceratops_compatibility")
     runtime = importlib.import_module("ceratops_repo_compatibility_engine.validation_environment")
