@@ -211,16 +211,14 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         encoding="utf-8",
         newline="\n",
     )
-    issue_template = repo / ".github" / "ISSUE_TEMPLATE" / "bug_report.yml"
-    issue_template.parent.mkdir(parents=True)
-    issue_template.write_text(
-        "name: Target-owned bug report\n"
-        "description: Preserve this repository's issue intake.\n"
-        "body: []\n",
+    pull_request_template = repo / ".github" / "pull_request_template.md"
+    pull_request_template.parent.mkdir(parents=True)
+    pull_request_template.write_text(
+        "# Target-owned pull request template\n",
         encoding="utf-8",
         newline="\n",
     )
-    preserved_issue_template = issue_template.read_bytes()
+    preserved_pull_request_template = pull_request_template.read_bytes()
 
     result = run_compatibility_engine(
         REPOSITORY_LIFECYCLE_SCRIPTS,
@@ -311,13 +309,18 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     assert (repo / "scripts" / "validate-repository.py").is_file()
     assert (repo / "scripts" / "run-actionlint.py").is_file()
     assert (repo / ".github" / "workflows" / "validate.yml").is_file()
-    assert issue_template.read_bytes() == preserved_issue_template
-    assert (repo / ".github" / "pull_request_template.md").read_bytes() == (
+    issue_template = repo / ".github" / "ISSUE_TEMPLATE" / "bug_report.yml"
+    assert issue_template.read_bytes() == (
         REPOSITORY_LIFECYCLE_SOURCE
         / "references"
         / "templates"
-        / "pull-request-template.md.tmpl"
+        / "issue-template-bug-report.yml.tmpl"
     ).read_bytes()
+    issue_template_text = issue_template.read_text(encoding="utf-8")
+    assert "Do not report security vulnerabilities" in issue_template_text
+    assert "SECURITY.md" in issue_template_text
+    assert "private vulnerability reporting" in issue_template_text
+    assert pull_request_template.read_bytes() == preserved_pull_request_template
     assert output["repository_validation"] == {
         "checks": ["npm-markdown-lint", "ruff", "mypy", "actionlint"],
         "validator": "applied",
