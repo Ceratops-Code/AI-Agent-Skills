@@ -44,14 +44,26 @@ candidate construction, qualification, adoption, and cleanup. Its
    retain the review. `NeedsReview` preserves unresolved decisions; `Reviewed`
    means decisions were supplied. Neither establishes compatibility. Changed
    bindings require a fresh review; do not transfer old decisions blindly.
-5. For requested upgrade or reconciliation work, fix the owning patcher code
-   and run its existing tests. Build from the assessed snapshot with an explicit
-   patch set using `BuildCode` after committing clean source. Run all applicable
-   repository, browser, and actual-Codex tests through their existing owners,
-   using the isolated app runner for tests inside Codex. Account for every
-   supported feature and resolve coverage gaps. Retain unresolved results and
-   prior deferred checks as blockers; reuse earlier passes only when the owning
-   helper verifies their applicability to the candidate.
+5. For requested upgrade or reconciliation work, use this exact
+   order: targeted
+   compatibility probes; one diagnostic candidate; one actual-Codex
+   diagnostic; all affected patch-family fixes as one batch; one repository
+   qualification; one immutable final build; and one final candidate
+   qualification. Use existing owners for every phase. Before an actual-Codex
+   run, use the existing process-owner preflight and stop on any retained
+   test-owned process.
+
+   - Do not qualify an interim candidate, repeat an unchanged repository suite,
+     or rebuild unchanged snapshot, patcher revision, patch set, configuration,
+     or build inputs. Keep deterministic waits and unchanged polling inside one
+     existing orchestration call.
+   - After a failed actual-Codex qualification, route passing evidence through
+     the existing reviewed-evidence owner, invalidate only requirements affected
+     by changed source or failed or blocked observations, and run only affected
+     diagnostic groups. Make final qualification run only missing or invalidated
+     checks, and reuse evidence only when its owner verifies applicability.
+   - Use the existing receipt, reviewed-evidence, test-runner, and orchestration
+     owners. Do not add another resume, evidence, test, or orchestration system.
 6. For requested adoption, use the returned candidate evidence handoff and
    existing qualification and repository lifecycle commands. Stop at the
    authorized phase and report unresolved requirements or command failures.
