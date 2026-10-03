@@ -211,6 +211,16 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         encoding="utf-8",
         newline="\n",
     )
+    issue_template = repo / ".github" / "ISSUE_TEMPLATE" / "bug_report.yml"
+    issue_template.parent.mkdir(parents=True)
+    issue_template.write_text(
+        "name: Target-owned bug report\n"
+        "description: Preserve this repository's issue intake.\n"
+        "body: []\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    preserved_issue_template = issue_template.read_bytes()
 
     result = run_compatibility_engine(
         REPOSITORY_LIFECYCLE_SCRIPTS,
@@ -301,6 +311,13 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     assert (repo / "scripts" / "validate-repository.py").is_file()
     assert (repo / "scripts" / "run-actionlint.py").is_file()
     assert (repo / ".github" / "workflows" / "validate.yml").is_file()
+    assert issue_template.read_bytes() == preserved_issue_template
+    assert (repo / ".github" / "pull_request_template.md").read_bytes() == (
+        REPOSITORY_LIFECYCLE_SOURCE
+        / "references"
+        / "templates"
+        / "pull-request-template.md.tmpl"
+    ).read_bytes()
     assert output["repository_validation"] == {
         "checks": ["npm-markdown-lint", "ruff", "mypy", "actionlint"],
         "validator": "applied",
@@ -380,9 +397,15 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
 
 
     # Required surfaces are structural checks, including the skill bootstrap.
-    for relative in ("scripts/validate-repository.py", ".github/workflows/validate.yml",
-                     "scripts/deploy-skills.py", "skills/sections/python/pyproject.toml",
-                     "skills/sections/python/uv.lock"):
+    for relative in (
+        "scripts/validate-repository.py",
+        ".github/workflows/validate.yml",
+        ".github/ISSUE_TEMPLATE/bug_report.yml",
+        ".github/pull_request_template.md",
+        "scripts/deploy-skills.py",
+        "skills/sections/python/pyproject.toml",
+        "skills/sections/python/uv.lock",
+    ):
         target = repo / relative
         original = target.read_bytes()
         target.unlink()
@@ -1475,6 +1498,8 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
     assert {path: path.read_bytes() for path in changed_paths} == original
     assert not (repo / "scripts" / "validate-repository.py").exists()
     assert not (repo / ".github" / "workflows" / "validate.yml").exists()
+    assert not (repo / ".github" / "ISSUE_TEMPLATE" / "bug_report.yml").exists()
+    assert not (repo / ".github" / "pull_request_template.md").exists()
     assert all(not (repo / name).exists() for name in (
         "scripts/package.json", "scripts/package-lock.json", "scripts/.markdownlint.json",
         "scripts/run-actionlint.py",

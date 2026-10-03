@@ -249,6 +249,18 @@
           "operator": "glob_present",
           "expected": ".github/CODEOWNERS",
           "when": "repo.visibility == public && repo.fork == false"
+        },
+        {
+          "path": "/repository/paths",
+          "operator": "glob_present",
+          "expected": ".github/ISSUE_TEMPLATE/**",
+          "when": "repo.visibility == public && repo.fork == false"
+        },
+        {
+          "path": "/repository/paths",
+          "operator": "glob_present",
+          "expected": ".github/pull_request_template.md",
+          "when": "repo.visibility == public && repo.fork == false"
         }
       ]
     },
