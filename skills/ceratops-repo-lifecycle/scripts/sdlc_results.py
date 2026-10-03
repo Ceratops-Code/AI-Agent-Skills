@@ -312,8 +312,13 @@ def _require_unique(values: Sequence[Any], message: str) -> None:
 
 
 def _expected_build_receipt_paths(identity: Mapping[str, Any]) -> set[str]:
+    # Saved records bind their exact historical path. New producers use only
+    # build_receipt.json; accepting the recorded old path does not search for,
+    # copy, rename, or create an alias for an existing committed receipt.
     base = f".build/{identity['releaseUnit']}/{identity['version']}"
     return {
+        f"{base}/build_receipt.json",
+        f"{base}/{identity['target']}/build_receipt.json",
         f"{base}/receipt.json",
         f"{base}/{identity['target']}/receipt.json",
     }

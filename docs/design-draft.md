@@ -407,7 +407,7 @@ non-tampering.
 
 | Record | Authoritative content | Storage and creation |
 | --- | --- | --- |
-| Build receipt | Attempt ID, pre-test B, unit/version/target and required targets, declared build inputs, artifacts and dependencies by digest, original required checks and completed outcomes, and evidence digests | Written after checks and committed at `.build/<unit>/<version>/receipt.json`; add `<target>` below the version for separately qualified targets; it contains neither its own hash nor C |
+| Build receipt | Attempt ID, pre-test B, unit/version/target and required targets, declared build inputs, artifacts and dependencies by digest, original required checks and completed outcomes, and evidence digests | Written after checks and committed at `.build/<unit>/<version>/build_receipt.json`; add `<target>` below the version for separately qualified targets; it contains neither its own hash nor C |
 | Artifact receipt | Final C, repository-relative build-receipt path, hash of its exact committed bytes, store-relative artifact locations and completed acceptance reference | Stored alongside immutable artifacts in the Git common directory after closure passes |
 | Promotion/deployment record | Selected artifact receipts, integrated release commit, version/target, expected old and resulting refs, completed effects | Existing owning lifecycle checkpoint/result; it does not duplicate test acceptance |
 
@@ -595,7 +595,7 @@ tag. Public Build remains disconnected.
 The exact internal paths are:
 
 - reservation: `ceratops/artifacts/.reservations/<unit>/<version>.json`;
-- prepared receipt: `.build/<unit>/<version>/receipt.json`, adding `<target>/`
+- prepared receipt: `.build/<unit>/<version>/build_receipt.json`, adding `<target>/`
   for separately qualified targets;
 - latest failure: `ceratops/artifacts/.diagnostics/<unit>/<target>/<alpha|beta|stable>.json`;
 - final output: `ceratops/artifacts/<unit>/<version>/`, adding `<target>/` for
@@ -707,7 +707,7 @@ Successful acceptance stays in its existing receipts, Git and artifact storage.
 Generic checkpoint cleanup cannot delete those, reservations or installations.
 The producer lock does not prove an earlier artifact-writing child has stopped;
 explicit recovery remains required until 2A adds execution protection. The v2
-producer is unchanged, and skill-update adoption belongs to 1e.2.
+producer is unchanged; 1e.2 also adopts this storage for skill-update records.
 
 The existing handoff/storage tests cover fresh-process discovery, direct writes,
 conflicting and unreadable records, nesting, native lock contention, worktree
@@ -722,6 +722,11 @@ or whole-system recovery.
 The artifact reservation and direct final paths below are implemented internally.
 Shared worktree admission remains a later boundary:
 
+New committed build receipts use `build_receipt.json` in both target layouts.
+The artifact receipt stores the exact Git path and hash. Readers and completed
+recovery follow that saved link, including historical `receipt.json` names;
+they do not rename old files, alter tags or rerun accepted builds/tests.
+
 | Path/group | Owner and lifetime |
 | --- | --- |
 | `ceratops/operations/<owner>/<worktree-id>/` | Shared checkpoint helper; immutable essential records for one unfinished request; retain on open/failure, delete after outermost durable success, then sweep free same-owner removed-worktree entries. No acceptance or copied reservation journal lives here. |
@@ -731,7 +736,7 @@ Shared worktree admission remains a later boundary:
 | Committed build receipt/evidence | Producer; current record plus at most two predecessors per unit/check group in the checkout; Git commit history supplies historical retrieval without an extra record database |
 | `ceratops/artifacts/<unit>/<version>/` with optional target subdirectory | Artifact store; immutable artifacts, supporting files and artifact receipt; current plus two predecessors per repository/unit/target and alpha/beta/stable retention group; later consumers supply explicitly bounded active/current/rollback protection |
 | `.reservations/<unit>/<version>.json` | Artifact store and operation runner; one unfinished attempt per owning worktree/unit with its complete target set, branch, B and declared inputs; preserve unresolved ownership and remove it only after all target receipts and the immutable tag exist |
-| `.build/<unit>/<version>/receipt.json` with optional target directory | Operation runner; directly written final result, validated and reused by exact bytes, committed at C with other declared Git evidence and retained historically by Git |
+| `.build/<unit>/<version>/build_receipt.json` with optional target directory | Operation runner; directly written final result, validated and reused by exact bytes, committed at C with other declared Git evidence and retained historically by Git |
 | `artifacts/<unit>/<version>/` with optional target directory | Versioned build/test owner and finalizer; direct final artifact/evidence output is protected while reserved and becomes consumable only after all target artifact receipts and the immutable tag bind it to C |
 | `.diagnostics/<unit>/<target>/<alpha\|beta\|stable>.json` | Artifact store; one directly replaced bounded failure report per storage group; successful finalization clears the resolved report |
 
@@ -790,34 +795,65 @@ installed manager with `--source` set to the selected repository. That
 checkout supplies the MCP server name and version. "SDLC install"
 was shorthand in an earlier answer, not a separate command.
 
-`skill-update-workflow.py` retains its original Git baseline and explicit
-allowed file list throughout normal corrections. `amend` expands approved
-scope before any check or after passed/failed verification without replacing
-that baseline. Added paths are compared against the original commit or initial
-dirty snapshot, not their state at amendment time. Passed evidence becomes
-pending on amendment; changed inputs after each success start another numbered
-verification generation with no arbitrary one-correction limit. Original
-branch, descendant-commit, ownership and unrelated-change checks still apply.
-Tests remain in the repository runner, not this helper. Finalization is the
-explicit end-of-work cleanup trigger, never an intermediate correction step. It
-consumes recorded successful verification without rechecking the live checkout,
-so later source advancement does not repeat completed finalization checks. Shared
-worktree admission remains 2A work; new acceptance-record cleanup handoffs remain
-step 7 work.
+`skill-update-workflow.py` discovers one unfinished update under
+`<git-common-dir>/ceratops/operations/skill-updates/<worktree-id>/` and holds
+the shared producer lock per invocation. No operation UUID or caller-supplied
+state/evidence paths are required. The caller's request has schema
+`ceratops-skill-update-request.v3` and fields `selected_skills`,
+`allowed_paths`, `change_groups` and non-test `checks`.
 
-The 1c preservation checkpoint is verification and documentation only. The
-existing workflow and state helpers, schemas and test-selection boundary remain
-unchanged. Existing behavior tests cover amendment before and after verification,
-failed-run correction continuity, repeated generations, retention of the
-original baseline and unrelated work, and finalization after staged, committed
-or later source advancement without replaying successful checks.
+From the source repository, using its managed Python runtime:
 
-`supersede` remains a subcommand of `skill-update-workflow.py` for an explicitly
-revised update request after failed verification. It creates a successor
-request/state while retaining the original source baseline and failed records.
-It may expand the declared scope but cannot hide unrelated changes. Only after
-the successor passes and is finalized may unchanged inherited disposable
-records be removed. It does not deploy skills.
+```text
+python skills/ceratops-skill-lifecycle/scripts/skill-update-workflow.py open_skill_change --repo-root WORKTREE --change-request REQUEST
+python skills/ceratops-skill-lifecycle/scripts/skill-update-workflow.py expand_skill_scope --repo-root WORKTREE --change-request REQUEST
+python skills/ceratops-skill-lifecycle/scripts/skill-update-workflow.py run_skill_checks --repo-root WORKTREE
+python skills/ceratops-skill-lifecycle/scripts/skill-update-workflow.py replace_failed_request --repo-root WORKTREE --change-request REQUEST
+python skills/ceratops-skill-lifecycle/scripts/skill-update-workflow.py close_skill_change --repo-root WORKTREE
+```
+
+`WORKTREE` is the selected task checkout; `REQUEST` is the caller's JSON file.
+Opening records approval and the original Git/dirty baseline; the caller,
+not this helper, edits source. Expansion adds approved scope before or after
+checks, using the original baseline even for newly added paths. Failed-request
+replacement may revise checks but cannot shrink scope or hide unrelated work.
+Source ownership, descendant-commit and whitespace gates remain. Tests still
+belong to the SDLC runner. Commit and explicitly requested promotion/deployment
+remain separate caller actions; closing follows their completed use.
+
+The helper owns these direct-written records:
+
+| Record | Purpose and lifetime |
+| --- | --- |
+| `update_request.json` | Original request, initial baseline and worktree identity; immutable until successful cleanup. The caller's input file is separate and never deleted. |
+| `states/N.json` | Approved scope, baseline, status and predecessor hash; retain current plus two predecessors. |
+| `check_results/N.json` | Checked commit/input hash, changed paths, individual results, overall status and failures for checking state N. State N+1 records its hash; retain results referenced by kept states. |
+| `completion_receipt.json` | Saved successful state/result identity used to finish cleanup without rechecking source; delete last. |
+
+Each transition appends a state. Changed inputs become pending before checks,
+so an earlier pass cannot close a later failed correction. Identical successful
+retries do no check work. Passed commands are reused for unchanged complete
+inputs and check definitions; searches use their declared inputs. Recovery
+completes a missing state reference from an intact result instead of rerunning
+its successful checks. Only a malformed, unreferenced final generation can be
+recreated; valid conflicts, broken retained hash links, changed accepted results
+and I/O failures preserve records and block.
+
+Opening retains unfinished work. State append/recovery bounds generations and
+referenced results. Closing consumes saved success without rechecking the live
+checkout, writes the completion receipt, then removes only owned records. The
+receipt makes interrupted deletion resumable even after the original request
+is removed. Successful close invokes the shared same-producer removed-worktree
+sweep; failure/opening does not. No retention marker, sibling write file or
+mutable task-temp state remains. Disposable command scratch stays under
+`<repo-parent>/tmp/<repo-name>/<worktree-name>`, is never copied into a result
+and is cleaned by `skill_update_scratch.py`; explicit check outputs remain
+caller-owned. Durable repository acceptance belongs to its receipt/result owner,
+not these disposable checkpoints.
+
+1e.2 preserves the behavior verified by the earlier 1c documentation checkpoint
+while replacing its storage and command interfaces. Shared worktree admission
+remains 2A work; controlled worktree-removal handoffs remain step 7 work.
 
 ## Shared sections and generated skill copies
 

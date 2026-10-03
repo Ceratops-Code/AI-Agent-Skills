@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 import threading
+import tomllib
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -20,7 +21,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-import tomllib
 
 from tests.repository_lifecycle.support import (
     REPOSITORY_LIFECYCLE_SCRIPTS,
@@ -947,10 +947,11 @@ def _new_receipt_fixtures(
     version: str = "1.2.3b1",
     target: str = "python-3.14-windows",
     required_targets: list[str] | None = None,
+    receipt_name: str = "build_receipt.json",
 ):
     required_targets = required_targets or [target, "python-3.14-linux"]
     target_suffix = f"/{target}" if len(required_targets) > 1 else ""
-    receipt_path = f".build/claims/{version}{target_suffix}/receipt.json"
+    receipt_path = f".build/claims/{version}{target_suffix}/{receipt_name}"
 
     def digest(content: bytes) -> str:
         return hashlib.sha256(content).hexdigest()
@@ -1647,7 +1648,7 @@ def test_versioned_receipts_persist_exact_multi_target_direct_state(tmp_path) ->
         assert result.raw == results.encode_new_receipt(receipt)
         assert result.sha256 == hashlib.sha256(result.raw).hexdigest()
         assert result.worktree_path.read_bytes() == result.raw
-        assert result.receipt_path.endswith(f"/{target}/receipt.json")
+        assert result.receipt_path.endswith(f"/{target}/build_receipt.json")
         prepared.append(result)
         receipts[target] = receipt
 
@@ -1688,7 +1689,7 @@ def test_versioned_receipt_rejects_changed_tested_artifact(tmp_path) -> None:
         required_targets=[target],
         attempt_id="attempt-beta-002",
     )
-    assert receipt["receiptPath"] == ".build/claims/1.2.4b1/receipt.json"
+    assert receipt["receiptPath"] == ".build/claims/1.2.4b1/build_receipt.json"
     _write_versioned_outputs(repository, transaction, receipt)
     measured = runner.measure_versioned_artifact(
         transaction,
@@ -2065,6 +2066,7 @@ def _receipt_chain_fixture(
     tmp_path: pathlib.Path,
     *,
     remove_producer: bool = False,
+    receipt_name: str = "build_receipt.json",
 ) -> dict[str, Any]:
     """Create B and C in separate worktrees plus one retained artifact store."""
 
@@ -2094,7 +2096,7 @@ def _receipt_chain_fixture(
 
     source = tmp_path / "receipt-source"
     source.mkdir()
-    _, build, _, _, artifact, _ = _new_receipt_fixtures(source)
+    _, build, _, _, artifact, _ = _new_receipt_fixtures(source, receipt_name=receipt_name)
     build["preTestCommit"] = pre_test_commit
     build_bytes = results.encode_new_receipt(build)
     validation = b'{"status":"passed"}\n'
@@ -2297,7 +2299,7 @@ def test_artifact_receipt_reader_rejects_malformed_records(tmp_path, problem) ->
     if problem == "wrong-root":
         receipt["buildReceipt"]["root"] = "store"
     elif problem == "wrong-build-path":
-        receipt["buildReceipt"]["path"] = ".build/other/1.2.3b1/receipt.json"
+        receipt["buildReceipt"]["path"] = ".build/other/1.2.3b1/build_receipt.json"
     elif problem == "unsafe-artifact":
         receipt["artifactPaths"][0] = "../claims.whl"
     elif problem == "self-artifact":
@@ -2347,10 +2349,11 @@ def test_new_receipt_definitions_preserve_native_v2_reading(tmp_path) -> None:
     assert results.verify_release_unit_build(path, bundle, expected=expected) == receipt
 
 
+@pytest.mark.parametrize("receipt_name", ["build_receipt.json", "receipt.json"])
 def test_receipt_chain_reads_git_and_store_after_producer_removal(
-    tmp_path,
+    tmp_path, receipt_name,
 ) -> None:
-    fixture = _receipt_chain_fixture(tmp_path, remove_producer=True)
+    fixture = _receipt_chain_fixture(tmp_path, remove_producer=True, receipt_name=receipt_name)
     repository = fixture["repository"]
     build = fixture["build"]
     artifact = fixture["artifact"]

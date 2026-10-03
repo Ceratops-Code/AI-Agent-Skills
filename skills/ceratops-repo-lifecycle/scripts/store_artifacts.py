@@ -153,9 +153,9 @@ class ArtifactVersionTransaction:
         _require_transaction_target(self, target)
         base = f".build/{self.release_unit}/{self.version}"
         return (
-            f"{base}/receipt.json"
+            f"{base}/build_receipt.json"
             if len(self.required_targets) == 1
-            else f"{base}/{target}/receipt.json"
+            else f"{base}/{target}/build_receipt.json"
         )
 
     def artifact_receipt(self, target: str) -> pathlib.Path:
@@ -1387,13 +1387,19 @@ def reserve_versioned_artifacts(
         elif existing is None and tagged:
             # A crash during checkpoint cleanup can leave no reservation. The
             # committed receipt, not a new recovery journal, identifies that run.
-            receipt_path = f".build/{release_unit}/{version}/"
+            artifact_path = version_root
             if len(targets) > 1:
-                receipt_path += f"{targets[0]}/"
+                artifact_path /= targets[0]
+            artifact = sdlc_results.read_artifact_receipt(
+                artifact_path / "artifact-receipt.json"
+            ).value
+            receipt_path = str(artifact["buildReceipt"]["path"])
             completed_raw = _git_bytes(
-                root, ["show", f"refs/tags/{release_unit}/{version}:{receipt_path}receipt.json"],
+                root, ["show", f"refs/tags/{release_unit}/{version}:{receipt_path}"],
                 label="read completed attempt",
             )
+            if hashlib.sha256(completed_raw).hexdigest() != artifact["buildReceipt"]["sha256"]:
+                raise OperationError("Completed build receipt changed from its recorded hash.")
             completed_receipt = sdlc_results.parse_committed_build_receipt(completed_raw).value
             if attempt_id is None:
                 attempt_id = str(completed_receipt["identity"]["attemptId"])
